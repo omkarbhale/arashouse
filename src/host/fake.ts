@@ -84,6 +84,9 @@ interface ActiveFault {
 
 export type CallOutcome = "ok" | "not-ok" | "error" | "hung";
 
+/** What the call record holds in place of a credential handle. */
+const HANDLE_MARK = "[handle]";
+
 /** One host call. It holds no secret: a credential handle is recorded as `[handle]`. */
 export interface CallRecord {
   readonly seq: number;
@@ -473,7 +476,7 @@ export class FakeHost implements HostDriver {
   setLeaseCredentials(slot: SlotRef, secretRef: SecretRef): Promise<HostResult> {
     return this.call(
       "setLeaseCredentials",
-      { slot, args: { secretRef: "[handle]" } },
+      { slot, args: { secretRef: HANDLE_MARK } },
       () => assertSlotOwned(slot, this.owned),
       () => {
         if (typeof secretRef?.secretRef !== "string" || secretRef.secretRef.length === 0) {

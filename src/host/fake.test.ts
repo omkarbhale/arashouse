@@ -6,6 +6,9 @@ import { HOST_METHODS, type HostMethod } from "./driver.js";
 import { HostError, isHostError } from "./errors.js";
 import { FakeHost, fakeGoldenHash } from "./fake.js";
 
+/** A secret-store handle wrapping `ref`. */
+const handle = (ref: string) => ({ secretRef: ref });
+
 const slot = { flavor: "12sp9", slot: 1 } as const;
 const other = { flavor: "23", slot: 2 } as const;
 
@@ -143,7 +146,7 @@ describe("FakeHost guards", () => {
     healthCheck: (h, s) => h.healthCheck(s),
     readStamp: (h, s) => h.readStamp(s),
     writeStamp: (h, s) => h.writeStamp(s, { slotId: "x", flavor: "12sp9", goldenHash: null, lastResetAt: null }),
-    setLeaseCredentials: (h, s) => h.setLeaseCredentials(s, { secretRef: "h1" }),
+    setLeaseCredentials: (h, s) => h.setLeaseCredentials(s, handle("h1")),
   };
 
   it("covers every slot-taking method", () => {
@@ -342,14 +345,14 @@ describe("FakeHost call record", () => {
 
   it("never records a credential handle", async () => {
     const host = await provisioned();
-    await host.setLeaseCredentials(slot, { secretRef: "handle-for-lease-xyz" });
+    await host.setLeaseCredentials(slot, handle("handle-for-lease-xyz"));
     expect(JSON.stringify(host.calls)).not.toContain("handle-for-lease-xyz");
-    expect(host.calls.at(-1)?.args).toEqual({ secretRef: "[handle]" });
-    expect(host.inspect(slot)?.credentials).toEqual({ secretRef: "handle-for-lease-xyz" });
+    expect(host.calls.at(-1)?.args).toEqual(handle("[handle]"));
+    expect(host.inspect(slot)?.credentials).toEqual(handle("handle-for-lease-xyz"));
   });
 
   it("refuses an empty secret handle", async () => {
     const host = await provisioned();
-    expect(await kindOf(() => host.setLeaseCredentials(slot, { secretRef: "" }))).toBe("Refused");
+    expect(await kindOf(() => host.setLeaseCredentials(slot, handle("")))).toBe("Refused");
   });
 });

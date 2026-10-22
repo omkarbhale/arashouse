@@ -1,0 +1,19 @@
+# Installers and OOTB backups live in the main checkout's media/<flavor>/, never in git.
+media/*
+!media/README.md
+*.msi
+*.bak
+*.zip
+
+# Per-lease and per-run state
+.arashouse/
+spike-out/
+
+# Secrets: licence keys, passwords, tokens
+secrets/
+*.key
+*.lic
+.env*
+
+node_modules/
+dist/

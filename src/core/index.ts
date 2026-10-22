@@ -4,3 +4,7 @@ export * from "./flavors.js";
 export * from "./names.js";
 export * from "./guards.js";
 export * from "./media.js";
+export * from "./state.js";
+export * from "./lock.js";
+export * from "./store.js";
+export * from "./recovery.js";

@@ -53,6 +53,21 @@ function dashTag(ref: SlotRef): string {
   return `${flavorOf(ref.flavor)}-${slotNumber(ref.slot)}`;
 }
 
+/** The slot's id in the state file and in `status`: `<key>-<NN>`, for example `23-02`. */
+export function slotId(ref: SlotRef): string {
+  return dashTag(ref);
+}
+
+/** The inverse of `slotId`; throws on anything that is not `<registered key>-<NN>`. */
+export function parseSlotId(id: string): SlotRef {
+  const m = /^([a-z0-9]+)-(\d{2})$/.exec(typeof id === "string" ? id : "");
+  const flavor = m?.[1];
+  if (!m || flavor === undefined || !isFlavorKey(flavor)) throw new Error(`"${String(id)}" is not a slot id (<flavor>-<NN>)`);
+  const ref = { flavor, slot: Number(m[2]) };
+  slotNumber(ref.slot);
+  return ref;
+}
+
 /** `arashouse_<key>_<NN>` */
 export function databaseName(ref: SlotRef): string {
   return `arashouse_${tag(ref)}`;

@@ -6,3 +6,4 @@ export * from "./fake.js";
 export * from "./owned.js";
 export * from "./probe.js";
 export * from "./url.js";
+export * from "./msi.js";

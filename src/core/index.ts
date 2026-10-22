@@ -13,3 +13,5 @@ export * from "./state.js";
 export * from "./lock.js";
 export * from "./store.js";
 export * from "./recovery.js";
+export * from "./zip.js";
+export * from "./media-check.js";

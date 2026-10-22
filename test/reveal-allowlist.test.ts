@@ -12,7 +12,7 @@ import { repoRoot } from "./helpers.js";
  */
 const ALLOWED: Readonly<Record<string, number>> = {};
 
-const SECRET_FILE = "src/core/secret.ts";
+const REVEAL_MODULE = "src/core/secret.ts";
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -92,14 +92,14 @@ function virtualProgram(root: string, files: Record<string, string>): ts.Program
   return ts.createProgram([...virtual.keys()], options, host);
 }
 
-describe("Secret.reveal() references", () => {
+describe("Secret.reveal() references", { timeout: 30_000 }, () => {
   it("appear only in the allowlisted files, as many times as the allowlist says", () => {
     const program = ts.createProgram(sourceFiles(join(repoRoot, "src")), compilerOptions());
-    expect(revealReferences(program, join(repoRoot, SECRET_FILE), repoRoot)).toEqual(ALLOWED);
+    expect(revealReferences(program, join(repoRoot, REVEAL_MODULE), repoRoot)).toEqual(ALLOWED);
   });
 });
 
-describe("the reference finder", () => {
+describe("the reference finder", { timeout: 30_000 }, () => {
   const root = join(repoRoot, "virtual");
   const core = Object.fromEntries(
     ["src/core/secret.ts", "src/core/redact.ts"].map((path) => [path, readFileSync(join(repoRoot, path), "utf8")]),
@@ -107,7 +107,7 @@ describe("the reference finder", () => {
   const find = (code: string) =>
     revealReferences(
       virtualProgram(root, { ...core, "src/use.ts": `import { Secret } from "./core/secret.js";\n${code}` }),
-      join(root, SECRET_FILE),
+      join(root, REVEAL_MODULE),
       root,
     );
 

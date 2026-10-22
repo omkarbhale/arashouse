@@ -192,6 +192,14 @@ describe("checkMedia with loose files", () => {
     expect(report.problems[1]).toMatch(/lists \.\.\/escape\.bak/);
   });
 
+  it("fails when its checksum file lists nothing in sha256sum format", async () => {
+    const dir = loose("23", files23);
+    writeFileSync(join(dir, CHECKSUM_FILE), "not a checksum line\n");
+    const report = await checkMedia("23", options(stubReader(msiProps("14.0.9"))));
+    expect(report.ok).toBe(false);
+    expect(report.problems).toEqual([`${join(dir, CHECKSUM_FILE)} lists no files in sha256sum format; delete it and run --write-sums again`]);
+  });
+
   it("warns, but does not fail, when there is no checksum file", async () => {
     loose("23", files23);
     const report = await checkMedia("23", options(stubReader(msiProps("14.0.9"))));

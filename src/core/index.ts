@@ -8,3 +8,5 @@ export * from "./redact.js";
 export * from "./secret.js";
 export * from "./secret-store.js";
 export * from "./licence.js";
+export * from "./zip.js";
+export * from "./media-check.js";

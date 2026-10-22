@@ -28,6 +28,12 @@ describe("flavor registry", () => {
     }
   });
 
+  it("carries the MSI ProductVersion each flavor's installer must report", () => {
+    expect(FLAVORS["12sp9"]).toMatchObject({ msiProductVersion: "12.0", msiVersionIdentifiesRelease: false });
+    expect(FLAVORS["23"]).toMatchObject({ msiProductVersion: "14.0.9", msiVersionIdentifiesRelease: true });
+    expect(FLAVORS["35"]).toMatchObject({ msiProductVersion: "14.35", msiVersionIdentifiesRelease: true });
+  });
+
   it("recognises only registered keys", () => {
     expect(isFlavorKey("23")).toBe(true);
     expect(isFlavorKey("28")).toBe(false);

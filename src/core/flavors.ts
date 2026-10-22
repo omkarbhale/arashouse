@@ -31,6 +31,13 @@ export interface Flavor {
   readonly licence: Licence;
   /** The MSI inside the CD image. */
   readonly msiName: string;
+  /**
+   * The MSI's `ProductVersion` (media check, ticket 18): it must equal this or start with it and a dot.
+   * It is a prefix because the 12.0 MSI reads `12.0.0` whatever the service pack.
+   */
+  readonly msiProductVersion: string;
+  /** False when `ProductVersion` cannot tell this release from its sibling service packs (12.0 SP9). */
+  readonly msiVersionIdentifiesRelease: boolean;
   /** The shipped OOTB backups inside the CD image. */
   readonly backups: { readonly core: string; readonly coreAndSolutions: string };
   /** How many slots the v1 pool holds (the design's option 5(a)). */
@@ -47,6 +54,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     // Provisional until ticket 09 reports whether login, install or neither needs a key.
     licence: { line: "12", required: "to-install" },
     msiName: "InnovatorSetup.msi",
+    msiProductVersion: "12.0",
+    msiVersionIdentifiesRelease: false,
     backups: { core: "Core120.bak", coreAndSolutions: "CoreAndSolutions120.bak" },
     defaultSlots: 3,
   },
@@ -59,6 +68,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     // Provisional until ticket 09 reports whether login, install or neither needs a key.
     licence: { line: "14", required: "to-install" },
     msiName: "InnovatorSetup.msi",
+    msiProductVersion: "14.0.9",
+    msiVersionIdentifiesRelease: true,
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,
   },
@@ -72,6 +83,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     // Provisional until ticket 09 reports whether login, install or neither needs a key.
     licence: { line: "35", required: "to-install" },
     msiName: "InnovatorSetup.msi",
+    msiProductVersion: "14.35",
+    msiVersionIdentifiesRelease: true,
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,
   },

@@ -4,3 +4,4 @@ export * from "./driver.js";
 export * from "./errors.js";
 export * from "./fake.js";
 export * from "./owned.js";
+export * from "./msi.js";

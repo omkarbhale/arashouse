@@ -114,10 +114,17 @@ export async function runMediaCheck(
     return 2;
   }
   try {
+    let writeFailed = false;
     if (parsed.writeSums) {
       for (const flavor of parsed.flavors) {
-        const written = await writeChecksums(flavor, options);
-        io.err(`wrote ${written.path} (${written.files.length} files)`);
+        try {
+          const written = await writeChecksums(flavor, options);
+          io.err(`wrote ${written.path} (${written.files.length} files)`);
+        } catch (cause) {
+          if (!(cause instanceof MediaError)) throw cause;
+          writeFailed = true;
+          io.err(`arashouse media check: ${flavor}: ${cause.message}`);
+        }
       }
     }
     const reports: FlavorMediaReport[] = [];
@@ -137,7 +144,7 @@ export async function runMediaCheck(
       for (const r of reports) io.out(formatReport(r).join("\n"));
       if (reports.length === 2) io.out(formatDiff(reports[0]!, reports[1]!).join("\n"));
     }
-    return ok ? 0 : 1;
+    return ok && !writeFailed ? 0 : 1;
   } catch (cause) {
     if (cause instanceof MediaError) {
       io.err(`arashouse media check: ${cause.message}`);

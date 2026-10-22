@@ -53,6 +53,11 @@ function dashTag(ref: SlotRef): string {
   return `${flavorOf(ref.flavor)}-${slotNumber(ref.slot)}`;
 }
 
+/** `<key>-<NN>`: the slot's id, as the state file and the slot stamp name it (`23-02`). */
+export function slotId(ref: SlotRef): string {
+  return dashTag(ref);
+}
+
 /** `arashouse_<key>_<NN>` */
 export function databaseName(ref: SlotRef): string {
   return `arashouse_${tag(ref)}`;

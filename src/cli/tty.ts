@@ -10,7 +10,11 @@ export interface TtyInput {
   setRawMode?(mode: boolean): unknown;
   setEncoding(encoding: BufferEncoding): unknown;
   on(event: "data", listener: (chunk: string) => void): unknown;
+  on(event: "end", listener: () => void): unknown;
+  on(event: "error", listener: (error: Error) => void): unknown;
   off(event: "data", listener: (chunk: string) => void): unknown;
+  off(event: "end", listener: () => void): unknown;
+  off(event: "error", listener: (error: Error) => void): unknown;
   resume(): unknown;
   pause(): unknown;
 }
@@ -30,7 +34,8 @@ export class PromptAbortedError extends Error {
 
 /**
  * Read one line from `input` in raw mode, without echo. Enter or Ctrl-D ends it, Backspace edits it,
- * Ctrl-C throws PromptAbortedError. Raw mode is always restored.
+ * Ctrl-C throws PromptAbortedError. If the input ends or fails first, it throws. Raw mode is always
+ * restored.
  */
 export function readHiddenLine(input: TtyInput, output: TtyOutput, question: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -46,6 +51,8 @@ export function readHiddenLine(input: TtyInput, output: TtyOutput, question: str
 
     const finish = (done: () => void) => {
       input.off("data", onData);
+      input.off("end", onEnd);
+      input.off("error", onError);
       input.setRawMode?.(false);
       input.pause();
       output.write("\n");
@@ -65,7 +72,12 @@ export function readHiddenLine(input: TtyInput, output: TtyOutput, question: str
         else if (ch >= " ") line += ch;
       }
     };
+    const onEnd = () => finish(() => reject(new Error("the terminal closed before the prompt was answered")));
+    const onError = (error: Error) =>
+      finish(() => reject(new Error(`the terminal failed before the prompt was answered: ${error.message}`)));
     input.on("data", onData);
+    input.on("end", onEnd);
+    input.on("error", onError);
   });
 }
 

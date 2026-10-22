@@ -56,6 +56,23 @@ describe("readHiddenLine", () => {
     expect(input.raw).toEqual([true, false]);
   });
 
+  it("rejects and restores the terminal when the input ends before Enter", async () => {
+    const { input, output } = setup();
+    const pending = readHiddenLine(input as unknown as TtyInput, output, "Key: ");
+    input.write("abc");
+    input.end();
+    await expect(pending).rejects.toThrow("the terminal closed before the prompt was answered");
+    expect(input.raw).toEqual([true, false]);
+  });
+
+  it("rejects and restores the terminal when the input fails before Enter", async () => {
+    const { input, output } = setup();
+    const pending = readHiddenLine(input as unknown as TtyInput, output, "Key: ");
+    input.destroy(new Error("EIO"));
+    await expect(pending).rejects.toThrow("the terminal failed before the prompt was answered: EIO");
+    expect(input.raw).toEqual([true, false]);
+  });
+
   it("refuses without a terminal and writes nothing", async () => {
     const { input, output, written } = setup(false);
     await expect(readHiddenLine(input as unknown as TtyInput, output, "Key: ")).rejects.toThrow(/needs a terminal/);

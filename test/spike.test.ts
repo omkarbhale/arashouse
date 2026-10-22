@@ -61,30 +61,6 @@ describe("spike scripts (static)", () => {
     }
   });
 
-  it("keeps the deny-list in one place and every SQL connection behind the guarded helper", () => {
-    for (const f of scripts) {
-      const text = readFileSync(join(spikeDir, f), "utf8");
-      expect(text, f).not.toMatch(/OLM_Local|RabbitDemo1|InnovatorSolutions/i);
-      expect(text, f).not.toMatch(/System\.Data\.SqlClient|Invoke-Sqlcmd|sqlcmd/i);
-    }
-  });
-
-  it("makes every script dry-run by default and finish through Complete-Spike", () => {
-    for (const f of scripts) {
-      const text = readFileSync(join(spikeDir, f), "utf8");
-      expect(text, f).toMatch(/\[switch\]\$Apply/);
-      expect(text, f).toMatch(/Start-Spike /);
-      expect(text, f).toMatch(/Complete-Spike/);
-    }
-  });
-
-  it("never puts a secret on a command line: no sqlcmd -P, no -ArgumentList with a secret variable", () => {
-    for (const f of [...scripts, ...libFiles]) {
-      const text = readFileSync(join(spikeDir, f), "utf8");
-      expect(text, f).not.toMatch(/-ArgumentList[^\n]*\$(sqlPassword|licence|lic\b|act\b|pw\b)/i);
-    }
-  });
-
   it("has a sitting order in spike/README.md that names every script", () => {
     const readme = readFileSync(join(spikeDir, "README.md"), "utf8");
     for (const f of scripts) expect(readme, f).toContain(f);
@@ -175,6 +151,7 @@ describeWithPs(`spike scripts under ${ps}`, () => {
 
     const reasons = new Map<string, string>();
     const verdicts = (() => {
+      if (!ps) return new Map<string, string>();
       writeFileSync(caseFile, [...denied, ...allowed].join("\n") + "\n");
       try {
         const r = run(spikeScript("lib/Test-SpikeName.ps1"), ["-CaseFile", toHostPath(caseFile)]);

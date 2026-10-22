@@ -4,3 +4,5 @@ export * from "./flavors.js";
 export * from "./names.js";
 export * from "./guards.js";
 export * from "./media.js";
+export * from "./zip.js";
+export * from "./media-check.js";

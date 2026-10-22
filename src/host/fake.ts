@@ -367,7 +367,7 @@ export class FakeHost implements HostDriver {
       { slot, args: { path: stagedPath } },
       () => {
         assertSlotOwned(slot, this.owned);
-        assertStagedPath(slot, stagedPath, this.owned);
+        assertStagedPath(slot, stagedPath, this.owned, this.stateOf(slot).stamp?.leaseId);
       },
       () => {
         const state = this.stateOf(slot);
@@ -384,7 +384,7 @@ export class FakeHost implements HostDriver {
       { slot, args: { path: stagedBak } },
       () => {
         assertSlotOwned(slot, this.owned);
-        assertStagedPath(slot, stagedBak, this.owned);
+        assertStagedPath(slot, stagedBak, this.owned, this.stateOf(slot).stamp?.leaseId);
       },
       () => {
         const state = this.stateOf(slot);
@@ -401,7 +401,7 @@ export class FakeHost implements HostDriver {
       { slot, args: { path: stagedPath } },
       () => {
         assertSlotOwned(slot, this.owned);
-        assertStagedPath(slot, stagedPath, this.owned);
+        assertStagedPath(slot, stagedPath, this.owned, this.stateOf(slot).stamp?.leaseId);
       },
       () => {
         this.stateOf(slot).backedUp.push(stagedPath);

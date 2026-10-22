@@ -184,6 +184,8 @@ describe("FakeHost guards", () => {
       "relative\\x",
       "",
       "C:\\aras_installations\\staging",
+      "C:\\aras_installations\\staging\\x.bak",
+      staging,
     ];
     for (const path of bad) {
       expect(await kindOf(() => host.deployCode(slot, path)), path).toBe("Refused");
@@ -191,6 +193,17 @@ describe("FakeHost guards", () => {
       expect(await kindOf(() => host.backupDatabase(slot, path)), path).toBe("Refused");
     }
     expect(host.inspect(slot)).toMatchObject({ deployed: [], restored: [], backedUp: [] });
+  });
+
+  it("refuses a staged path under another lease's folder once the stamp carries a lease id", async () => {
+    const host = await provisioned();
+    const stamp = (await host.readStamp(slot)).stamp!;
+    await host.writeStamp(slot, { ...stamp, leaseId: "lease1" });
+    const other = `${stagingDir("lease2")}\\x.bak`;
+    expect(await kindOf(() => host.deployCode(slot, other))).toBe("Refused");
+    expect(await kindOf(() => host.restoreDatabase(slot, other))).toBe("Refused");
+    expect(await kindOf(() => host.backupDatabase(slot, other))).toBe("Refused");
+    expect(await kindOf(() => host.restoreDatabase(slot, `${stagingDir("lease1")}\\x.bak`))).toBe("none");
   });
 
   it("refuses a staged path with a junction in it", async () => {

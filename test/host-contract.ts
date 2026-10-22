@@ -175,6 +175,8 @@ export function hostContractSuite(label: string, make: () => ContractHarness | P
       for (const path of [
         "C:\\Program Files (x86)\\Aras\\Innovator\\Server",
         `${staging}\\..\\..\\slots`,
+        staging,
+        `${staging}\\..\\x.bak`,
         `${staging}\\OLM_Local.bak`,
         `${goldenDir(slot.flavor, root)}\\Core.bak`,
         "\\\\server\\share\\x.bak",
@@ -199,8 +201,10 @@ export function hostContractSuite(label: string, make: () => ContractHarness | P
       await h.host.provisionSlot(h.slot);
       await h.host.quiesce(h.slot);
 
+      const before = (await h.host.readStamp(h.slot)).stamp;
       h.failNext("resetTree");
       expect(await thrownKind(() => h.host.resetTree(h.slot, h.golden))).toBe("Retryable");
+      expect((await h.host.readStamp(h.slot)).stamp).toEqual(before);
       expect((await h.host.resetTree(h.slot, h.golden)).ok).toBe(true);
     });
   });

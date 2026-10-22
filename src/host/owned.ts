@@ -103,11 +103,20 @@ function assertInside(kind: string, canonical: string, folder: string): void {
   }
 }
 
-/** A path staged by the leaseholder: a file or folder inside `staging\<lease_id>`. Returns it canonical. */
-export function assertStagedPath(slot: SlotRef, path: string, ctx: OwnedContext = {}): string {
+/**
+ * A path staged by the leaseholder: a file or folder inside `staging\<lease_id>`, never a lease folder
+ * itself or a file loose in `staging`. When `leaseId` is given, the lease folder must be that lease's.
+ * Returns the path canonical.
+ */
+export function assertStagedPath(slot: SlotRef, path: string, ctx: OwnedContext = {}, leaseId?: string | null): string {
   const root = ctx.root ?? DEFAULT_INSTALL_ROOT;
   const canonical = guarded(() => assertOwned("path", path, slot, ownedOptions(ctx)));
-  assertInside("staged path", canonical, win32.join(assertValidRoot(root), "staging"));
+  const staging = win32.join(assertValidRoot(root), "staging");
+  assertInside("staged path", canonical, staging);
+  if (!canonical.slice(staging.length + 1).includes("\\")) {
+    throw new HostError("Refused", `refused path "${canonical}": a staged path must be inside ${staging}\\<lease_id>`);
+  }
+  if (leaseId) assertInside("staged path", canonical, win32.join(staging, leaseId));
   return canonical;
 }
 

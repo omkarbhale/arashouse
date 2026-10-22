@@ -5,7 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { link, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { link, open, readFile, stat, unlink } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 export interface LockInfo {
@@ -124,33 +124,62 @@ async function tryCreate(path: string, info: LockInfo): Promise<boolean> {
   }
 }
 
-/**
- * Removes the lock at `path` that was observed with inode `ino`. The rename takes one lock away
- * from exactly one contender; if what was taken is not the lock that was judged stale (another
- * process stole it first and took a fresh one), it is put back.
- */
-async function steal(path: string, ino: number, info: LockInfo | null, options: LockOptions): Promise<void> {
-  const stale = `${path}.stale-${process.pid}-${randomBytes(6).toString("hex")}`;
+async function readLockAt(path: string): Promise<{ info: LockInfo | null; ino: number } | null> {
   try {
-    await rename(path, stale);
+    const handle = await open(path, "r");
+    try {
+      return { info: parseLockInfo(await handle.readFile("utf8")), ino: (await handle.stat()).ino };
+    } finally {
+      await handle.close();
+    }
   } catch (err) {
-    if (errnoCode(err) === "ENOENT") return; // someone else got there first
+    if (errnoCode(err) === "ENOENT") return null;
     throw err;
   }
-  const taken = await stat(stale);
-  const event = { held_by: info?.pid ?? null, acquired_at: info?.acquired_at ?? null };
-  if (taken.ino !== ino) {
-    try {
-      await link(stale, path);
-    } catch (err) {
-      if (errnoCode(err) !== "EEXIST") throw err;
+}
+
+/**
+ * Removes the lock at `path` that was observed with inode `ino`. Steals are serialised through a
+ * second exclusive guard file; only thieves and the owner ever remove a lock, so while the guard
+ * is held the lock at `path` can only change by its owner releasing it: the inode is re-checked under
+ * the guard and a live lock taken since the observation is never removed. Returns false when the
+ * guard is busy, so the caller retries.
+ */
+async function steal(
+  path: string,
+  ino: number,
+  info: LockInfo | null,
+  self: LockInfo,
+  isAlive: (info: LockInfo) => boolean,
+  options: LockOptions,
+): Promise<boolean> {
+  const guardPath = `${path}.steal`;
+  if (!(await tryCreate(guardPath, self))) {
+    const guard = await readLockAt(guardPath);
+    if (guard !== null && (guard.info === null || !isAlive(guard.info))) {
+      // A thief that died inside its guard; the guard only fences the moment of removal.
+      await unlink(guardPath).catch(() => undefined);
     }
-    await unlink(stale).catch(() => undefined);
-    await options.onEvent?.({ event: "lock-steal-conflict", ...event });
-    return;
+    return false;
   }
-  await options.onEvent?.({ event: "lock-stolen", ...event });
-  await unlink(stale).catch(() => undefined);
+  try {
+    const current = await stat(path).catch((err: unknown) => {
+      if (errnoCode(err) === "ENOENT") return null;
+      throw err;
+    });
+    const event = { held_by: info?.pid ?? null, acquired_at: info?.acquired_at ?? null };
+    if (current === null) return true;
+    if (current.ino !== ino) {
+      await options.onEvent?.({ event: "lock-steal-conflict", ...event });
+      return true;
+    }
+    await options.onEvent?.({ event: "lock-stolen", ...event });
+    await unlink(path);
+    return true;
+  } finally {
+    const guard = await readLockAt(guardPath);
+    if (guard?.info?.token === self.token) await unlink(guardPath).catch(() => undefined);
+  }
 }
 
 /** Waits for, then takes, the exclusive lock at `path`. */
@@ -179,20 +208,12 @@ export async function acquireLock(path: string, options: LockOptions = {}): Prom
         },
       };
     }
-    let observed: { info: LockInfo | null; ino: number };
-    try {
-      const handle = await open(path, "r");
-      try {
-        observed = { info: parseLockInfo(await handle.readFile("utf8")), ino: (await handle.stat()).ino };
-      } finally {
-        await handle.close();
-      }
-    } catch (err) {
-      if (errnoCode(err) === "ENOENT") continue; // released between our attempt and our read
-      throw err;
-    }
+    const observed = await readLockAt(path);
+    if (observed === null) continue; // released between our attempt and our read
     if (observed.info === null || !isAlive(observed.info)) {
-      await steal(path, observed.ino, observed.info, options);
+      if (await steal(path, observed.ino, observed.info, info, isAlive, options)) continue;
+      if (Date.now() >= deadline) throw new LockTimeoutError(path, observed.info?.pid ?? null, timeoutMs);
+      await sleep(pollMs + Math.floor(Math.random() * pollMs));
       continue;
     }
     if (Date.now() >= deadline) throw new LockTimeoutError(path, observed.info.pid, timeoutMs);

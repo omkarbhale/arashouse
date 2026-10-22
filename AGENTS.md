@@ -33,7 +33,7 @@ So a reset may run at return time, in the background, or lazily before the next 
 
 Node 20 or newer. ES modules; TypeScript with `NodeNext` resolution, so relative imports end in `.js`.
 
-- Setup: `npm install`
+- Setup: `npm install` (CI runs `npm ci`)
 - Build: `npm run build` (emits `dist/`)
-- Test: `npm test`
+- Test: `npm test` (CI runs `npm run typecheck` and `npm test` on push and pull request; `.github/workflows/ci.yml`)
 - Lint / typecheck: `npm run lint` (an alias of `npm run typecheck`; there is no separate linter)

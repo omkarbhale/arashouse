@@ -316,6 +316,21 @@ describe("the lock", () => {
     expect(JSON.parse(await readFile(lockPath(), "utf8")).token).toBe("live");
   });
 
+  it("a thief leaves a live lock that reused the stale lock's inode", async () => {
+    const dead = { pid: 999_999_999, token: "dead", acquired_at: "x", start_time: null };
+    await writeFile(lockPath(), JSON.stringify(dead));
+    let overtaken = false;
+    const isAlive = (info: { token: string }) => {
+      if (!overtaken) {
+        overtaken = true;
+        writeFileSync(lockPath(), JSON.stringify({ ...dead, token: "live" }));
+      }
+      return info.token !== "dead";
+    };
+    await expect(acquireLock(lockPath(), { isAlive, timeoutMs: 50, pollMs: 5 })).rejects.toBeInstanceOf(LockTimeoutError);
+    expect(JSON.parse(await readFile(lockPath(), "utf8")).token).toBe("live");
+  });
+
   it("release leaves a lock that is no longer ours", async () => {
     const mine = await acquireLock(lockPath(), { isAlive: () => false });
     const theirs = await acquireLock(lockPath(), { isAlive: () => false }); // judges mine dead and steals it

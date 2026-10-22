@@ -1,0 +1,201 @@
+// An exclusive lock file with a stale-lock rule: a lock held by a dead pid is stolen, and the
+// steal is reported (the store logs it) before the lock is reused. A lock held by a live pid is
+// waited for and never stolen. Created by hard-linking a finished temp file, so the lock file never
+// exists half-written.
+
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { link, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { setTimeout as sleep } from "node:timers/promises";
+
+export interface LockInfo {
+  readonly pid: number;
+  readonly token: string;
+  readonly acquired_at: string;
+  /** `/proc/<pid>/stat` start time, where the platform has it: tells a reused pid from the holder. */
+  readonly start_time: string | null;
+}
+
+export interface LockEvent {
+  readonly event: "lock-stolen" | "lock-steal-conflict";
+  /** The pid that held the lock, or null when the lock file was unreadable. */
+  readonly held_by: number | null;
+  readonly acquired_at: string | null;
+}
+
+export interface LockOptions {
+  readonly pid?: number;
+  readonly timeoutMs?: number;
+  readonly pollMs?: number;
+  readonly now?: () => Date;
+  /** Whether the process that wrote a lock is still running. */
+  readonly isAlive?: (info: LockInfo) => boolean;
+  readonly onEvent?: (event: LockEvent) => void | Promise<void>;
+}
+
+export class LockTimeoutError extends Error {
+  constructor(
+    readonly path: string,
+    readonly heldBy: number | null,
+    timeoutMs: number,
+  ) {
+    super(`timed out after ${timeoutMs} ms waiting for the lock ${path}${heldBy === null ? "" : ` (held by pid ${heldBy})`}`);
+    this.name = "LockTimeoutError";
+  }
+}
+
+export interface HeldLock {
+  readonly info: LockInfo;
+  release(): Promise<void>;
+}
+
+export const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
+
+/** Start time of `pid` (field 22 of `/proc/<pid>/stat`), or null off Linux or when it is gone. */
+export function processStartTime(pid: number): string | null {
+  try {
+    const text = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // The command name sits in parentheses and may hold spaces; the fields resume after the last ")".
+    const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+    return fields[19] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function isProcessAlive(info: LockInfo): boolean {
+  try {
+    process.kill(info.pid, 0);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ESRCH") return false;
+    // EPERM: it exists and is not ours.
+  }
+  if (info.start_time !== null) {
+    const now = processStartTime(info.pid);
+    if (now !== null && now !== info.start_time) return false;
+  }
+  return true;
+}
+
+function errnoCode(err: unknown): string | undefined {
+  return (err as NodeJS.ErrnoException).code;
+}
+
+function parseLockInfo(text: string): LockInfo | null {
+  try {
+    const raw = JSON.parse(text) as Record<string, unknown>;
+    if (
+      typeof raw.pid === "number" &&
+      Number.isInteger(raw.pid) &&
+      raw.pid > 0 &&
+      typeof raw.token === "string" &&
+      typeof raw.acquired_at === "string"
+    ) {
+      return {
+        pid: raw.pid,
+        token: raw.token,
+        acquired_at: raw.acquired_at,
+        start_time: typeof raw.start_time === "string" ? raw.start_time : null,
+      };
+    }
+  } catch {
+    // fall through: an unreadable lock is as good as a dead holder's
+  }
+  return null;
+}
+
+/** Tries once to create the lock; false if it exists. */
+async function tryCreate(path: string, info: LockInfo): Promise<boolean> {
+  const tmp = `${path}.${info.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  const handle = await open(tmp, "wx", 0o600);
+  try {
+    await handle.writeFile(JSON.stringify(info));
+  } finally {
+    await handle.close();
+  }
+  try {
+    await link(tmp, path);
+    return true;
+  } catch (err) {
+    if (errnoCode(err) === "EEXIST") return false;
+    throw err;
+  } finally {
+    await unlink(tmp).catch(() => undefined);
+  }
+}
+
+/**
+ * Removes the lock at `path` that was observed with inode `ino`. The rename takes one lock away
+ * from exactly one contender; if what was taken is not the lock that was judged stale (another
+ * process stole it first and took a fresh one), it is put back.
+ */
+async function steal(path: string, ino: number, info: LockInfo | null, options: LockOptions): Promise<void> {
+  const stale = `${path}.stale-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    await rename(path, stale);
+  } catch (err) {
+    if (errnoCode(err) === "ENOENT") return; // someone else got there first
+    throw err;
+  }
+  const taken = await stat(stale);
+  const event = { held_by: info?.pid ?? null, acquired_at: info?.acquired_at ?? null };
+  if (taken.ino !== ino) {
+    try {
+      await link(stale, path);
+    } catch (err) {
+      if (errnoCode(err) !== "EEXIST") throw err;
+    }
+    await unlink(stale).catch(() => undefined);
+    await options.onEvent?.({ event: "lock-steal-conflict", ...event });
+    return;
+  }
+  await options.onEvent?.({ event: "lock-stolen", ...event });
+  await unlink(stale).catch(() => undefined);
+}
+
+/** Waits for, then takes, the exclusive lock at `path`. */
+export async function acquireLock(path: string, options: LockOptions = {}): Promise<HeldLock> {
+  const pid = options.pid ?? process.pid;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
+  const pollMs = options.pollMs ?? 10;
+  const now = options.now ?? (() => new Date());
+  const isAlive = options.isAlive ?? isProcessAlive;
+  const deadline = Date.now() + timeoutMs;
+  const info: LockInfo = {
+    pid,
+    token: randomBytes(16).toString("hex"),
+    acquired_at: now().toISOString(),
+    start_time: processStartTime(pid),
+  };
+
+  for (;;) {
+    if (await tryCreate(path, info)) {
+      return {
+        info,
+        async release() {
+          // Remove the lock only if it is still ours (it may have been judged stale and replaced).
+          const current = parseLockInfo(await readFile(path, "utf8").catch(() => ""));
+          if (current?.token === info.token) await unlink(path).catch(() => undefined);
+        },
+      };
+    }
+    let observed: { info: LockInfo | null; ino: number };
+    try {
+      const handle = await open(path, "r");
+      try {
+        observed = { info: parseLockInfo(await handle.readFile("utf8")), ino: (await handle.stat()).ino };
+      } finally {
+        await handle.close();
+      }
+    } catch (err) {
+      if (errnoCode(err) === "ENOENT") continue; // released between our attempt and our read
+      throw err;
+    }
+    if (observed.info === null || !isAlive(observed.info)) {
+      await steal(path, observed.ino, observed.info, options);
+      continue;
+    }
+    if (Date.now() >= deadline) throw new LockTimeoutError(path, observed.info.pid, timeoutMs);
+    await sleep(pollMs + Math.floor(Math.random() * pollMs));
+  }
+}

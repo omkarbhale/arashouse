@@ -9,3 +9,7 @@ export * from "./secret.js";
 export * from "./secret-store.js";
 export * from "./licence.js";
 export * from "./manifest.js";
+export * from "./state.js";
+export * from "./lock.js";
+export * from "./store.js";
+export * from "./recovery.js";

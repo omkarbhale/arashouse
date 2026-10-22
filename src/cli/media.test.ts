@@ -101,6 +101,25 @@ describe("arashouse media check", () => {
     expect(again.err.join("\n")).toMatch(/already exists/);
   });
 
+  it("with --write-sums, reports a flavor it cannot write, writes the rest, still checks, and exits 1", async () => {
+    const options = setup();
+    const c = capture();
+    expect(await runMediaCheck(["--write-sums"], options, c.io)).toBe(1);
+    expect(readFileSync(join(root, "12sp9", "SHA256SUMS"), "utf8").trim().split("\n")).toHaveLength(3);
+    expect(readFileSync(join(root, "23", "SHA256SUMS"), "utf8").trim().split("\n")).toHaveLength(3);
+    expect(c.err.join("\n")).toMatch(/35: media folder .* does not exist/);
+    expect(c.out.join("\n")).toMatch(/^23: OK/m);
+    expect(c.out.join("\n")).toMatch(/^35: PROBLEMS/m);
+  });
+
+  it("exits 1 when a --write-sums write fails even if the check passes", async () => {
+    const options = setup();
+    expect(await runMediaCheck(["23", "--write-sums"], options, capture().io)).toBe(0);
+    const c = capture();
+    expect(await runMediaCheck(["23", "--write-sums"], options, c.io)).toBe(1);
+    expect(c.out.join("\n")).toMatch(/^23: OK/m);
+  });
+
   it("rejects an unknown flavor or option with usage and exit 2", async () => {
     for (const bad of [["28"], ["--nope"]]) {
       const c = capture();

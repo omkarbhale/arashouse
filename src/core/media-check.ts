@@ -374,6 +374,8 @@ export async function checkMedia(flavor: FlavorKey, options: MediaCheckOptions):
   const checksums = await verifyChecksums(flavor, folder, rootDir, installerFiles);
   if (checksums.state === "absent") {
     warnings.push(`no ${CHECKSUM_FILE} for ${flavor}; run \`arashouse media check ${flavor} --write-sums\` once the files are known good`);
+  } else if (checksums.results.length === 0) {
+    problems.push(`${checksums.source} lists no files in sha256sum format; delete it and run --write-sums again`);
   } else {
     for (const r of checksums.results) {
       if (r.state === "mismatch") problems.push(`checksum mismatch: ${join(folder, r.name)} does not match ${checksums.source}`);

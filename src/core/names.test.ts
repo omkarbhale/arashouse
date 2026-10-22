@@ -11,6 +11,7 @@ import {
   goldenDir,
   loginName,
   slotDir,
+  slotId,
   slotNames,
   slotNumber,
   sqlDataDir,
@@ -22,6 +23,12 @@ import {
 const ref = { flavor: "12sp9", slot: 3 } as const;
 
 describe("derived names", () => {
+  it("names a slot by `<key>-<NN>`", () => {
+    expect(slotId(ref)).toBe("12sp9-03");
+    expect(slotId({ flavor: "23", slot: 12 })).toBe("23-12");
+    expect(() => slotId({ flavor: "23", slot: 0 })).toThrow();
+  });
+
   it("builds every name from (flavor, NN)", () => {
     expect(databaseName(ref)).toBe("arashouse_12sp9_03");
     expect(webAlias(ref)).toBe("ah-12sp9-03");

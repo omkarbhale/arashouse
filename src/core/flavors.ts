@@ -5,6 +5,15 @@ export const FLAVOR_KEYS = ["12sp9", "23", "35"] as const;
 /** The captain's name for a flavor. */
 export type FlavorKey = (typeof FLAVOR_KEYS)[number];
 
+/** When a step needs the flavor's licence key. */
+export type LicenceRequirement = "to-install" | "to-login" | "never";
+
+export interface Licence {
+  /** The licence line: flavors on one line share one stored key ("12", "14", ...). */
+  readonly line: string;
+  readonly required: LicenceRequirement;
+}
+
 export interface Flavor {
   readonly key: FlavorKey;
   /** The Aras release the key stands for. */
@@ -18,8 +27,8 @@ export interface Flavor {
   readonly libsJsEngine: string;
   /** Repo-relative media folder, inside the main checkout. */
   readonly mediaFolder: string;
-  /** The licence line the flavor draws on; ticket 09 settles whether login needs a key at all. */
-  readonly licenceLine: string;
+  /** The licence the flavor draws on (ticket 23 prompts for it); ticket 09 settles the line and when a key is needed. */
+  readonly licence: Licence;
   /** The MSI inside the CD image. */
   readonly msiName: string;
   /** The shipped OOTB backups inside the CD image. */
@@ -35,7 +44,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     serverBuild: "12.0.0.24090",
     libsJsEngine: "12.0",
     mediaFolder: "media/12sp9",
-    licenceLine: "12",
+    // Provisional until ticket 09 reports whether login, install or neither needs a key.
+    licence: { line: "12", required: "to-install" },
     msiName: "InnovatorSetup.msi",
     backups: { core: "Core120.bak", coreAndSolutions: "CoreAndSolutions120.bak" },
     defaultSlots: 3,
@@ -46,7 +56,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     serverBuild: "14.0.9.36073",
     libsJsEngine: "14.0.7",
     mediaFolder: "media/23",
-    licenceLine: "14",
+    // Provisional until ticket 09 reports whether login, install or neither needs a key.
+    licence: { line: "14", required: "to-install" },
     msiName: "InnovatorSetup.msi",
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,
@@ -58,7 +69,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     serverBuild: null,
     libsJsEngine: "14.35",
     mediaFolder: "media/35",
-    licenceLine: "35",
+    // Provisional until ticket 09 reports whether login, install or neither needs a key.
+    licence: { line: "35", required: "to-install" },
     msiName: "InnovatorSetup.msi",
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,

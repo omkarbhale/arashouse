@@ -22,6 +22,8 @@ import {
   databaseName,
   goldenDir,
   loginName,
+  secretFile,
+  secretsDir,
   slotDir,
   sqlDataDir,
   stagingDir,
@@ -78,6 +80,8 @@ describe("derived names against the allowlists and the deny-list", () => {
     }
     expect(assertOwned("path", stagingDir("lease-7"), ref)).toBe(stagingDir("lease-7"));
     expect(assertOwned("path", sqlDataDir(), ref)).toBe(sqlDataDir());
+    expect(assertOwned("path", secretsDir(), ref)).toBe(secretsDir());
+    expect(assertOwned("path", secretFile("licence-14"), ref)).toBe(secretFile("licence-14"));
   });
 
   it("owns the utility database", () => {

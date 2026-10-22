@@ -4,3 +4,7 @@ export * from "./flavors.js";
 export * from "./names.js";
 export * from "./guards.js";
 export * from "./media.js";
+export * from "./redact.js";
+export * from "./secret.js";
+export * from "./secret-store.js";
+export * from "./licence.js";

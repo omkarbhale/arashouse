@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -275,6 +275,45 @@ describe("the lock", () => {
     await holder.release();
     await waiting;
     expect((await store.read()).slots["23-01"]).toBeDefined();
+  });
+
+  it("concurrent thieves of one dead lock never leave two holders", async () => {
+    await writeFile(lockPath(), JSON.stringify({ pid: 999_999_999, token: "dead", acquired_at: "x", start_time: null }));
+    const deadOnly = (info: { token: string }) => info.token !== "dead";
+    for (let round = 0; round < 20; round++) {
+      let inside = 0;
+      let overlap = false;
+      await Promise.all(
+        Array.from({ length: 4 }, async () => {
+          const held = await acquireLock(lockPath(), { isAlive: deadOnly, pollMs: 1 });
+          inside++;
+          if (inside > 1) overlap = true;
+          await new Promise((r) => setTimeout(r, 2));
+          inside--;
+          await held.release();
+        }),
+      );
+      expect(overlap).toBe(false);
+      await writeFile(lockPath(), JSON.stringify({ pid: 999_999_999, token: "dead", acquired_at: "x", start_time: null }));
+    }
+    expect((await readdir(home)).filter((n) => n.endsWith(".steal") || n.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("a thief whose stale observation was overtaken leaves the new live lock in place", async () => {
+    const dead = { pid: 999_999_999, token: "dead", acquired_at: "x", start_time: null };
+    const live = { ...dead, token: "live" };
+    await writeFile(lockPath(), JSON.stringify(dead));
+    let overtaken = false;
+    const isAlive = (info: { token: string }) => {
+      if (!overtaken) {
+        overtaken = true;
+        unlinkSync(lockPath());
+        writeFileSync(lockPath(), JSON.stringify(live));
+      }
+      return info.token !== "dead";
+    };
+    await expect(acquireLock(lockPath(), { isAlive, timeoutMs: 50, pollMs: 5 })).rejects.toBeInstanceOf(LockTimeoutError);
+    expect(JSON.parse(await readFile(lockPath(), "utf8")).token).toBe("live");
   });
 
   it("release leaves a lock that is no longer ours", async () => {

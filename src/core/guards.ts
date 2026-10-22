@@ -6,7 +6,6 @@ import { isFlavorKey } from "./flavors.js";
 import {
   APP_POOL_ROLES,
   DEFAULT_INSTALL_ROOT,
-  UTILITY_DATABASE,
   agentServiceName,
   appPoolName,
   databaseName,
@@ -251,7 +250,7 @@ function assertOwnedName(kind: Exclude<OwnedKind, "root" | "path">, name: unknow
 function derivedNames(kind: Exclude<OwnedKind, "root" | "path">, slot: SlotRef): string[] {
   switch (kind) {
     case "database":
-      return [databaseName(slot), UTILITY_DATABASE];
+      return [databaseName(slot)];
     case "alias":
       return [webAlias(slot)];
     case "appPool":

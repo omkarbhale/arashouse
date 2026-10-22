@@ -82,7 +82,7 @@ describe("derived names against the allowlists and the deny-list", () => {
 
   it("owns the utility database", () => {
     expect(assertOwned("database", UTILITY_DATABASE)).toBe(UTILITY_DATABASE);
-    expect(assertOwned("database", UTILITY_DATABASE, ref)).toBe(UTILITY_DATABASE);
+    refuses("not-derived", () => assertOwned("database", UTILITY_DATABASE, ref));
   });
 });
 

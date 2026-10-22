@@ -5,7 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { link, open, readFile, stat, unlink } from "node:fs/promises";
+import { link, open, readFile, unlink } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 export interface LockInfo {
@@ -124,30 +124,28 @@ async function tryCreate(path: string, info: LockInfo): Promise<boolean> {
   }
 }
 
-async function readLockAt(path: string): Promise<{ info: LockInfo | null; ino: number } | null> {
+async function readLockAt(path: string): Promise<{ info: LockInfo | null } | null> {
   try {
-    const handle = await open(path, "r");
-    try {
-      return { info: parseLockInfo(await handle.readFile("utf8")), ino: (await handle.stat()).ino };
-    } finally {
-      await handle.close();
-    }
+    return { info: parseLockInfo(await readFile(path, "utf8")) };
   } catch (err) {
     if (errnoCode(err) === "ENOENT") return null;
     throw err;
   }
 }
 
+function sameHolder(a: LockInfo | null, b: LockInfo | null): boolean {
+  return (a?.token ?? null) === (b?.token ?? null);
+}
+
 /**
- * Removes the lock at `path` that was observed with inode `ino`. Steals are serialised through a
+ * Removes the lock at `path` that was judged stale with content `info`. Steals are serialised through a
  * second exclusive guard file; only thieves and the owner ever remove a lock, so while the guard
- * is held the lock at `path` can only change by its owner releasing it: the inode is re-checked under
+ * is held the lock at `path` can only change by its owner releasing it: its token is re-checked under
  * the guard and a live lock taken since the observation is never removed. Returns false when the
  * guard is busy, so the caller retries.
  */
 async function steal(
   path: string,
-  ino: number,
   info: LockInfo | null,
   self: LockInfo,
   isAlive: (info: LockInfo) => boolean,
@@ -158,18 +156,16 @@ async function steal(
     const guard = await readLockAt(guardPath);
     if (guard !== null && (guard.info === null || !isAlive(guard.info))) {
       // A thief that died inside its guard; the guard only fences the moment of removal.
-      await unlink(guardPath).catch(() => undefined);
+      const again = await readLockAt(guardPath);
+      if (again !== null && sameHolder(again.info, guard.info)) await unlink(guardPath).catch(() => undefined);
     }
     return false;
   }
   try {
-    const current = await stat(path).catch((err: unknown) => {
-      if (errnoCode(err) === "ENOENT") return null;
-      throw err;
-    });
+    const current = await readLockAt(path);
     const event = { held_by: info?.pid ?? null, acquired_at: info?.acquired_at ?? null };
     if (current === null) return true;
-    if (current.ino !== ino) {
+    if (!sameHolder(current.info, info)) {
       await options.onEvent?.({ event: "lock-steal-conflict", ...event });
       return true;
     }
@@ -211,7 +207,7 @@ export async function acquireLock(path: string, options: LockOptions = {}): Prom
     const observed = await readLockAt(path);
     if (observed === null) continue; // released between our attempt and our read
     if (observed.info === null || !isAlive(observed.info)) {
-      if (await steal(path, observed.ino, observed.info, info, isAlive, options)) continue;
+      if (await steal(path, observed.info, info, isAlive, options)) continue;
       if (Date.now() >= deadline) throw new LockTimeoutError(path, observed.info?.pid ?? null, timeoutMs);
       await sleep(pollMs + Math.floor(Math.random() * pollMs));
       continue;

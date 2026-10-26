@@ -113,6 +113,9 @@ describe("FakeHost slots", () => {
     const built = await host.baselineBuild("12sp9");
     expect(built.goldenHash).toBe(fakeGoldenHash("12sp9"));
     expect((await host.baselineVerify("12sp9")).ok).toBe(true);
+    expect((await host.baselineVerify("12sp9", { level: "full" })).level).toBe("full");
+    expect((await host.baselineVerify("12sp9")).level).toBe("golden");
+    expect(await kindOf(() => host.baselineVerify("12sp9", { level: "everything" as never }))).toBe("Refused");
   });
 
   it("reports host info, which a test can change", async () => {

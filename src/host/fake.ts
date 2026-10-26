@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { FLAVOR_KEYS, isFlavorKey, type FlavorKey } from "../core/flavors.js";
 import { assertValidRoot } from "../core/guards.js";
+import { VERIFY_LEVELS } from "../core/manifest.js";
 import { DEFAULT_INSTALL_ROOT, goldenDir, slotId, type SlotRef } from "../core/names.js";
 import { FakeClock } from "./clock.js";
 import {
@@ -20,6 +21,8 @@ import {
   type HostInfo,
   type HostInfoResult,
   type HostMethod,
+  type BaselineVerifyOptions,
+  type BaselineVerifyResult,
   type HostResult,
   type ListSlotsResult,
   type SecretRef,
@@ -500,11 +503,26 @@ export class FakeHost implements HostDriver {
     );
   }
 
-  baselineVerify(flavor: FlavorKey): Promise<HostResult> {
-    return this.call("baselineVerify", { flavor }, () => assertFlavorOwned(flavor, this.owned), () => {
-      const built = this.baselines.has(flavor);
-      return { ok: built, detail: built ? `the ${flavor} baseline verifies` : `the ${flavor} baseline is not built` };
-    });
+  baselineVerify(flavor: FlavorKey, options: BaselineVerifyOptions = {}): Promise<BaselineVerifyResult> {
+    const level = options.level ?? "golden";
+    return this.call<BaselineVerifyResult>(
+      "baselineVerify",
+      { flavor, args: { level } },
+      () => {
+        assertFlavorOwned(flavor, this.owned);
+        if (!(VERIFY_LEVELS as readonly string[]).includes(level)) {
+          throw new HostError("Refused", `unknown verify level "${String(level)}"`);
+        }
+      },
+      () => {
+        const built = this.baselines.has(flavor);
+        return {
+          ok: built,
+          level,
+          detail: built ? `the ${flavor} baseline verifies (${level})` : `the ${flavor} baseline is not built`,
+        };
+      },
+    );
   }
 
   // ---- internals -------------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FLAVORS, FLAVOR_KEYS, getFlavor, isFlavorKey } from "./flavors.js";
+import { FLAVORS, FLAVOR_KEYS, RUNTIME_DIRS, getFlavor, isFlavorKey } from "./flavors.js";
 
 describe("flavor registry", () => {
   it("has the three captain-named flavors, keyed by their own key", () => {
@@ -34,5 +34,12 @@ describe("flavor registry", () => {
     expect(isFlavorKey(23)).toBe(false);
     expect(getFlavor("35").release).toContain("35");
     expect(() => getFlavor("sp18")).toThrow(/unknown flavor/);
+  });
+
+  it("lists the runtime directories the manifest leaves out, for every flavor", () => {
+    const dirs = RUNTIME_DIRS.map((r) => r.dir);
+    expect(dirs).toEqual(["Server/temp", "Server/dll", "Server/logs", "OAuthServer/App_Data"]);
+    expect(RUNTIME_DIRS.find((r) => r.dir === "OAuthServer/App_Data")?.files).toEqual(["*.sqlite*", "key-*.xml"]);
+    for (const key of FLAVOR_KEYS) expect(FLAVORS[key].runtimeDirs).toEqual(RUNTIME_DIRS);
   });
 });

@@ -11,6 +11,7 @@ import {
   goldenDir,
   isSecretName,
   loginName,
+  parseSlotId,
   secretFile,
   secretsDir,
   slotDir,
@@ -102,5 +103,21 @@ describe("secret storage names", () => {
       expect(isSecretName(bad)).toBe(false);
       if (typeof bad === "string") expect(() => secretFile(bad)).toThrow(/secret name/);
     }
+  });
+});
+
+describe("slot ids", () => {
+  it("renders <key>-<NN> and parses it back", () => {
+    expect(slotId({ flavor: "23", slot: 2 })).toBe("23-02");
+    expect(parseSlotId("12sp9-03")).toEqual({ flavor: "12sp9", slot: 3 });
+    for (const flavor of FLAVOR_KEYS) {
+      for (const slot of [1, 9, 10, MAX_SLOT]) {
+        expect(parseSlotId(slotId({ flavor, slot }))).toEqual({ flavor, slot });
+      }
+    }
+  });
+
+  it.each(["", "23", "23-2", "23-002", "23-00", "99-01", "23-01 ", "../23-01", "OLM_Local"])("refuses %j", (id) => {
+    expect(() => parseSlotId(id)).toThrow();
   });
 });

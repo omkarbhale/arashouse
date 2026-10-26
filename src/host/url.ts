@@ -16,6 +16,7 @@ export const HOST_ADDR_ENV = "ARASHOUSE_HOST_ADDR";
 export const LOOPBACK_ADDRESS = "localhost";
 
 const HOST_ADDRESS = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$/;
+const DBLIST_ELEMENT = /<DBList[\s/>]/;
 const IPV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
 /** True for a bare host name or IPv4 address with an optional port: no scheme, path or credentials. */
@@ -66,8 +67,8 @@ export function resetHostAddressCache(): void {
 /**
  * The address WSL uses for the Windows host. `ARASHOUSE_HOST_ADDR` wins and is not probed. Otherwise
  * the default gateway is tried first, then `localhost`, each with an anonymous `GET /<alias>/Client/`;
- * the first that answers (any status but 404, so a slot that is broken still shows where it is) is
- * kept for the rest of the process. `alias` is the web alias of any slot the tool owns.
+ * the first that answers (Client/ not 404, and `DBList.aspx` 200 with a `<DBList>` document, so a LAN
+ * router answering 302/401/403 is not mistaken for the host) is kept for the rest of the process. `alias` is the web alias of any slot the tool owns.
  */
 export async function hostAddress(alias: string, options: HostAddressOptions = {}): Promise<string> {
   guarded(() => assertOwned("alias", alias));
@@ -88,7 +89,12 @@ export async function hostAddress(alias: string, options: HostAddressOptions = {
     const answer = await anonymousGet(`${slotUrl(address, alias)}/Client/`, {
       timeoutMs: options.timeoutMs ?? COLD_TIMEOUT_MS,
     });
-    if (answer.status !== undefined && answer.status !== 404) {
+    if (answer.status === undefined || answer.status === 404) continue;
+    const dbList = await anonymousGet(`${slotUrl(address, alias)}/DBList.aspx`, {
+      timeoutMs: options.timeoutMs ?? COLD_TIMEOUT_MS,
+      readBody: true,
+    });
+    if (dbList.status === 200 && DBLIST_ELEMENT.test(dbList.body ?? "")) {
       cached = address;
       return address;
     }

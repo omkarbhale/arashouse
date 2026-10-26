@@ -10,8 +10,11 @@ The address WSL uses for the Windows host; the URL handed out is `http://<addres
 
 1. `ARASHOUSE_HOST_ADDR` (host name or IPv4, optional `:port`) wins and is not probed.
 2. Otherwise the WSL default gateway from `ip route show default`, then `localhost` (mirrored
-   networking mode). Each gets an anonymous `GET /<alias>/Client/`; the first that answers with
-   anything but 404 is chosen. A slot answering 500 still identifies the right address.
+   networking mode). Each gets an anonymous `GET /<alias>/Client/`, then `GET /<alias>/DBList.aspx`;
+   the first whose `Client/` is not 404 and whose `DBList.aspx` answers 200 with a `<DBList>` document
+   (an empty list counts) is chosen. This keeps a LAN router (the gateway in mirrored mode) that
+   answers 302/401/403 to any path from being mistaken for the host. A slot answering 500 on every
+   path is therefore not discoverable by address; set `ARASHOUSE_HOST_ADDR` or fix the slot.
 3. The answer is cached for the process, never stored in the state file (it changes when WSL
    restarts). A failure is not cached; it throws `Unreachable` naming what was tried.
 

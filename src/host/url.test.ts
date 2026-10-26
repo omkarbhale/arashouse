@@ -69,7 +69,7 @@ describe("hostAddress", () => {
     const loopback = await slotServer();
     const address = await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address });
     expect(address).toBe(gateway.address);
-    expect(gateway.requests).toEqual([`/${alias}/Client/`]);
+    expect(gateway.requests).toEqual([`/${alias}/Client/`, `/${alias}/DBList.aspx`]);
     expect(loopback.requests).toEqual([]);
   });
 
@@ -105,10 +105,20 @@ describe("hostAddress", () => {
     expect(address).toBe(loopback.address);
   });
 
-  it("accepts a slot that answers 500: the address is right, the slot is not", async () => {
+  it("skips a gateway that is a LAN router answering 302 to everything, and localhost wins", async () => {
+    const gateway = await new FakeSlotServer({ alias, status: 302 }).start();
+    servers.push(gateway);
+    const loopback = await slotServer();
+    const address = await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address });
+    expect(address).toBe(loopback.address);
+    expect(await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address })).toBe(loopback.address);
+  });
+
+  it("does not find a slot that answers 500 on every path", async () => {
     const gateway = await slotServer({ status: 500 });
-    const address = await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: await closedAddress() });
-    expect(address).toBe(gateway.address);
+    await expect(
+      hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: await closedAddress() }),
+    ).rejects.toThrow(/no host address/);
   });
 
   it("is Unreachable when no candidate answers, naming what it tried", async () => {

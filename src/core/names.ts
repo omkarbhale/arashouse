@@ -118,6 +118,24 @@ export function sqlDataDir(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(root, "sqldata");
 }
 
+/** A stored secret's name: lower-case, digits and '-', so it is safe as a file name (`licence-14`). */
+const SECRET_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export function isSecretName(name: unknown): name is string {
+  return typeof name === "string" && SECRET_NAME.test(name);
+}
+
+/** `<root>\secrets`: machine-scope DPAPI blobs, ACL'd to SYSTEM and the broker account (ticket 21). */
+export function secretsDir(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(root, "secrets");
+}
+
+/** `<root>\secrets\<name>.bin` */
+export function secretFile(name: string, root: string = DEFAULT_INSTALL_ROOT): string {
+  if (!isSecretName(name)) throw new Error("secret name must be 1 to 64 lower-case letters, digits or '-'");
+  return win32.join(secretsDir(root), `${name}.bin`);
+}
+
 /** Every name a slot owns on the host. */
 export interface SlotNames {
   readonly database: string;

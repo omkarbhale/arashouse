@@ -24,7 +24,7 @@ describe("flavor registry", () => {
     expect(FLAVORS["23"].backups).toEqual({ core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" });
     for (const key of FLAVOR_KEYS) {
       expect(FLAVORS[key].msiName).toBe("InnovatorSetup.msi");
-      expect(FLAVORS[key].licenceLine).not.toBe("");
+      expect(FLAVORS[key].licence.line).not.toBe("");
     }
   });
 

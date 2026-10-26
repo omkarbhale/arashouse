@@ -9,7 +9,10 @@ import {
   appPoolName,
   databaseName,
   goldenDir,
+  isSecretName,
   loginName,
+  secretFile,
+  secretsDir,
   slotDir,
   slotId,
   slotNames,
@@ -83,5 +86,21 @@ describe("derived names", () => {
     expect(Object.keys(names.appPools)).toEqual([...APP_POOL_ROLES]);
     expect(names.logins).toEqual({ dbo: "arashouse_23_02_dbo", reg: "arashouse_23_02_reg" });
     expect(names.slotDir).toBe("C:\\aras_installations\\slots\\23\\02");
+  });
+});
+
+describe("secret storage names", () => {
+  it("puts stored secrets under <root>\\secrets as <name>.bin", () => {
+    expect(secretsDir()).toBe("C:\\aras_installations\\secrets");
+    expect(secretFile("licence-14")).toBe("C:\\aras_installations\\secrets\\licence-14.bin");
+    expect(secretFile("sa", "D:\\ah")).toBe("D:\\ah\\secrets\\sa.bin");
+  });
+
+  it("accepts only lower-case letters, digits and '-' in a secret name", () => {
+    for (const ok of ["sa", "licence-14", "a".repeat(64)]) expect(isSecretName(ok)).toBe(true);
+    for (const bad of ["", "-x", "Licence-14", "a.b", "a\\b", "a/b", "..", "a b", "a".repeat(65), 14, undefined]) {
+      expect(isSecretName(bad)).toBe(false);
+      if (typeof bad === "string") expect(() => secretFile(bad)).toThrow(/secret name/);
+    }
   });
 });

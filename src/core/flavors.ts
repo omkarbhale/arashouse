@@ -14,6 +14,29 @@ export interface Licence {
   readonly required: LicenceRequirement;
 }
 
+/**
+ * A part of the code tree that holds runtime state, not baseline content. The golden manifest leaves
+ * it out, `baseline verify` ignores it, and the reset clears it (ticket 30). Paths are relative to the
+ * tree root, use `/`, and match case-insensitively.
+ */
+export interface RuntimeRule {
+  /** The directory. */
+  readonly dir: string;
+  /**
+   * Absent: everything under `dir` is runtime state. Present: only files directly in `dir` whose
+   * name matches one of these globs (`*` and `?`) are.
+   */
+  readonly files?: readonly string[];
+}
+
+/** The runtime directories every Aras flavor shares (design 5.2 and 6.2). */
+export const RUNTIME_DIRS: readonly RuntimeRule[] = [
+  { dir: "Server/temp" },
+  { dir: "Server/dll" },
+  { dir: "Server/logs" },
+  { dir: "OAuthServer/App_Data", files: ["*.sqlite*", "key-*.xml"] },
+];
+
 export interface Flavor {
   readonly key: FlavorKey;
   /** The Aras release the key stands for. */
@@ -35,6 +58,8 @@ export interface Flavor {
   readonly backups: { readonly core: string; readonly coreAndSolutions: string };
   /** How many slots the v1 pool holds (the design's option 5(a)). */
   readonly defaultSlots: number;
+  /** Runtime state inside the code tree: outside the golden manifest, cleared by a reset, never flagged. */
+  readonly runtimeDirs: readonly RuntimeRule[];
 }
 
 export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
@@ -49,6 +74,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     msiName: "InnovatorSetup.msi",
     backups: { core: "Core120.bak", coreAndSolutions: "CoreAndSolutions120.bak" },
     defaultSlots: 3,
+    runtimeDirs: RUNTIME_DIRS,
   },
   "23": {
     key: "23",
@@ -61,6 +87,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     msiName: "InnovatorSetup.msi",
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,
+    runtimeDirs: RUNTIME_DIRS,
   },
   "35": {
     key: "35",
@@ -74,6 +101,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     msiName: "InnovatorSetup.msi",
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,
+    runtimeDirs: RUNTIME_DIRS,
   },
 };
 

@@ -9,6 +9,7 @@
 // - No call takes, returns or logs a secret as a string. A secret is a `SecretRef` handle.
 
 import type { FlavorKey } from "../core/flavors.js";
+import type { ManifestDiff, VerifyLevel } from "../core/manifest.js";
 import type { SlotRef } from "../core/names.js";
 
 /** What every successful call returns. `detail` is one line for a log; it never holds a secret. */
@@ -106,6 +107,17 @@ export interface BaselineBuildResult extends HostResult {
   readonly goldenHash: string;
 }
 
+export interface BaselineVerifyOptions {
+  /** `golden` (the default) checks the golden folder; `full` hashes every file; `fast` is the reset-path check. */
+  readonly level?: VerifyLevel;
+}
+
+export interface BaselineVerifyResult extends HostResult {
+  readonly level: VerifyLevel;
+  /** What differs: paths and counts, never contents. Absent when the baseline is not built. */
+  readonly diff?: ManifestDiff;
+}
+
 /** The host driver. Every method may throw `HostError`; see errors.ts. */
 export interface HostDriver {
   ping(): Promise<HostResult>;
@@ -148,7 +160,7 @@ export interface HostDriver {
   /** Builds the flavor's golden baseline from its media (ticket 24). */
   baselineBuild(flavor: FlavorKey): Promise<BaselineBuildResult>;
   /** Verifies the flavor's golden baseline against its manifest (ticket 28). `ok: false` is a result. */
-  baselineVerify(flavor: FlavorKey): Promise<HostResult>;
+  baselineVerify(flavor: FlavorKey, options?: BaselineVerifyOptions): Promise<BaselineVerifyResult>;
 }
 
 /** Every method name, for fault injection and the call record. */

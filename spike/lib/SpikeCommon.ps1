@@ -619,7 +619,7 @@ function Get-SpikeArasToken {
         $hex = -join ($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($plain)) | ForEach-Object { $_.ToString('x2') })
     } finally { $plain = $null }
     $body = 'grant_type=password&scope=Innovator&client_id=IOMApp&username=' + [uri]::EscapeDataString($User) +
-        '&password=' + $hex + '&database=' + [uri]::EscapeDataString($DatabaseId)
+        ('&password={0}&database={1}' -f $hex, [uri]::EscapeDataString($DatabaseId))
     $hex = $null
     $req = [Net.HttpWebRequest]::Create("http://localhost/$Alias/OAuthServer/connect/token")
     $req.Method = 'POST'

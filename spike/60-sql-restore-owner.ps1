@@ -92,7 +92,7 @@ try {
     Invoke-SpikeStep "(b) create login $PoolLogin (no server roles), make it the owner of $ScratchDatabase only, restore WITH REPLACE as that login" {
         $ctx.poolPw = New-SpikePassword
         $plain = ConvertTo-SpikePlainText $ctx.poolPw
-        try { Invoke-SpikeSql -Connection $ctx.sa -Query ("CREATE LOGIN " + (Format-SpikeSqlIdent $PoolLogin) + " WITH PASSWORD = " + (Format-SpikeSqlString $plain) + ", CHECK_POLICY = OFF") | Out-Null }
+        try { Invoke-SpikeSql -Connection $ctx.sa -Query ("CREATE LOGIN {0} WITH PASSWORD = {1}, CHECK_POLICY = OFF" -f (Format-SpikeSqlIdent $PoolLogin), (Format-SpikeSqlString $plain)) | Out-Null }
         finally { $plain = $null }
         Invoke-SpikeSql -Connection $ctx.sa -Query ("ALTER AUTHORIZATION ON DATABASE::" + (Format-SpikeSqlIdent $ScratchDatabase) + " TO " + (Format-SpikeSqlIdent $PoolLogin)) | Out-Null
         $roles = Invoke-SpikeSql -Connection $ctx.sa -Query 'SELECT IS_SRVROLEMEMBER(N''sysadmin'', @l) AS sa, IS_SRVROLEMEMBER(N''dbcreator'', @l) AS dbc' -Parameters @{ '@l' = $PoolLogin }

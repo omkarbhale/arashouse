@@ -30,7 +30,7 @@ param(
 )
 . "$PSScriptRoot/lib/SpikeCommon.ps1"
 
-$secretPattern = 'PASSWORD|PWD|SECRET|LICENSEKEY|LICENSE_KEY|ACT_KEY|TOKEN'
+$sensitiveKeyPattern = 'PASSWORD|PWD|SECRET|LICENSEKEY|LICENSE_KEY|ACT_KEY|TOKEN'
 
 function Open-MsiProperties([string]$msi) {
     $installer = New-Object -ComObject WindowsInstaller.Installer
@@ -63,7 +63,7 @@ try {
     $logDir = Assert-SpikePath -Path (Join-Path $script:SpikeRoot "logs") -Mode Write
     $logFile = Join-Path $logDir "10-msi-$Flavor-$Suffix.log"
     if ($MsiPath) { $MsiPath = Assert-SpikePath -Path $MsiPath -Mode Read }
-    foreach ($k in $MsiProperty.Keys) { if ($k -match $secretPattern) { throw "PARAM: secret properties are never passed with -MsiProperty ($k); they come from prompts." } }
+    foreach ($k in $MsiProperty.Keys) { if ($k -match $sensitiveKeyPattern) { throw "PARAM: secret properties are never passed with -MsiProperty ($k); they come from prompts." } }
 
     Start-Spike -Name "10-baseline-install-$Flavor-$Suffix" -Apply $Apply.IsPresent -NeedsElevation
     Add-SpikeFact 'flavor' $Flavor
@@ -140,7 +140,7 @@ try {
             if (-not $state.props.Contains($k)) { throw "PARAM: the MSI has no property '$k'." }
             $p[$k] = [string]$MsiProperty[$k]
         }
-        $hidden = @($state.props.Keys | Where-Object { $_ -match $secretPattern })
+        $hidden = @($state.props.Keys | Where-Object { $_ -match $sensitiveKeyPattern })
         if ($hidden.Count -gt 0) { $p['MsiHiddenProperties'] = ($hidden -join ';') }
         Add-SpikeFact 'propertiesSet' @($p.Keys)
         Add-SpikeFact 'propertiesMissingFromMsi' @($want.Keys | Where-Object { -not $state.props.Contains($_) })

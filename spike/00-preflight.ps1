@@ -9,7 +9,7 @@ param(
 )
 . "$PSScriptRoot/lib/SpikeCommon.ps1"
 
-$secretNames = 'PASSWORD|PWD|SECRET|LICENSEKEY|LICENSE_KEY|ACT_KEY|TOKEN|CERT_PASS'
+$sensitiveKeyPattern = 'PASSWORD|PWD|SECRET|LICENSEKEY|LICENSE_KEY|ACT_KEY|TOKEN|CERT_PASS'
 
 function Get-RegValue($path, $name) {
     try { return (Get-ItemProperty -LiteralPath $path -Name $name -ErrorAction Stop).$name } catch { return $null }
@@ -27,7 +27,7 @@ function Get-MsiInfo([string]$msi) {
         if (-not $rec) { break }
         $n = $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(1))
         $v = $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(2))
-        $props[$n] = if ($n -match $secretNames) { '<not recorded>' } else { $v }
+        $props[$n] = if ($n -match $sensitiveKeyPattern) { '<not recorded>' } else { $v }
     }
     $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
     $dirs = @()

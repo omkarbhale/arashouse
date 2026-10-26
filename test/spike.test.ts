@@ -11,9 +11,9 @@ const scripts = readdirSync(spikeDir)
   .sort();
 const libFiles = readdirSync(join(spikeDir, "lib")).map((f) => `lib/${f}`);
 
-/** The PowerShell to test with: SPIKE_POWERSHELL, else Windows PowerShell 5.1 from WSL, else pwsh; undefined when none is installed. */
+/** The PowerShell to test with: SPIKE_POWERSHELL, else Windows PowerShell 5.1 from WSL; undefined when neither is available. The scripts target C: paths, so a Linux pwsh cannot run them. */
 function findPowerShell(): string | undefined {
-  const candidates = [process.env.SPIKE_POWERSHELL, "powershell.exe", "pwsh"].filter((c): c is string => Boolean(c));
+  const candidates = [process.env.SPIKE_POWERSHELL, "powershell.exe"].filter((c): c is string => Boolean(c));
   for (const c of candidates) {
     const probe = spawnSync(c, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
     if (probe.status === 0) return c;

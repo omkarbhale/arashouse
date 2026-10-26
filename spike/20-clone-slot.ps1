@@ -90,7 +90,7 @@ try {
         foreach ($pair in @(@($loginDbo, $ctx.dboPw), @($loginReg, $ctx.regPw))) {
             $plain = ConvertTo-SpikePlainText $pair[1]
             try {
-                Invoke-SpikeSql -Connection $ctx.conn -Query ("CREATE LOGIN " + (Format-SpikeSqlIdent $pair[0]) + " WITH PASSWORD = " + (Format-SpikeSqlString $plain) + ", CHECK_POLICY = OFF, DEFAULT_DATABASE = " + $db) | Out-Null
+                Invoke-SpikeSql -Connection $ctx.conn -Query ("CREATE LOGIN {0} WITH PASSWORD = {1}, CHECK_POLICY = OFF, DEFAULT_DATABASE = {2}" -f (Format-SpikeSqlIdent $pair[0]), (Format-SpikeSqlString $plain), $db) | Out-Null
             } finally { $plain = $null }
         }
         $users = Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT name FROM $db.sys.database_principals WHERE type = 'S' AND name NOT IN ('dbo','guest','INFORMATION_SCHEMA','sys')")

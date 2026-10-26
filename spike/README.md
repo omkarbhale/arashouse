@@ -81,5 +81,5 @@ Steps 4 to 6 are ticket 05, steps 7 to 9 are ticket 06 and may share its sitting
 
 `lib/Test-SpikeName.ps1 -Kind Database -Name OLM_Local` prints `DENIED|...` and exits 2; `-CaseFile` takes `Kind|Name` lines (kinds
 `Database`, `Login`, `Alias`, `Pool`, `Service`, `Folder`, `ReadFolder`). `test/spike.test.ts` runs the parse check, a dry run of every
-script and the deny-list cases under whichever PowerShell is available (`powershell.exe` first, so WSL runs Windows PowerShell 5.1; `pwsh`
-otherwise; override with `SPIKE_POWERSHELL`).
+script and the deny-list cases under Windows PowerShell 5.1 (`powershell.exe` from WSL; override with `SPIKE_POWERSHELL`), and skips them when it is
+absent, since the scripts target `C:` paths a Linux `pwsh` does not have.

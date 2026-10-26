@@ -6,14 +6,14 @@ import { isFlavorKey } from "./flavors.js";
 import { parseSlotId } from "./names.js";
 import { RECOVERED_HOLDER, type Slot, type State, emptyState, isLeaseId, newSlot } from "./state.js";
 
-/** What a slot folder's `.arashouse-slot.json` records. */
+/** What a slot folder's `.arashouse-slot.json` records; structurally the host driver's `SlotStamp`. */
 export interface SlotStamp {
-  readonly slot_id: string;
+  readonly slotId: string;
   readonly flavor: string;
-  readonly golden_hash: string | null;
-  readonly last_reset_at: string | null;
+  readonly goldenHash: string | null;
+  readonly lastResetAt: string | null;
   /** The lease id, if the slot was leased when the stamp was last written. */
-  readonly lease_id?: string | null;
+  readonly leaseId?: string | null;
 }
 
 export interface RebuildEntry {
@@ -26,7 +26,7 @@ export interface RebuildResult {
   readonly state: State;
   readonly slots: readonly RebuildEntry[];
   /** Stamps that could not be used, and why. Their slots are absent from the state. */
-  readonly skipped: readonly { readonly slot_id: string; readonly reason: string }[];
+  readonly skipped: readonly { readonly slotId: string; readonly reason: string }[];
 }
 
 /**
@@ -39,12 +39,12 @@ export interface RebuildResult {
 export function rebuildState(stamps: readonly SlotStamp[], now: Date = new Date()): RebuildResult {
   const slots: Record<string, Slot> = {};
   const entries: RebuildEntry[] = [];
-  const skipped: { slot_id: string; reason: string }[] = [];
+  const skipped: { slotId: string; reason: string }[] = [];
   for (const stamp of stamps) {
-    const skip = (reason: string) => skipped.push({ slot_id: String(stamp.slot_id), reason });
+    const skip = (reason: string) => skipped.push({ slotId: String(stamp.slotId), reason });
     let ref;
     try {
-      ref = parseSlotId(stamp.slot_id);
+      ref = parseSlotId(stamp.slotId);
     } catch {
       skip("the slot id is not <flavor>-<NN>");
       continue;
@@ -53,25 +53,25 @@ export function rebuildState(stamps: readonly SlotStamp[], now: Date = new Date(
       skip("the stamp's flavor does not match its slot id");
       continue;
     }
-    if (slots[stamp.slot_id]) {
+    if (slots[stamp.slotId]) {
       skip("a second stamp for the same slot");
       continue;
     }
     const base = {
       ...newSlot(ref),
-      golden_hash: stamp.golden_hash ?? null,
-      last_reset_at: stamp.last_reset_at ?? null,
+      golden_hash: stamp.goldenHash ?? null,
+      last_reset_at: stamp.lastResetAt ?? null,
     };
     let slot: Slot;
     let note: string;
-    if (stamp.lease_id === undefined || stamp.lease_id === null) {
+    if (stamp.leaseId === undefined || stamp.leaseId === null) {
       slot = { ...base, status: "dirty" };
       note = "no lease in the stamp: reset before it is handed out";
-    } else if (isLeaseId(stamp.lease_id)) {
+    } else if (isLeaseId(stamp.leaseId)) {
       slot = {
         ...base,
         status: "leased",
-        lease: { lease_id: stamp.lease_id, holder: RECOVERED_HOLDER, leased_at: now.toISOString() },
+        lease: { lease_id: stamp.leaseId, holder: RECOVERED_HOLDER, leased_at: now.toISOString() },
       };
       note = "the stamp holds a lease id: kept leased";
     } else {

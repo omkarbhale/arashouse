@@ -85,6 +85,40 @@ lease. A refused slot goes `dirty` with the reason in the event log, and is rese
 `/<alias>/DBList.aspx`, which 404s on every flavor (`DBList.aspx` is in the `/Server` application, `docs/baselines.md`);
 they now ask `/<alias>/Server/DBList.aspx`.
 
+## Measured on the host (2026-10-27, `12sp9`)
+
+Through firstmate's elevated gate: `setup-host.ps1 -Apply -UpdateBroker` installed a broker built from this ticket (exit 0),
+and a one-off script provisioned the throw-away slot `12sp9-32` through the broker's own verb and wrote one extra file into
+its tree (`Innovator\Client\arashouse-dirt-32.txt`), since the worker may only read `slots\`. Then, as the worker from
+WSL, non-elevated, through `BrokerHost`, the repo's own `resetSlot` and `checkClean` over a scratch state home (golden
+`d30c857941e3`, no licence stored, Defender on):
+
+- **The extra file:** the health check failed `tree` ("1 extra: extra Innovator/Client/arashouse-dirt-32.txt"); every
+  other check passed. The reset removed the file, but the slot was then quarantined: the client writes
+  `Innovator\Client\jsBundles\compile.log` when it first compiles its bundles after a start, and golden has no such file.
+  It is runtime state now (`RUNTIME_DIRS`, next to `data.json`), and a second broker build went in through the gate.
+- **A freshly reset slot passes:** `reset in 30.2 s; free`, then the health check passed all nine checks (2.6 s round
+  trip) and `checkClean` found it clean.
+- **The marker removed** (`sp_dropextendedproperty` of `arashouse.golden_hash`, as the worker's own SQL login): the
+  health check failed `marker` ("the database carries no marker"), `checkClean` refused the slot with that reason, the
+  reset (38.9 s) made it free, and `checkClean` found it clean.
+- **A stamp from another golden** (through `writeStamp`): the health check failed `stamp` and `marker`, `checkClean`
+  refused it at once ("the stamp does not carry the golden hash the state recorded", 76 ms, before any health check),
+  the reset (29.3 s) made it free, and `checkClean` found it clean.
+- `destroySlot` 22.1 s; `listSlots` empty afterwards; the destroy's own deny-list check passed.
+
+The check's time, warm (seconds): stamp 0.0, client, dblist and oauth 0.01 to 0.02 each, tree 1.2 to 1.4 (the `fast`
+verify of 23,815 files), configs 0.9 to 1.7, marker 0.4 to 0.7 (one PowerShell process), version 0.0, login 0.3 to 0.5
+(the store lookup that finds no licence); 2.6 to 3.7 s round trip from WSL. The first check after a start waits for the
+server's cold start: 15.9 s, `Server/DBList.aspx` alone 15.0 s. `checkClean` takes about 3 s on a clean slot (the
+check, the stamp read and the golden's hash). A whole reset took 29 to 39 s here, against the spike's 10 s: the golden is
+checked three times (the reset's `golden` step, `resetDatabase`'s and `resetTree`'s), the start warms a cold server, and
+the health check follows.
+
+The `login` check reported "not checked": no licence is stored, so the one-time password and the refusal of the golden
+backup's password are proven only offline (`src/broker/health.test.ts`, `src/broker/aras-login.test.ts`) until a
+licence and `ootb-root-<key>` are stored (tickets 34 and 35).
+
 ## Safety
 
 - No password, token or MD5 leaves `aras-http.ts` and the request it is sent in: a refusal is the server's own words,

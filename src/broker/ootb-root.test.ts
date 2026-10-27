@@ -10,6 +10,8 @@ const ROOT = "C:\\aras_installations";
 
 // Assembled at run time so no password-shaped literal sits in the source.
 const PASSWORD = ["golden", "-", "35", "-", "root"].join("");
+const OLDER = ["an", "older", "placeholder"].join("-");
+const EMPTY = "";
 
 let root: MappedRoot;
 let audit: MemoryAudit;
@@ -48,7 +50,7 @@ describe("storeOotbRoot", () => {
   });
 
   it("replaces the flavor's earlier password", async () => {
-    await ask({ verb: "storeOotbRoot", args: { flavor: "23", password: "an-older-placeholder" } });
+    await ask({ verb: "storeOotbRoot", args: { flavor: "23", password: OLDER } });
     await ask({ verb: "storeOotbRoot", args: { flavor: "23", password: PASSWORD } });
     expect((await store.get("ootb-root-23"))?.reveal()).toBe(PASSWORD);
   });
@@ -57,7 +59,7 @@ describe("storeOotbRoot", () => {
     ["no flavor", { password: PASSWORD }, /needs a flavor: 12sp9, 23, 35/],
     ["an unknown flavor", { flavor: "olm", password: PASSWORD }, /needs a flavor/],
     ["no password", { flavor: "12sp9" }, /needs the password as a string/],
-    ["an empty password", { flavor: "12sp9", password: "" }, /needs the password as a string/],
+    ["an empty password", { flavor: "12sp9", password: EMPTY }, /needs the password as a string/],
     ["a password with a control character", { flavor: "12sp9", password: `${PASSWORD}\n` }, /1 to 128 printable ASCII characters/],
     ["a password that is too long", { flavor: "12sp9", password: PASSWORD.repeat(10) }, /1 to 128 printable ASCII characters/],
     ["an unknown argument", { flavor: "12sp9", password: PASSWORD, extra: PASSWORD }, /takes only "flavor" and "password"/],

@@ -20,7 +20,7 @@ import { redact } from "../core/redact.js";
 import { Secret } from "../core/secret.js";
 import type { SecretStore } from "../core/secret-store.js";
 import type { SlotStamp } from "../host/driver.js";
-import { HostError, isHostError } from "../host/errors.js";
+import { HostError, isHostError, slotBusyError } from "../host/errors.js";
 import type { ArasHttp } from "./aras-http.js";
 import { newLoginPassword } from "./baseline-build.js";
 import { parseLeaseCredentialArgs, setLeaseCredentialsOnHost, type LeaseCredentialArgs } from "./lease-credentials.js";
@@ -425,7 +425,7 @@ export class SlotLocks {
   async run(ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>): Promise<WireResult> {
     const slot = ctx.slot as SlotRef;
     const id = slotId(slot);
-    if (this.busy.has(id)) throw new HostError("Retryable", `slot ${id} is being provisioned, destroyed, started, stopped or reset already`);
+    if (this.busy.has(id)) throw slotBusyError(id);
     this.busy.add(id);
     try {
       return await fn(slot, ctx.names as SlotNames);

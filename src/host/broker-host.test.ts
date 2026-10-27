@@ -168,6 +168,12 @@ describe("BrokerHost against an in-process broker", () => {
     }
     expect((await rejection(host.startSlot({ flavor: "prod" as never, slot: 1 }, { agent: false }))).kind).toBe("Refused");
     expect((await rejection(host.baselineBuild("olm" as never))).kind).toBe("Refused");
+    // A staged path outside the lease's staging folder is refused before the verb's absence is reported, as FakeHost refuses it.
+    for (const path of [`${ROOT}\\staging`, `${ROOT}\\golden\\12sp9\\db\\ootb.bak`, "C:\\Program Files (x86)\\Aras\\Innovator\\Server"]) {
+      expect((await rejection(host.deployCode(s1, path))).kind).toBe("Refused");
+      expect((await rejection(host.restoreDatabase(s1, path))).kind).toBe("Refused");
+      expect((await rejection(host.backupDatabase(s1, path))).kind).toBe("Refused");
+    }
     expect(transport.requests).toEqual([]);
   });
 

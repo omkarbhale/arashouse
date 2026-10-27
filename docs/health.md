@@ -130,8 +130,10 @@ checked three times (the reset's `golden` step, `resetDatabase`'s and `resetTree
 the health check follows.
 
 The `login` check reported "not checked": no licence is stored, so the one-time password and the refusal of the golden
-backup's password are proven only offline (`src/broker/health.test.ts`, with ticket 34's `src/broker/aras-http.test.ts` for the requests) until a
-licence and `ootb-root-<key>` are stored (tickets 34b and 35).
+backup's password were proven only offline (`src/broker/health.test.ts`, with ticket 34's `src/broker/aras-http.test.ts` for the requests) until a
+licence and `ootb-root-<key>` were stored (tickets 34b and 35). With both stored for `12sp9`, ticket 35's lease cycle ran
+the login check on every reset and every `get` (`docs/e2e-12sp9.md`): the whole `health` step took 26.0 to 26.8 s after
+a reset's start, and the golden backup's password was refused after it.
 
 ## Safety
 

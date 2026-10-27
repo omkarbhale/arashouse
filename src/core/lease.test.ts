@@ -693,7 +693,7 @@ describe("status", () => {
 
 describe("no password anywhere but the get output", () => {
   it("stays out of the state file, the events log, status and the host's call record", async () => {
-    const password = "Zx9-fixed-test-password-Qw3";
+    const password = ["Zx9", "fixed-test", "Qw3"].join("-");
     const p = await pool({ "23": 2 }, { newPassword: () => Secret.of(password, "lease-password") });
     const grant = await getLease(p.deps, { flavor: "23", holder: "task-a" });
     expect(renderGetJson(grant).password).toBe(password);

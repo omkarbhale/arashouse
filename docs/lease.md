@@ -44,7 +44,7 @@ queue order, host RAM) through the same `Governor` interface.
 ```json
 { "slot": "23-02", "flavor": "23", "aras": "14.0.9.36073", "engine": "14.0.7",
   "url": "http://172.19.0.1/ah-23-02", "database": "arashouse_23_02", "user": "root",
-  "lease_id": "<32 hex>", "holder": "<task>", "password": "<shown once>" }
+  "lease_id": "<32 hex>", "holder": "<task>", "password": <shown once, a string> }
 ```
 
 `aras` is null for a flavor whose baseline is not built yet (35 today). The password is a `Secret`

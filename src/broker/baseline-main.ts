@@ -9,10 +9,10 @@
 // the report as JSON, which it also writes to `<bundle>\result.json`. The licence key and the shipped
 // admin password, when given, arrive in the environment the script set for this process only.
 
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { baselinePlan, goldenJson, type BuildReport, type StepRecord } from "../core/baseline.js";
+import { ENGINE_BUNDLE_DIR, baselinePlan, goldenJson, type BuildReport, type StepRecord } from "../core/baseline.js";
 import { BUILD_ENV_NAMES, PLAN_FILE, RESULT_FILE, type BundlePlan } from "../core/baseline-script.js";
 import { isFlavorKey } from "../core/flavors.js";
 import { buildScratch } from "../core/names.js";
@@ -45,7 +45,15 @@ async function main(): Promise<number> {
   if (win32.resolve(bundle).toLowerCase() !== win32.resolve(buildScratch(plan.flavor).bundleDir).toLowerCase()) {
     throw new Error(`the bundle must sit at ${buildScratch(plan.flavor).bundleDir}, not ${bundle}`);
   }
-  const system = windowsBuildSystem(plan, { stepsScript: win32.join(bundle, STEPS_SCRIPT_NAME), onLog: (line) => process.stdout.write(`  ${line}\n`) });
+  // `--engine-check` bundled the libs-js CLI under engine\ (pinned by baseline-build.ps1 like app\).
+  const engineCheck = bundlePlan.engineCheck === true;
+  const engineCli = win32.join(bundle, ENGINE_BUNDLE_DIR, "dist", "cli.js");
+  if (engineCheck) await access(engineCli).catch(() => Promise.reject(new Error(`plan.json asks for the engine check, but the bundle has no ${engineCli}`)));
+  const system = windowsBuildSystem(plan, {
+    stepsScript: win32.join(bundle, STEPS_SCRIPT_NAME),
+    onLog: (line) => process.stdout.write(`  ${line}\n`),
+    ...(engineCheck ? { engineCli } : {}),
+  });
 
   if (args.includes("--cleanup")) {
     const left = await runBuildCleanup(system, plan);
@@ -55,6 +63,7 @@ async function main(): Promise<number> {
   const report: BuildReport = await runBaselineBuild(system, plan, {
     inputs: { licence, adminPassword },
     minFreeDiskGb: bundlePlan.minFreeDiskGb,
+    engineCheck,
     onStep: (r) => process.stdout.write(`${formatStep(r)}\n`),
   });
   await writeFile(win32.join(bundle, RESULT_FILE), goldenJson(report));

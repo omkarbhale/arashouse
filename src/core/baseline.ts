@@ -71,6 +71,8 @@ export interface BaselinePlan {
   /** Replace an existing golden (`--replace`); without it a build refuses one. */
   readonly replace: boolean;
   readonly prerequisites: readonly HostPrerequisite[];
+  /** The import-export-libs-js engine the engine check exports with (`--engine`). */
+  readonly libsJsEngine: string;
 }
 
 export interface PlanOptions {
@@ -107,6 +109,7 @@ export function baselinePlan(flavor: FlavorKey, options: PlanOptions): BaselineP
     msiSha256: options.msiSha256,
     replace: options.replace ?? false,
     prerequisites: f.hostPrerequisites,
+    libsJsEngine: f.libsJsEngine,
   };
 }
 
@@ -154,6 +157,15 @@ export const SHIPPED_DATABASE_USERS = { dbo: "innovator", reg: "innovator_regula
 
 /** The Aras login the build checks with: the shipped backup's administrator. */
 export const SHIPPED_ADMIN_LOGIN = "root";
+
+/**
+ * The item the engine check exports (`aras-pkg export <out> <item>`): the shipped ItemType `Part`, whose id is
+ * the same in every release's backup (spike 07 exported it from Release 23).
+ */
+export const ENGINE_CHECK_ITEM = "ItemType:4F1AC04A2B484F3ABA4E20DB63808A88";
+
+/** The bundle folder that holds the import-export-libs-js CLI for the engine check, when the bundle carries one. */
+export const ENGINE_BUNDLE_DIR = "engine";
 
 // ---- what the build records ---------------------------------------------------------------------
 
@@ -282,6 +294,11 @@ export interface BuildReport {
   readonly goldenHash: string | null;
   /** Whether the login check ran: it needs the line's licence key and the shipped admin password. */
   readonly loginChecked: boolean;
+  /**
+   * Whether the engine check ran and passed: a one-item `aras-pkg export` with the flavor's libs-js engine. It
+   * needs the login's secrets and a bundle written with `--engine-check`.
+   */
+  readonly engineChecked: boolean;
   /** The first failure, one line. */
   readonly error: string | null;
   /** What the cleanup after a failure did not manage to remove (names only). */

@@ -4,7 +4,7 @@ import { BUILD_STEPS, baselinePlan, type BaselinePlan, type DenyListSnapshot, ty
 import { makeManifest, type Manifest } from "../core/manifest.js";
 import { Secret } from "../core/secret.js";
 import type { HttpAnswer } from "../host/http.js";
-import { buildEditVars, newLoginPassword, parseLicenceInput, runBaselineBuild, runBuildCleanup, type BuildLogins, type BuildSystem } from "./baseline-build.js";
+import { buildEditVars, newLoginPassword, parseLicenceInput, runBaselineBuild, runBuildCleanup, type BuildLogins, type BuildSystem, type EngineExport } from "./baseline-build.js";
 
 const MSI_SHA = "a".repeat(64);
 // Assembled at run time so no secret-shaped literal sits in the source.
@@ -39,10 +39,11 @@ class FakeBuildSystem implements BuildSystem {
   dbList = `<DBList><DB id="arashouse_build_12sp9"/></DBList>`;
   version = "12.0.0.24090";
   loginAnswer = { ok: true, detail: "token issued" };
+  engineAnswer: EngineExport = { exitCode: 0, summary: { result: "success", engine: "12.0", server: "12.0.0.24090", items: 1 } };
   missing: string[] | null = [];
   leftovers: string[] = [];
   /** What the login and restore steps were given (to check the secrets reached them). */
-  readonly seen: { logins?: BuildLogins; password?: Secret } = {};
+  readonly seen: { logins?: BuildLogins; password?: Secret; enginePassword?: Secret; engineUser?: string } = {};
   private clock = 0;
 
   constructor(readonly plan: BaselinePlan) {
@@ -147,6 +148,14 @@ class FakeBuildSystem implements BuildSystem {
     return this.act("login", () => {
       this.seen.password = password;
       return this.loginAnswer;
+    });
+  }
+  engineExport(plan: BaselinePlan, user: string, password: Secret) {
+    return this.act("engineExport", () => {
+      this.seen.engineUser = user;
+      this.seen.enginePassword = password;
+      this.put(win32.join(plan.scratch.engineDir, "pkg", "imports.mf"), "<imports/>");
+      return this.engineAnswer;
     });
   }
   serverVersion() {
@@ -280,6 +289,47 @@ describe("the baseline build", () => {
     expect(r2.ok).toBe(true);
     expect(r2.loginChecked).toBe(true);
     expect(withKey.system.seen.password?.reveal()).toBe(ADMIN);
+  });
+
+  it("runs the engine check after the login when the bundle carries the engine, and removes its export", async () => {
+    const off = setup();
+    const r0 = await runBaselineBuild(off.system, off.plan, { ...OPTIONS, inputs: inputs() });
+    expect(r0.engineChecked).toBe(false);
+    expect(off.system.calls).not.toContain("engineExport");
+
+    const noLogin = setup();
+    const r1 = await runBaselineBuild(noLogin.system, noLogin.plan, { ...OPTIONS, engineCheck: true });
+    expect(r1.ok).toBe(true);
+    expect(r1.engineChecked).toBe(false);
+    expect(noLogin.system.calls).not.toContain("engineExport");
+    expect(r1.steps.find((s) => s.step === "verify")?.detail).toContain("engine check skipped: it needs the login");
+
+    const { plan, system } = setup();
+    const report = await runBaselineBuild(system, plan, { ...OPTIONS, inputs: inputs(), engineCheck: true });
+    expect(report.ok).toBe(true);
+    expect(report.engineChecked).toBe(true);
+    expect(report.steps.find((s) => s.step === "verify")?.detail).toContain("aras-pkg export --engine 12.0 of one item succeeded");
+    expect(system.calls.indexOf("engineExport")).toBeGreaterThan(system.calls.indexOf("login"));
+    expect(system.seen.engineUser).toBe("root");
+    expect(system.seen.enginePassword?.reveal()).toBe(ADMIN);
+    expect(system.under(plan.scratch.engineDir)).toEqual([]);
+  });
+
+  it.each([
+    [{ exitCode: 1, summary: { result: "failed", error: "the server 9.9 is outside the engine's window" } }, /engine check: aras-pkg export exited 1 \(failed\): the server 9.9 is outside/],
+    [{ exitCode: 1, summary: null, lastLine: "Error: cannot find module" }, /engine check: aras-pkg export exited 1: Error: cannot find module/],
+    [{ exitCode: 0, summary: { result: "success", engine: "14.0.7", server: "12.0.0.24090", items: 1 } }, /aras-pkg ran engine 14.0.7, not 12.0/],
+    [{ exitCode: 0, summary: { result: "success", engine: "12.0", server: "12.0.0.1", items: 1 } }, /aras-pkg saw server 12.0.0.1, not 12.0.0.24090/],
+    [{ exitCode: 0, summary: { result: "success", engine: "12.0", server: "12.0.0.24090", items: 0 } }, /aras-pkg exported 0 items, not 1/],
+  ] as const)("fails the verify step when the engine check does not prove the engine (%#)", async (answer, error) => {
+    const { plan, system } = setup();
+    system.engineAnswer = answer as EngineExport;
+    const report = await runBaselineBuild(system, plan, { ...OPTIONS, inputs: inputs(), engineCheck: true });
+    expect(report.ok).toBe(false);
+    expect(report.engineChecked).toBe(false);
+    expect(report.error).toMatch(error);
+    expect(system.under(plan.scratch.engineDir)).toEqual([]);
+    expect(system.instance.size).toBe(0);
   });
 
   it("sets the secrets for the checks and blanks them before the copy, so golden holds none", async () => {

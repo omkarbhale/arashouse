@@ -1,6 +1,6 @@
 # Baselines: `arashouse baseline build` and `baseline verify`
 
-Ticket 24. A flavor's **golden** (`C:\aras_installations\golden\<key>`) is what every slot of the flavor is made
+Tickets 24 (the builder, `12sp9`) and 26 (`23`, and the engine check). A flavor's **golden** (`C:\aras_installations\golden\<key>`) is what every slot of the flavor is made
 from and reset to: its code tree, its database backups and the records that describe them. It is built once per
 flavor from the captain's installer in `media/<key>/`, into a throw-away instance that is removed again, and it is
 immutable: only another build, with `--replace`, changes it. Building is the only operation that needs the installer
@@ -12,6 +12,7 @@ and an administrator again.
 
    ```
    node dist/cli/index.js baseline build 12sp9          # or `arashouse baseline build 12sp9`
+   node dist/cli/index.js baseline build 23 --engine-check <a built import-export-libs-js checkout>
    ```
 
    It refuses a flavor whose golden already exists (it asks the broker's `baselineVerify`; a broker it cannot ask
@@ -19,7 +20,8 @@ and an administrator again.
    fail it or an MSI that lacks a property the install sets, then writes the **bundle** to
    `C:\aras_installations\staging\baseline-<key>\`: `baseline-build.ps1`, `baseline-steps.ps1`, `plan.json`,
    `package.json`, `app\` (a copy of `dist\`) and `media\` (the MSI and the two shipped backups, unpacked from the CD
-   image zip with their CRC-32 checked). It prints the commands below.
+   image zip with their CRC-32 checked). With `--engine-check <dir>` it also copies the libs-js CLI into `engine\` (below). It
+   prints the commands below.
 2. The captain, in an **elevated** Windows PowerShell (or firstmate's elevated gate):
 
    ```
@@ -67,8 +69,8 @@ else from the request but the restore step's two generated passwords.
 | `pools` | each application of `/ah-build-<key>` moves from the MSI's machine-wide pools (which the captain's installs share) to its own `ah-build-<key>-<role>`; then `IIS_IUSRS` (every pool identity is a member) gets modify on every folder and file of the install directory and the vault root, and IUSR read. `golden-build\` has a protected ACL that names no IIS account, and the MSI turns inheritance off on `OAuthServer\App_Data` and grants `IIS_IUSRS` that folder only, not the SQLite file in it: without this the first builds answered HTTP 500 and the OAuth server died with "unable to open database file". The grants stay on the throw-away instance: robocopy copies no ACL into golden, so a slot (ticket 25) needs the same grants |
 | `database` | creates `arashouse_build_<key>_dbo` and `_reg` (24 random letters and digits each), restores the shipped `CoreAndSolutions*.bak` as `arashouse_build_<key>` with its files in `sqldata\`, and maps its users `innovator` and `innovator_regular` to them (spike record, section 4; the CD's SQL scripts are not run) |
 | `configure` | writes the two passwords, and the licence key when given, into the build's `InnovatorServerConfig.xml` with the edit engine |
-| `verify` | (a 500 or 503 is asked again for up to a minute, a fresh application's first start) `Server/DBList.aspx` (where the MSI installs it) lists exactly the build database; `OAuthServer/.well-known/openid-configuration` answers 200; `Aras.Server.Core.dll` is the registry's build; with the licence key and the admin password, an OAuth password grant as `root` |
-| `stop` | stops the build's pools and waits for their worker processes to exit |
+| `verify` | (a 500 or 503 is asked again for up to a minute, a fresh application's first start) `Server/DBList.aspx` (where the MSI installs it) lists exactly the build database; `OAuthServer/.well-known/openid-configuration` answers 200; `Aras.Server.Core.dll` is the registry's build; with the licence key and the admin password, an OAuth password grant as `root`; after the login, in a bundle written with `--engine-check`, the engine check (below) |
+| `stop` | stops the build's pools and waits for their worker processes to exit, then for every process started from the build folder (from 14.0 the applications run out of process: `Aras.Server.exe`, `Aras.Client.exe`, spike 07), ending any still there after 30 s; `remove` does the same after it removes the pools |
 | `blank-secrets` | blanks `dbo_pwd`, `regular_pwd` and `lic_key` in the build's config, before anything is copied |
 | `capture-tree` | `robocopy /E /XJ /COPY:DAT /DCOPY:T` of the install directory (without a `DB\` folder) to the new golden's `tree\`, then checks that no secret of this build is in its config files |
 | `capture-db` | the shipped `Core*.bak` and `CoreAndSolutions*.bak`, and a `COPY_ONLY, CHECKSUM` backup of the build database as `ootb.bak` (SQL Server writes it to `sqldata\`, since it may not write `golden\`; the build copies it in) |
@@ -93,6 +95,26 @@ machine-wide `innovator` logins); `REBOOT=ReallySuppress`, `MSIRESTARTMANAGERCON
 `MsiHiddenProperties=LICENSEKEY;IS_SQLSERVER_PASSWORD;SQL_SERVER_LOGIN_PASSWORD;SQL_SERVER_LOGIN_REGULAR_PASSWORD;OAUTH_CERTIFICATES_PASSWORD`.
 No password and no licence key is passed to the MSI. Each public property must be a row of the MSI's Property table
 (`media check`'s names, and again inside the step), or the install is refused before it starts.
+
+## The engine check
+
+The import-export-libs-js engine of a flavor (`12.0`, `14.0.7`, `14.35`; the registry's `libsJsEngine`) must accept the
+server: its login gate and version probe. `arashouse baseline build <key> --engine-check <dir>` takes a built libs-js
+checkout (`npm ci` runs its build) and copies into the bundle's `engine\` its `package.json`, the `.js` files of `dist\`
+and every file of each runtime dependency (`@xmldom/xmldom`, `xpath`; a dependency with dependencies of its own is
+refused), each pinned by SHA-256 in `baseline-build.ps1` like `app\`; `plan.json` says `"engineCheck": true`. The check
+needs the login's secrets: after the `root` login passes, `verify` runs, under the build's Windows `node.exe` (the
+server's OAuth discovery names `http://localhost/...`, which only the host reaches, spike 07):
+
+```
+node.exe engine\dist\cli.js export golden-build\<key>.engine\pkg ItemType:<the shipped Part's id> --engine <libsJsEngine>
+  --url http://localhost/ah-build-<key> --database arashouse_build_<key> --user root --password-stdin --json
+```
+
+with the admin password on its standard input (no argument, no environment). It passes when the CLI exits 0 and its
+summary says `success`, the flavor's engine, the registry's server build and one item; `golden-build\<key>.engine` is
+removed after it either way. The report says `engineChecked: true`. Without the login, or in a bundle without
+`--engine-check`, the check is skipped and the report says `engineChecked: false`.
 
 ## What golden holds
 

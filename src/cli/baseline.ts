@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { MSI_BUILT_IN_PROPERTIES, baselinePlan, msiInstallProperties } from "../core/baseline.js";
+import { ENGINE_BUNDLE_DIR, MSI_BUILT_IN_PROPERTIES, baselinePlan, msiInstallProperties } from "../core/baseline.js";
 import { BUILD_SCRIPT_NAME, PLAN_FILE, RESULT_FILE, renderBaselineBuildScript, type BundlePlan, type PinnedFile } from "../core/baseline-script.js";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import { FLAVOR_KEYS, getFlavor, isFlavorKey, type FlavorKey } from "../core/flavors.js";
@@ -24,7 +24,7 @@ import { parseArgs, type ParsedArgs } from "./args.js";
 import { collectAppFiles, wslPathOf } from "./setup.js";
 
 /** The names a baseline bundle holds; anything else in the folder means it is not ours, and it is left alone. */
-const BUNDLE_ENTRIES = new Set([BUILD_SCRIPT_NAME, STEPS_SCRIPT_NAME, PLAN_FILE, RESULT_FILE, "package.json", "app", "media"]);
+const BUNDLE_ENTRIES = new Set([BUILD_SCRIPT_NAME, STEPS_SCRIPT_NAME, PLAN_FILE, RESULT_FILE, "package.json", "app", "media", ENGINE_BUNDLE_DIR]);
 
 function sha256File(path: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -57,6 +57,8 @@ export interface BaselineBundleOptions {
   readonly minFreeDiskGb: number;
   /** The bundle folder as a local path; defaults to the WSL path of `staging\baseline-<key>`. */
   readonly outDir?: string;
+  /** A built import-export-libs-js checkout to bundle for the engine check (`--engine-check <dir>`). */
+  readonly engineDir?: string;
 }
 
 export interface BaselineBundle {
@@ -80,8 +82,39 @@ async function stageMedia(report: FlavorMediaReport, name: string, dest: string)
 }
 
 /**
+ * The files of a built import-export-libs-js checkout the engine check runs, relative to it and `/`-separated:
+ * `package.json`, the `.js` files of `dist/` (no source maps or typings), and every file of each runtime dependency
+ * under `node_modules/`. Refuses a checkout that is not built, or a dependency with dependencies of its own (they
+ * are not bundled).
+ */
+export async function engineFiles(dir: string): Promise<string[]> {
+  const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8").catch(() => "{}")) as { name?: unknown; dependencies?: Record<string, string> };
+  if (pkg.name !== "import-export-libs-js") throw new UsageError(`${dir} is not an import-export-libs-js checkout (its package.json names ${JSON.stringify(pkg.name ?? null)})`);
+  if (!existsSync(join(dir, "dist", "cli.js"))) throw new UsageError(`${dir} has no dist/cli.js: build it first (npm ci, npm run build)`);
+  const walk = async (rel: string, keep: (name: string) => boolean): Promise<string[]> => {
+    const out: string[] = [];
+    for (const entry of (await readdir(join(dir, rel), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = `${rel}/${entry.name}`;
+      if (entry.isDirectory()) out.push(...(await walk(path, keep)));
+      else if (entry.isFile() && keep(entry.name)) out.push(path);
+      else if (!entry.isFile()) throw new UsageError(`${join(dir, path)} is not a plain file or folder`);
+    }
+    return out;
+  };
+  const files = ["package.json", ...(await walk("dist", (n) => n.endsWith(".js")))];
+  for (const dep of Object.keys(pkg.dependencies ?? {}).sort()) {
+    const depPkg = JSON.parse(await readFile(join(dir, "node_modules", dep, "package.json"), "utf8").catch(() => "null")) as { dependencies?: Record<string, string> } | null;
+    if (depPkg === null) throw new UsageError(`${dir} has no node_modules/${dep}: install its dependencies first (npm ci)`);
+    if (Object.keys(depPkg.dependencies ?? {}).length > 0) throw new UsageError(`node_modules/${dep} has dependencies of its own, which the engine bundle does not carry`);
+    files.push(...(await walk(`node_modules/${dep}`, () => true)));
+  }
+  return files;
+}
+
+/**
  * Writes the bundle: `baseline-build.ps1` (every other file pinned by SHA-256 in it), `baseline-steps.ps1`,
- * `plan.json`, `package.json`, `app\` (a copy of `distDir`) and `media\` (the MSI and the two backups).
+ * `plan.json`, `package.json`, `app\` (a copy of `distDir`), `media\` (the MSI and the two backups) and, with
+ * `engineDir`, `engine\` (the libs-js CLI the engine check runs).
  * Replaces an earlier bundle there; refuses a folder that holds anything else.
  */
 export async function writeBaselineBundle(options: BaselineBundleOptions): Promise<BaselineBundle> {
@@ -96,7 +129,7 @@ export async function writeBaselineBundle(options: BaselineBundleOptions): Promi
     const foreign = (await readdir(outDir)).filter((name) => !BUNDLE_ENTRIES.has(name));
     if (foreign.length > 0) throw new UsageError(`${outDir} holds ${foreign.slice(0, 3).join(", ")}, which a baseline bundle does not; move it away first`);
   }
-  for (const entry of ["app", "media", RESULT_FILE]) await rm(join(outDir, entry), { recursive: true, force: true });
+  for (const entry of ["app", "media", ENGINE_BUNDLE_DIR, RESULT_FILE]) await rm(join(outDir, entry), { recursive: true, force: true });
   await mkdir(join(outDir, "media"), { recursive: true });
 
   const f = getFlavor(options.flavor);
@@ -114,12 +147,27 @@ export async function writeBaselineBundle(options: BaselineBundleOptions): Promi
     await copyFile(join(options.distDir, ...file.path.split("\\")), target);
     pinned.push({ path: `app\\${file.path}`, sha256: file.sha256 });
   }
+  if (options.engineDir !== undefined) {
+    for (const rel of await engineFiles(options.engineDir)) {
+      const target = join(outDir, ENGINE_BUNDLE_DIR, ...rel.split("/"));
+      await mkdir(join(target, ".."), { recursive: true });
+      await copyFile(join(options.engineDir, ...rel.split("/")), target);
+      pinned.push({ path: `${ENGINE_BUNDLE_DIR}\\${rel.split("/").join("\\")}`, sha256: await sha256File(target) });
+    }
+  }
   const write = async (name: string, data: string | Buffer, encoding?: "ascii") => {
     await writeFile(join(outDir, name), data, encoding);
     pinned.push({ path: name, sha256: createHash("sha256").update(await readFile(join(outDir, name))).digest("hex") });
   };
   await write("package.json", await readFile(options.packageJson));
-  const plan: BundlePlan = { schema: 1, flavor: options.flavor, msiSha256, minFreeDiskGb: options.minFreeDiskGb, version: options.version };
+  const plan: BundlePlan = {
+    schema: 1,
+    flavor: options.flavor,
+    msiSha256,
+    minFreeDiskGb: options.minFreeDiskGb,
+    version: options.version,
+    ...(options.engineDir !== undefined ? { engineCheck: true } : {}),
+  };
   await write(PLAN_FILE, `${JSON.stringify(plan, null, 2)}\n`);
   const steps = renderBuildStepsScript();
   if (!/^[\x00-\x7f]*$/.test(steps)) throw new Error("the generated steps script is not plain ASCII, which Windows PowerShell 5.1 would misread");
@@ -150,15 +198,15 @@ export async function markFlavorDirty(store: StateStore, flavor: FlavorKey): Pro
   return moved;
 }
 
-export const BASELINE_USAGE = "usage: arashouse baseline build <flavor> [--replace] | arashouse baseline verify <flavor> [--full] [--json]";
+export const BASELINE_USAGE = "usage: arashouse baseline build <flavor> [--replace] [--engine-check <libs-js>] | arashouse baseline verify <flavor> [--full] [--json]";
 
 export interface BaselineCommandDeps {
   readonly host: Pick<HostDriver, "baselineVerify">;
   readonly store: StateStore;
   /** The media check of one flavor (ticket 18). */
   readonly checkMedia: (flavor: FlavorKey) => Promise<FlavorMediaReport>;
-  /** Writes the bundle; `writeBaselineBundle` with the build's own `dist\`. */
-  readonly writeBundle: (flavor: FlavorKey, media: FlavorMediaReport) => Promise<BaselineBundle>;
+  /** Writes the bundle; `writeBaselineBundle` with the build's own `dist\` (and the libs-js checkout of `--engine-check`). */
+  readonly writeBundle: (flavor: FlavorKey, media: FlavorMediaReport, engineDir?: string) => Promise<BaselineBundle>;
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
 }
@@ -173,9 +221,10 @@ function oneFlavor(parsed: ParsedArgs, command: string): FlavorKey {
 
 /** `baseline build`: refuse to overwrite a golden without `--replace`, check the media, mark slots dirty on replace, write the bundle. */
 async function baselineBuild(deps: BaselineCommandDeps, args: readonly string[]): Promise<number> {
-  const parsed = parseArgs(args, { replace: "flag" });
+  const parsed = parseArgs(args, { replace: "flag", "engine-check": "value" });
   const flavor = oneFlavor(parsed, "build");
   const replace = parsed.options.replace === true;
+  const engineDir = typeof parsed.options["engine-check"] === "string" ? parsed.options["engine-check"] : undefined;
   let built: boolean | null = null;
   try {
     const verify = await deps.host.baselineVerify(flavor);
@@ -196,14 +245,14 @@ async function baselineBuild(deps: BaselineCommandDeps, args: readonly string[])
     const moved = await markFlavorDirty(deps.store, flavor);
     deps.out(moved.length > 0 ? `marked ${moved.join(", ")} dirty: each is reset from the new golden before it is handed out` : `no free ${flavor} slot to mark dirty`);
   }
-  const bundle = await deps.writeBundle(flavor, media);
+  const bundle = await deps.writeBundle(flavor, media, engineDir);
   const switches = replace ? " -Replace" : "";
   for (const line of [
     `wrote ${bundle.script} (${bundle.files} files pinned by SHA-256; MSI ${bundle.msiSha256.slice(0, 12)})`,
     "in an elevated Windows PowerShell (Run as administrator):",
     `  powershell -NoProfile -ExecutionPolicy Bypass -File "${bundle.script}"                    # check the bundle, change nothing`,
     `  powershell -NoProfile -ExecutionPolicy Bypass -File "${bundle.script}" -Apply${switches}             # build (no login check)`,
-    `  powershell -NoProfile -ExecutionPolicy Bypass -File "${bundle.script}" -Apply${switches} -AskLicence -AskAdminPassword   # ... and log in as root`,
+    `  powershell -NoProfile -ExecutionPolicy Bypass -File "${bundle.script}" -Apply${switches} -AskLicence -AskAdminPassword   # ... and log in as root${engineDir !== undefined ? `, then export one item with engine ${getFlavor(flavor).libsJsEngine}` : ""}`,
     `then, from WSL: arashouse baseline verify ${flavor} (docs/baselines.md)`,
   ]) {
     deps.out(line);

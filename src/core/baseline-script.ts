@@ -5,6 +5,7 @@
 // DPAPI files), and starts the build (src/broker/baseline-main.ts) under Node, which does the steps.
 
 import { win32 } from "node:path";
+import { ENGINE_BUNDLE_DIR } from "./baseline.js";
 import { FLAVORS, type FlavorKey } from "./flavors.js";
 import { assertValidRoot } from "./guards.js";
 import { DEFAULT_INSTALL_ROOT, buildNames, buildScratch, goldenDir } from "./names.js";
@@ -22,6 +23,8 @@ export interface BundlePlan {
   readonly msiSha256: string;
   readonly minFreeDiskGb: number;
   readonly version: string;
+  /** The bundle carries the import-export-libs-js CLI under `engine\` for the engine check (`--engine-check`). */
+  readonly engineCheck?: boolean;
 }
 
 export const PLAN_FILE = "plan.json";
@@ -43,7 +46,8 @@ export interface BuildScriptOptions {
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
-const BUNDLE_PATH = /^[A-Za-z0-9_.-]+(\\[A-Za-z0-9_.-]+)*$/;
+// `@` for the scoped packages of the engine CLI (`engine\node_modules\@xmldom\...`).
+const BUNDLE_PATH = /^[A-Za-z0-9_.@-]+(\\[A-Za-z0-9_.@-]+)*$/;
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 
 export function renderBaselineBuildScript(options: BuildScriptOptions): string {
@@ -74,6 +78,8 @@ export function renderBaselineBuildScript(options: BuildScriptOptions): string {
 #   baseline-build.ps1 -Apply -LicenceFile <f> -AdminPasswordFile <f>
 #                                                        ... the same, from files of ConvertFrom-SecureString (your own DPAPI); the
 #                                                        licence file holds the key, or the JSON {lic_key, act_key, lic_type, company}
+#                                                        with the login, a bundle written with --engine-check also exports one item
+#                                                        with the flavor's libs-js engine (${f.libsJsEngine}) from the instance
 #   baseline-build.ps1 -Apply -Replace                   rebuild over an existing golden (arashouse marked its slots dirty)
 #   baseline-build.ps1 -Apply -Cleanup                   remove what a failed build left of the throw-away instance, nothing else
 #
@@ -117,8 +123,12 @@ foreach ($p in $Pins) {
     $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
     if ($h -ne $p.sha256) { Stop-Build 3 "$($p.path) does not match the SHA-256 this script was generated with; run arashouse baseline build again" }
 }
-$extra = @(Get-ChildItem -LiteralPath (Join-Path $Bundle 'app') -Recurse -File | Where-Object { $rel = $_.FullName.Substring($Bundle.Length + 1); -not ($Pins | Where-Object { $_.path -ieq $rel }) })
-if ($extra.Count -gt 0) { Stop-Build 3 "the bundle's app folder holds a file this script does not pin: $($extra[0].FullName)" }
+foreach ($folder in @('app', '${ENGINE_BUNDLE_DIR}')) {
+    $dir = Join-Path $Bundle $folder
+    if (-not (Test-Path -LiteralPath $dir)) { continue }
+    $extra = @(Get-ChildItem -LiteralPath $dir -Recurse -File -Force | Where-Object { $rel = $_.FullName.Substring($Bundle.Length + 1); -not ($Pins | Where-Object { $_.path -ieq $rel }) })
+    if ($extra.Count -gt 0) { Stop-Build 3 "the bundle's $folder folder holds a file this script does not pin: $($extra[0].FullName)" }
+}
 
 if (-not $Apply) {
     Write-Host "would do: build the $Flavor golden at ${goldenDir(options.flavor, root)} (see the header of this script); run again with -Apply, elevated"

@@ -15,7 +15,8 @@ import { repoRoot } from "./helpers.js";
  * token, compares it, and puts it in the client's pipe envelope. The baseline build (ticket 24)
  * hands its own SQL login passwords to the restore step's stdin and the admin password's MD5 to its
  * OAuth request, reads a licence given as a whole <License> element, and looks for any of its
- * secrets in the configs it copied to golden.
+ * secrets in the configs it copied to golden. Its engine check (ticket 26) writes the admin password
+ * to the libs-js CLI's stdin (`--password-stdin`).
  */
 const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/edits.ts": 1,
@@ -23,7 +24,7 @@ const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/lease-files.ts": 1,
   "src/cli/run.ts": 1,
   "src/broker/token.ts": 3,
-  "src/broker/build-system.ts": 3,
+  "src/broker/build-system.ts": 4,
   "src/broker/baseline-build.ts": 2,
 };
 

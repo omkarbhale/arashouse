@@ -11,7 +11,7 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 
 | command | what it does |
 |---|---|
-| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json]` | Leases a clean slot of the flavor; `--agent` starts its agent service too. |
+| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]` | Leases a clean slot of the flavor; `--agent` starts its agent service too; `--password-fd` writes the password to a descriptor. |
 | `arashouse return <lease_id> [--wait[=<seconds>]]` | Gives the lease back; its slot is discarded. |
 | `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]]` | The same, by slot name; the lease id is required (ABA protection). |
 | `arashouse status [--json]` | Every slot, its holder and lease age, totals per flavor, `max_active` in use. |
@@ -53,7 +53,16 @@ has an agent yet (ticket 33b), so `get --agent` is refused (exit 7) and the slot
 With `--json`, stdout is the lease contract and nothing else (`docs/schemas/get.schema.json`); any
 human text goes to stderr. It is the one output that shows the lease's password, once. There is no
 `--password-stdout`. Without `--json`, `get` prints the slot, URL, database, user and lease id, and
-not the password: reach it through `run`.
+not the password: reach it through `run`. The password is `root`'s and `admin`'s on the slot, and dies
+with the lease (`docs/lease-credentials.md`).
+
+`--password-fd <n>` writes the password and a newline to descriptor `<n>` instead, for a caller that
+does not want it on stdout (`arashouse get 23 --holder t --json --password-fd 3 3>pw`); `--json` then
+leaves `password` out. `<n>` is 3 or more and must be one the command inherited: 0 to 2 are refused,
+and so is a descriptor that is not open or is Node's own (its event loop opens descriptors from the
+lowest free number, so one the caller did not open is never written to). It is checked before the
+lease is taken, so a mistake costs no slot (exit 2). If the write fails after the lease is taken, the
+lease is returned at once.
 
 ### `return`
 
@@ -224,7 +233,7 @@ refused. `enable` sends a disabled slot to `dirty`, so it is reset before it is 
 
 ## Output rules
 
-- No command prints a password except `get --json`, once. `--verbose` never adds a secret.
+- No command prints a password except `get --json`, once (or `get --password-fd`, to its descriptor). `--verbose` never adds a secret.
 - An error is one line on stderr, `arashouse: <message>`, then a `hint:` line. Every message passes
   through `redact`. The stack is printed only when `ARASHOUSE_DEBUG=1`.
 - JSON goes to stdout, pretty-printed; human notes that accompany JSON go to stderr.

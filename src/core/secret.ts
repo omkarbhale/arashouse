@@ -1,8 +1,9 @@
 // The Secret value type. Six kinds exist: the SQL `sa` password (ticket 22), licence keys
 // (ticket 23), per-lease Aras passwords (ticket 34), a slot's SQL login passwords, which the
 // config edit list writes into the slot's `InnovatorServerConfig.xml` (tickets 19 and 25), the
-// broker's client token (ticket 20), and the shipped backup's Aras administrator password, which the
-// baseline build logs in with (ticket 24). A Secret prints, serialises and inspects as
+// broker's client token (ticket 20), and an Aras login that is not a lease's: the shipped backup's
+// administrator password, which the baseline build logs in with (ticket 24), and a free slot's random
+// `root` password (ticket 34). A Secret prints, serialises and inspects as
 // `[redacted]`; the only way to read it is `reveal()`, which only the files in the allowlist of
 // test/reveal-allowlist.test.ts may call. Secrets come from a hidden prompt or from the environment
 // of a process started for that purpose, never from a flag.

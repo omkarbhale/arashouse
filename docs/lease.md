@@ -27,7 +27,9 @@ handed out until it is `free` again; whoever returns a lease may assume its slot
    calls therefore never receive the same slot: the loser looks again.
 4. After the reservation: a password is generated (128 bits, URL-safe) and stored in the secret store
    as `lease-<lease_id>`; the slot's stamp is written with the lease id (so `doctor --rebuild-state`
-   can recover the lease); the host sets the credentials from the handle (`setLeaseCredentials`); the
+   can recover the lease); the host sets the credentials from the handle (`setLeaseCredentials`:
+   `root` and `admin` get the password, `docs/lease-credentials.md`; an answer that is not `ok` fails
+   the lease too); the
    URL is looked up. If any of this fails the lease is abandoned: the password is deleted and the slot
    goes to `dirty` (or `quarantined` for a `Quarantine` error, and a reset worker is started for a
    dirty one), and the call fails with the error's code.

@@ -13,12 +13,15 @@ import { repoRoot } from "./helpers.js";
  * its child's environment; the config edit list writes the licence key and the slot's SQL login
  * passwords into the slot's rendered config files. The broker's token module writes its client
  * token, compares it, and puts it in the client's pipe envelope. The baseline build (ticket 24)
- * hands its own SQL login passwords to the restore step's stdin and the admin password's MD5 to its
- * OAuth request, reads a licence given as a whole <License> element, and looks for any of its
+ * hands its own SQL login passwords to the restore step's stdin and the admin password to its
+ * OAuth request (through aras-http.ts), reads a licence given as a whole <License> element, and looks for any of its
  * secrets in the configs it copied to golden. Its engine check (ticket 26) writes the admin password
  * to the libs-js CLI's stdin (`--password-stdin`). The broker's DPAPI store hands a stored secret to its
  * PowerShell step's stdin, and the provision hands a slot's two SQL login passwords to the `database`
- * step's stdin (ticket 25).
+ * step's stdin (ticket 25). For the per-lease credentials (ticket 34), `BrokerHost` puts the lease's password on
+ * the broker request line, `get --password-fd` writes it to the caller's descriptor, and the broker's Aras client
+ * (shared with the baseline build's login check) sends a password's MD5 to the OAuth server and the token in the
+ * `Authorization` header of the AML edit.
  */
 const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/edits.ts": 1,
@@ -26,7 +29,10 @@ const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/lease-files.ts": 1,
   "src/cli/run.ts": 1,
   "src/broker/token.ts": 3,
-  "src/broker/build-system.ts": 4,
+  "src/broker/build-system.ts": 3,
+  "src/broker/aras-http.ts": 2,
+  "src/host/broker-host.ts": 1,
+  "src/cli/password-fd.ts": 1,
   "src/broker/baseline-build.ts": 2,
   "src/broker/dpapi-store.ts": 1,
   "src/broker/slot-system.ts": 2,

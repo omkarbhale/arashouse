@@ -10,10 +10,14 @@ import type { SlotStep } from "./slot-steps.js";
 /** Runs one secret step of `slot-steps.ps1` with its request on stdin. */
 export type SecretStepRunner = (step: Extract<SlotStep, "secret-put" | "secret-get" | "secret-delete">, request: object) => Promise<Record<string, unknown>>;
 
-/** The kind of the secret a stored name holds: `licence-<line>` a licence key, `slot-<key>-<NN>-dbo|reg` a slot's SQL login password. */
+/**
+ * The kind of the secret a stored name holds: `licence-<line>` a licence key, `slot-<key>-<NN>-dbo|reg` a slot's SQL
+ * login password, `slot-<key>-<NN>-root` a free slot's random Aras `root` password.
+ */
 export function storedSecretKind(name: string): SecretKind {
   if (/^licence-/.test(name)) return "licence";
   if (/^slot-[a-z0-9]+-\d{2}-(dbo|reg)$/.test(name)) return "sql-login";
+  if (/^slot-[a-z0-9]+-\d{2}-root$/.test(name)) return "aras-login";
   throw new Error(`no stored secret is named like "${name}"`);
 }
 

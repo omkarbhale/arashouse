@@ -350,6 +350,8 @@ export class FakeHost implements HostDriver {
       () => {
         const state = this.stateOf(slot);
         state.dbMarker = backup.hash;
+        // The golden database carries none of a lease's credentials (ticket 34).
+        state.credentials = null;
         return { ok: true, detail: `database of ${slotId(slot)} restored from golden` };
       },
     );

@@ -46,6 +46,8 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
   // A reset's restore took 0.5 to 1.7 s for a 77 MB 12sp9 backup (spike 06, ticket 31); the golden check and a second
   // restore after kill_connections add seconds. The bound leaves room for a larger backup on a busy disk.
   resetDatabase: 10 * 60_000,
+  // A login, two edits and a login again through the slot's server: seconds when warm, up to 2 minutes each when cold.
+  setLeaseCredentials: 10 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

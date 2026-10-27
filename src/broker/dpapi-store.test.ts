@@ -43,5 +43,6 @@ describe("the broker's DPAPI secret store", () => {
     await expect(store.put("licence-14", Secret.of("not-a-licence-0000", "sql-login"))).rejects.toThrow(/must be a licence secret/);
     expect(storedSecretKind("licence-14")).toBe("licence");
     expect(storedSecretKind("slot-35-07-reg")).toBe("sql-login");
+    expect(storedSecretKind("slot-12sp9-01-root")).toBe("aras-login");
   });
 });

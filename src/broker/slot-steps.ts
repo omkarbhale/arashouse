@@ -29,6 +29,7 @@ import {
   goldenDir,
   slotDir,
   slotLoginSecretName,
+  slotRootSecretName,
   vaultDir,
   webAlias,
 } from "../core/names.js";
@@ -78,6 +79,7 @@ function checkNameRules(root: string): void {
     [databaseFiles(databaseName(ref), root).data, `${root}\\sqldata\\arashouse_${ref.flavor}_07.mdf`],
     [databaseFiles(databaseName(ref), root).log, `${root}\\sqldata\\arashouse_${ref.flavor}_07_log.ldf`],
     [slotLoginSecretName(ref, "dbo"), `slot-${ref.flavor}-07-dbo`],
+    [slotRootSecretName(ref), `slot-${ref.flavor}-07-root`],
   ];
   for (const [derived, scripted] of checks) {
     if (derived !== scripted) throw new Error(`a name rule changed (${derived}); update slot-steps.ts with names.ts`);
@@ -154,7 +156,7 @@ if (${list(SECRET_STEPS)} -ccontains $Step) {
     $SqlData = Join-Path $Root 'sqldata'
     $DataFile = Join-Path $SqlData "$Database.mdf"
     $LogFile = Join-Path $SqlData "$($Database)_log.ldf"
-    $SlotSecrets = @("slot-$Flavor-$NN-dbo", "slot-$Flavor-$NN-reg")
+    $SlotSecrets = @("slot-$Flavor-$NN-dbo", "slot-$Flavor-$NN-reg", "slot-$Flavor-$NN-root")
 }
 
 ${PS_PATHS_AND_PRINTS}

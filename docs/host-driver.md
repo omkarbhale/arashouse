@@ -9,7 +9,9 @@ tested without Windows. Two implementations: `FakeHost` (`src/host/fake.ts`, off
 - Each call returns `{ ok, ms, detail }` or throws a `HostError` of kind `Retryable`, `Quarantine`,
   `Refused` or `Unreachable`. A guard refusal is `Refused`. `healthCheck` and `baselineVerify` report a
   failure as `ok: false`, not as an error.
-- A secret is never an argument: `setLeaseCredentials` takes a `SecretRef` handle (ticket 23).
+- A secret is never an argument: `setLeaseCredentials` takes a `SecretRef` handle (ticket 23). `FakeHost`
+  keeps the handle (and forgets it when the database is reset); `BrokerHost` looks it up in the lease-file
+  store it is given and sends the password on the broker request line (`docs/lease-credentials.md`).
 
 ## FakeHost
 

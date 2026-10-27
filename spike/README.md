@@ -52,14 +52,31 @@ Run scripts with `powershell -ExecutionPolicy Bypass -File C:\aras_installations
 | 4b | `10-baseline-install.ps1 -Suffix c -DatabaseMode None -Apply` | yes | Aras root password | ticket 05 step 3: does `INSTALL_DATABASE=0` work (then restore the `.bak` by hand or with 20) |
 | 5 | `20-clone-slot.ps1 -Apply` | yes | `sa`, Aras root password | ticket 05 step 5: second instance side by side |
 | 6 | `30-licence-reuse.ps1 -Apply` | yes | Aras root password, licence key, activation key | ticket 05 step 6: one key for both slots, key needed for login |
-| 7 | `40-measure.ps1 -Apply [-TestDefenderExclusion]` | yes | `sa`, Aras root password | ticket 06 checks 2, 3(a), 6, 7 and sizes |
-| 8 | `50-quiesce.ps1 -Apply` | yes | none (the agent service must exist from step 5) | ticket 06 checks 1 and 5 |
-| 9 | `60-sql-restore-owner.ps1 -Apply` | yes | `sa` | ticket 06 checks 3(b), 4: owner restore, stored-procedure fallback, fix-ups |
+| 7 | `40-measure.ps1 -Apply [-TestDefenderExclusion]` | yes | `sa` (none with `-SqlAuth Windows`), Aras root password | ticket 06 checks 2, 3(a), 6, 7 and sizes |
+| 8 | `50-quiesce.ps1 -Apply` | yes | Aras root password | ticket 06 checks 1 and 5 (a stand-in service of the slot's name is used when the clone has no agent) |
+| 9 | `60-sql-restore-owner.ps1 -Apply` | yes | `sa` (none with `-SqlAuth Windows`), Aras root password | ticket 06 checks 3(b), 4: owner restore (also over an open connection), stored-procedure fallback, fix-ups, per-lease password routes |
 | 10 | `90-teardown.ps1 -Apply` | yes | `sa` | removes everything with a spike prefix |
 | 11 | `00-preflight.ps1 -Apply` | no | none | `denyListUnchangedSinceBaseline` must be `true` |
 
 Steps 3b to 6 are ticket 05, steps 7 to 9 are ticket 06 and may share its sitting. Ticket 07 repeats steps 3, 3b, 4, 5 and 10 with
 `-Flavor 23`; ticket 08 with `-Flavor 35` when its media exists.
+
+## The ticket 06 sitting
+
+Ticket 05 tore everything down, so ticket 06 rebuilds the baseline and the clone first, then measures. `sa` was refused in ticket 05, so
+every SQL step uses the elevated user's Windows login (`-SqlAuth Windows`); nothing prompts for `sa`. The Aras login password comes from
+`spike\handoff\aras.dpapi` (left by ticket 05) or a hidden prompt. Workers never raise UAC: the elevated steps run in three parts, each
+a single PowerShell file with the SHA-256 of every spike script it calls pinned inside (it refuses to run if one differs):
+
+| Part | Who | Runs | Changes |
+|---|---|---|---|
+| 1 | firstmate's elevated gate | `00-preflight -Apply`, `10-baseline-install -SqlAuth Windows -Apply`, `20-clone-slot -SqlAuth Windows -Apply` | baseline `a` and clone `b`: trees, IIS apps and pools, databases and logins, vault folders (spike names only) |
+| 2 | the captain (a licence step) | `30-licence-reuse -LicenceSourceConfig 'C:\Program Files (x86)\Aras12\Innovator\InnovatorServerConfig.xml' -Apply` | the `<License>` of both spike configs; the captain's config is only read |
+| 3 | firstmate's elevated gate | `40-measure -SqlAuth Windows -Apply [-TestDefenderExclusion]`, `50-quiesce -Apply`, `60-sql-restore-owner -SqlAuth Windows -Apply`, then always `90-teardown -SqlAuth Windows -Apply` and `00-preflight -Apply` | scratch copies, databases, logins, a local user and a stand-in service (all spike names), a temporary Defender exclusion; then removes everything with a spike prefix |
+
+- `-TestDefenderExclusion` adds a Defender exclusion for `C:\aras_installations\spike` for the second set of mirror timings and removes
+  it afterwards (90 removes a leftover).
+- A step that fails part way still writes the facts it gathered, with `failedWith`, to `out\`. If part 1 fails, run 90 and 00.
 
 ## Things the first sitting is expected to learn (the scripts record them; they do not guess)
 

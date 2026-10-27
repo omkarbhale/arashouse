@@ -21,29 +21,64 @@ try {
     $slot = Assert-SpikePath -Path (Join-Path $script:SpikeRoot "slot-$Flavor-$SlotSuffix") -Mode Write
     Assert-SpikeName -Kind Alias -Name $names.Alias
     Assert-SpikeName -Kind Service -Name $names.Service
-    $userName = "arashouse_spike_nonadmin"
+    # A local user name has at most 20 characters.
+    $userName = 'arashouse_spike_na'
     Assert-SpikeName -Kind Login -Name $userName
     $cloneJson = Join-Path $script:SpikeOutDir "20-clone-slot-$Flavor-$SlotSuffix.json"
 
     Start-Spike -Name "50-quiesce-$Flavor" -Apply $Apply.IsPresent -NeedsElevation
-    $ctx = @{ edited = @(); layout = @(); files = [ordered]@{}; pw = $null; dbId = $null }
+    $ctx = @{ edited = @(); layout = @(); locked = @(); pw = $null; dbId = $null }
 
     function Get-LockedCount([string[]]$files) {
+        # A file is locked when an exclusive open fails because another process has it open.
         $locked = 0
         foreach ($f in $files) {
-            try { $s = [IO.File]::Open($f, 'Open', 'ReadWrite', 'None'); $s.Dispose() } catch [IO.IOException] { $locked++ } catch { }
+            try { $st = [IO.File]::Open($f, 'Open', 'Read', 'None'); $st.Dispose() } catch [IO.IOException] { $locked++ } catch { }
         }
         return $locked
     }
 
     function Wait-Unlocked([string[]]$files) {
-        # Seconds until no candidate file is locked, or $null on timeout.
+        # Seconds until none of $files is locked, or $null on timeout.
         $sw = [Diagnostics.Stopwatch]::StartNew()
         while ($sw.Elapsed.TotalSeconds -lt $LockWaitSeconds) {
             if ((Get-LockedCount $files) -eq 0) { return [math]::Round($sw.Elapsed.TotalSeconds, 1) }
             Start-Sleep -Milliseconds 500
         }
         return $null
+    }
+
+    function Get-LockSnapshot {
+        # Tries every file of the slot tree (a sample of server bin, OAuth App_Data and the OAuth and Vault folder roots found nothing
+        # locked in the first ticket 06 run). Remembers the locked files for Wait-Unlocked; records counts and up to 40 relative paths.
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $all = 0
+        $locked = New-Object System.Collections.ArrayList
+        foreach ($f in [IO.Directory]::EnumerateFiles($slot, '*', [IO.SearchOption]::AllDirectories)) {
+            $all++
+            try { $st = [IO.File]::Open($f, 'Open', 'Read', 'None'); $st.Dispose() } catch [IO.IOException] { [void]$locked.Add($f) } catch { }
+        }
+        $ctx.locked = @($locked)
+        return [ordered]@{
+            files = $all; locked = $locked.Count; scanSeconds = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+            lockedPaths = @($locked | Select-Object -First 40 | ForEach-Object { $_.Substring($slot.Length).TrimStart('\') })
+        }
+    }
+
+    function Get-MirrorPreview([string[]]$exclude) {
+        # robocopy /L: what a /MIR of the baseline over the slot would copy or delete, as relative paths with robocopy's class (first 60).
+        $rcArgs = @($golden, $slot, '/MIR', '/L', '/XJ', '/R:0', '/W:0', '/NJH', '/NJS', '/NDL', '/NS', '/FP', '/NP')
+        if ($exclude.Count -gt 0) { $rcArgs += '/XF'; foreach ($f in $exclude) { $rcArgs += (Assert-SpikePath -Path $f -Mode Write) } }
+        $rows = New-Object System.Collections.ArrayList
+        foreach ($line in (& robocopy.exe @rcArgs)) {
+            $t = $line.Trim()
+            $i = $t.IndexOf('C:\', [StringComparison]::OrdinalIgnoreCase)
+            if ($i -lt 0) { continue }
+            $path = $t.Substring($i)
+            $rel = if ($path.StartsWith($slot, [StringComparison]::OrdinalIgnoreCase)) { $path.Substring($slot.Length) } else { $path.Substring($golden.Length) }
+            [void]$rows.Add([ordered]@{ class = $t.Substring(0, $i).Trim(); path = $rel.TrimStart('\') })
+        }
+        return [ordered]@{ count = $rows.Count; first = @($rows | Select-Object -First 60) }
     }
 
     function Set-AppOffline([bool]$on) {
@@ -53,35 +88,6 @@ try {
             if ($on) { [IO.File]::WriteAllText($file, '<html><body>offline for spike</body></html>') }
             elseif (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
         }
-    }
-
-    # Folders whose files a running slot may hold open: the Innovator server's assemblies (ASP.NET shadow-copies them, so they are
-    # expected unlocked), generated method DLLs, temp and logs; the ASP.NET Core OAuth and Vault servers load their DLLs in place.
-    $candidateRoots = [ordered]@{
-        serverBin = @('Innovator\Server\bin', '*'); serverDll = @('Innovator\Server\dll', '*'); serverTemp = @('Innovator\Server\temp', '*')
-        serverLogs = @('Innovator\Server\logs', '*'); oauthDlls = @('OAuthServer', '*.dll'); oauthAppData = @('OAuthServer\App_Data', '*')
-        vaultDlls = @('VaultServer', '*.dll')
-    }
-
-    function Get-Candidates {
-        # Up to 60 files per candidate root, keyed by the root's label.
-        $found = [ordered]@{}
-        foreach ($k in $candidateRoots.Keys) {
-            $p = Join-Path $slot $candidateRoots[$k][0]
-            $found[$k] = @()
-            if (-not (Test-Path -LiteralPath $p)) { continue }
-            $recurse = $candidateRoots[$k][1] -eq '*'
-            $found[$k] = @(Get-ChildItem -LiteralPath $p -File -Recurse:$recurse -Force -Filter $candidateRoots[$k][1] -ErrorAction SilentlyContinue | Select-Object -First 60 | ForEach-Object { $_.FullName })
-        }
-        return $found
-    }
-
-    function Get-AllCandidates { $all = @(); foreach ($k in $ctx.files.Keys) { $all += $ctx.files[$k] }; return $all }
-
-    function Get-LockedByRoot {
-        $row = [ordered]@{}
-        foreach ($k in $ctx.files.Keys) { $row[$k] = [ordered]@{ files = $ctx.files[$k].Count; locked = (Get-LockedCount $ctx.files[$k]) } }
-        return $row
     }
 
     function Invoke-WarmUp {
@@ -111,15 +117,13 @@ try {
         $ctx.dbId = Get-SpikeDbId -ConfigPath (Find-SpikeFile -Root $slot -Name 'InnovatorServerConfig.xml')
         Restart-SpikePools -Alias $names.Alias
         Add-SpikeFact 'warmLoggedIn' (Invoke-WarmUp)
-        $ctx.files = Get-Candidates
-        Add-SpikeFact 'candidateLockFiles' @(Get-AllCandidates).Count
-        Add-SpikeFact 'lockedBeforeAnyQuiesce' (Get-LockedByRoot)
+        Add-SpikeFact 'lockedWhileServing' (Get-LockSnapshot)
     }
 
-    Invoke-SpikeStep 'quiesce method 1: app_offline.htm in every application folder; seconds until no candidate file is locked (null = still locked at the timeout)' {
+    Invoke-SpikeStep 'quiesce method 1: app_offline.htm in every application folder; seconds until no file locked while serving is still locked (null = still locked at the timeout); then every file again' {
         Set-AppOffline $true
-        Add-SpikeFact 'appOfflineSecondsToUnlocked' (Wait-Unlocked (Get-AllCandidates))
-        Add-SpikeFact 'appOfflineLockedAtEnd' (Get-LockedByRoot)
+        Add-SpikeFact 'appOfflineSecondsToUnlocked' (Wait-Unlocked $ctx.locked)
+        Add-SpikeFact 'lockedUnderAppOffline' (Get-LockSnapshot)
     }
 
     Invoke-SpikeStep 'mirror the baseline over the slot while app_offline is up (the edited config files are excluded so the slot keeps its identity), then remove app_offline and check the instance serves the mirrored tree without a recycle' {
@@ -130,6 +134,7 @@ try {
         Set-AppOffline $true
         # app_offline.htm is not in the baseline, so /MIR would delete it and bring the slot online mid-mirror: exclude it too.
         $offline = @($ctx.layout | ForEach-Object { Join-Path (Join-Path $slot $_.physicalRelative) 'app_offline.htm' })
+        Add-SpikeFact 'mirrorPreview' (Get-MirrorPreview ($ctx.edited + $offline))
         $r = Invoke-SpikeRobocopy -Source $golden -Destination $slot -Mirror -Threads 16 -ExcludeFiles ($ctx.edited + $offline)
         Add-SpikeFact 'mirrorWhileOfflineSeconds' $r.seconds
         Add-SpikeFact 'mirrorWhileOfflineExit' $r.exitCode
@@ -140,17 +145,21 @@ try {
         Add-SpikeFact 'firstRequestAfterOfflineStatus' $status
         Add-SpikeFact 'markerGoneWithoutRecycle' ((Get-SpikeHttpStatus "http://localhost/$($names.Alias)/Client/spike-marker.txt") -eq 404)
         Add-SpikeFact 'loginAfterMirrorWithoutRecycle' (Test-SpikeArasLogin -Alias $names.Alias -DatabaseId $ctx.dbId -ArasPassword $ctx.pw)
-        if ($script:SpikeLastLoginError) { Add-SpikeFact 'loginAfterMirrorRefusal' $script:SpikeLastLoginError }
+        if ($script:SpikeLastLoginError) {
+            Add-SpikeFact 'loginAfterMirrorRefusal' $script:SpikeLastLoginError
+            Restart-SpikePools -Alias $names.Alias
+            Add-SpikeFact 'loginAfterMirrorAndRecycle' (Test-SpikeArasLogin -Alias $names.Alias -DatabaseId $ctx.dbId -ArasPassword $ctx.pw)
+            if ($script:SpikeLastLoginError) { Add-SpikeFact 'loginAfterMirrorAndRecycleRefusal' $script:SpikeLastLoginError }
+        }
     }
 
-    Invoke-SpikeStep 'quiesce method 2: stop the pools instead; seconds until no candidate file is locked; start them again' {
+    Invoke-SpikeStep 'quiesce method 2: stop the pools instead; seconds until no file locked before the stop is still locked; every file again; start them again' {
         Restart-SpikePools -Alias $names.Alias
         [void](Invoke-WarmUp)
-        $ctx.files = Get-Candidates
-        Add-SpikeFact 'lockedBeforePoolStop' (Get-LockedByRoot)
+        Add-SpikeFact 'lockedBeforePoolStop' (Get-LockSnapshot)
         Restart-SpikePools -Alias $names.Alias -Stop
-        Add-SpikeFact 'poolStopSecondsToUnlocked' (Wait-Unlocked (Get-AllCandidates))
-        Add-SpikeFact 'poolStopLockedAtEnd' (Get-LockedByRoot)
+        Add-SpikeFact 'poolStopSecondsToUnlocked' (Wait-Unlocked $ctx.locked)
+        Add-SpikeFact 'lockedAfterPoolStop' (Get-LockSnapshot)
         Restart-SpikePools -Alias $names.Alias -Start
     }
 

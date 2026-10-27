@@ -44,6 +44,14 @@ try {
         return $r[0].owner
     }
 
+    function Find-InnerException($exception, [type]$type) {
+        # A .NET exception thrown from a method call reaches the catch block wrapped (MethodInvocationException); the first run of
+        # ticket 06 failed reading .Number from the wrapper. Returns the first exception of $type in the chain, or $null.
+        $e = $exception
+        while ($e -and -not ($e -is $type)) { $e = $e.InnerException }
+        return $e
+    }
+
     function Invoke-AsPool([string]$catalog, [string]$sql) {
         # Runs a statement as the pool login; returns seconds and, on failure, the SQL error number and a short message.
         $c = New-SpikeSqlConnection -Catalog $catalog -Auth Login -Password $ctx.poolPw -LoginName $PoolLogin
@@ -53,7 +61,11 @@ try {
             $message = ''
             $sw = [Diagnostics.Stopwatch]::StartNew()
             try { Invoke-SpikeSql -Connection $c -Query $sql | Out-Null }
-            catch [Data.SqlClient.SqlException] { $ok = $false; $number = $_.Exception.Number; $message = $_.Exception.Message }
+            catch [Data.SqlClient.SqlException] {
+                $ok = $false
+                $sqlError = Find-InnerException $_.Exception ([Data.SqlClient.SqlException])
+                if ($sqlError) { $number = $sqlError.Number; $message = $sqlError.Message } else { $number = -1; $message = $_.Exception.Message }
+            }
             $sw.Stop()
             if ($message.Length -gt 160) { $message = $message.Substring(0, 160) }
             return [ordered]@{ ok = $ok; seconds = [math]::Round($sw.Elapsed.TotalSeconds, 2); errorNumber = $number; message = $message }
@@ -266,7 +278,8 @@ END
             try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
             try { $res = $req.GetResponse() }
             catch [Net.WebException] {
-                $res = $_.Exception.Response
+                $webError = Find-InnerException $_.Exception ([Net.WebException])
+                $res = if ($webError) { $webError.Response } else { $null }
                 if (-not $res) { return [ordered]@{ ok = $false; httpStatus = 0; fault = $_.Exception.Message } }
             }
             $status = [int]$res.StatusCode

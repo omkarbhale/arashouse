@@ -21,3 +21,6 @@ export * from "./governor.js";
 export * from "./lease.js";
 export * from "./lease-files.js";
 export * from "./reset.js";
+export * from "./config-text.js";
+export * from "./edits.js";
+export * from "./edit-lists.js";

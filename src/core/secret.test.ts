@@ -8,6 +8,7 @@ const VALUES: Record<SecretKind, string> = {
   "sql-sa": ["sa", "pw", "-", "Zq7", "!x"].join(""),
   licence: ["LK", "-", "9F2A", "-", "77C1", "-", "XQ3B"].join(""),
   "lease-password": ["lp", "_", "Rk4t9V", "-", "w1Yd_3m"].join(""),
+  "sql-login": ["sl", "#", "Hq2", "-", "v8Pn", "!e"].join(""),
 };
 
 afterEach(() => vi.restoreAllMocks());

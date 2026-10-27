@@ -56,7 +56,7 @@ restarted, the call timed out) is finished by the next one, which reuses the sto
 **Rollback.** A failure from `folders` on runs the destroy steps below, re-checks the deny-list, and answers the
 step's error with what the rollback left, if anything. A plain error is `Retryable`; a `HostError` keeps its kind.
 
-**One at a time.** The broker runs one `provisionSlot`, `destroySlot` or `resetDatabase` per slot at a time; a second is `Retryable`.
+**One at a time.** The broker runs one `provisionSlot`, `destroySlot`, `startSlot`, `stopSlot` or `resetDatabase` per slot at a time; a second is `Retryable`.
 Both verbs may take 30 minutes (`VERB_TIMEOUT_MS`).
 
 ## `destroySlot`

@@ -1,4 +1,4 @@
-// The CLI's stable exit codes (documented in docs/lease.md; ticket 15 repeats them in docs/cli.md).
+// The CLI's stable exit codes (documented in docs/lease.md and docs/cli.md).
 // 1 is any other failure. 8 is `SECRET_REQUIRED_EXIT_CODE` (licence.ts): a step needs a secret and no TTY can ask.
 
 export const EXIT_CODES = {

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/flavors.schema.json",
+  "title": "arashouse flavors --json",
+  "description": "One entry per flavor, in registry order: what it is, the libs-js engine to use with it, its slot counts, and whether its media and a verified baseline are present.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["flavors"],
+  "properties": {
+    "flavors": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["flavor", "release", "aras", "engine", "slots", "media", "baseline"],
+        "properties": {
+          "flavor": { "enum": ["12sp9", "23", "35"] },
+          "release": { "type": "string", "minLength": 1, "description": "The Aras release the key stands for, for example Release 23 (14.0 SP9)." },
+          "aras": { "type": ["string", "null"], "description": "The server build, for example 14.0.9.36073; null until the flavor's baseline has been built." },
+          "engine": { "type": "string", "minLength": 1, "description": "The import-export-libs-js --engine for this server; `run` sets it as ARAS_PKG_ENGINE." },
+          "slots": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["free", "leased", "total"],
+            "properties": {
+              "free": { "type": "integer", "minimum": 0 },
+              "leased": { "type": "integer", "minimum": 0 },
+              "total": { "type": "integer", "minimum": 0 }
+            }
+          },
+          "media": { "type": ["boolean", "null"], "description": "Every expected installer file is in media/<flavor>/, loose or inside a CD-image zip; null when the media folder cannot be found." },
+          "baseline": { "type": ["boolean", "null"], "description": "The golden baseline verifies (fast level); null when the host could not be asked." }
+        }
+      }
+    }
+  }
+}

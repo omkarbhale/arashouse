@@ -2,7 +2,7 @@
 
 `src/core/lease.ts` is the lease core, modelled on `treehouse get/return/status`. There is no daemon:
 every operation takes the state lock (`src/core/store.ts`), reads the state and writes it back. The
-CLI that wraps it is ticket 15; the reset that makes a returned slot free again is ticket 14.
+CLI that wraps it is in `docs/cli.md`; the reset that makes a returned slot free again is ticket 14.
 
 > "The philosophy is that Aras are disposable, and anything durable should be taken out by whoever
 > took the lease before giving it back."
@@ -76,7 +76,7 @@ apart but not to return or run against one. The state file and the events log ho
 
 ## Exit codes
 
-Stable; ticket 15 repeats them in `docs/cli.md`. `src/core/exit-codes.ts` is the source.
+Stable; `docs/cli.md` repeats them. `src/core/exit-codes.ts` is the source.
 
 | code | meaning |
 |---|---|

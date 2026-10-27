@@ -1,0 +1,361 @@
+// The CLI surface (ticket 15), tested by spawning the built binary against the fake host
+// (`ARASHOUSE_HOST=fake`). Each test gets its own ARASHOUSE_HOME, seeded with free slots.
+
+import { execFile } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { EXIT_CODES } from "../src/core/exit-codes.js";
+import type { FlavorKey } from "../src/core/flavors.js";
+import { SECRET_REQUIRED_EXIT_CODE } from "../src/core/licence.js";
+import { StateStore } from "../src/core/store.js";
+import { buildZip } from "../src/core/zip.fixture.js";
+import { fakeGoldenHash } from "../src/host/fake.js";
+import { repoRoot } from "./helpers.js";
+
+const BIN = join(repoRoot, "dist", "cli", "index.js");
+
+// Each test spawns the binary several times; under the full suite's load that outruns the default.
+vi.setConfig({ testTimeout: 60_000 });
+
+interface Result {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+let home: string;
+let media: string;
+/** Every stdout and stderr the binary printed in the current test, for the password grep. */
+let printed: string[];
+
+function cli(args: readonly string[], env: NodeJS.ProcessEnv = {}): Promise<Result> {
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [BIN, ...args],
+      {
+        env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ...env },
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+      (error, stdout, stderr) => {
+        printed.push(stdout, stderr);
+        const code = error === null ? 0 : typeof error.code === "number" ? error.code : -1;
+        resolve({ code, stdout, stderr });
+      },
+    );
+  });
+}
+
+async function seed(spec: Partial<Record<FlavorKey, number>>): Promise<void> {
+  const store = new StateStore({ home });
+  for (const [flavor, count] of Object.entries(spec) as [FlavorKey, number][]) {
+    for (let n = 1; n <= count; n++) {
+      await store.update((tx) => {
+        const slot = tx.addSlot({ flavor, slot: n });
+        tx.transition(slot.id, { to: "free", golden_hash: fakeGoldenHash(flavor), reset_ms: 1500 });
+      });
+    }
+  }
+}
+
+async function validator(name: string) {
+  const schema = JSON.parse(await readFile(join(repoRoot, "docs", "schemas", name), "utf8")) as object;
+  return new Ajv2020({ strict: true, allErrors: true }).compile(schema);
+}
+
+interface Grant {
+  slot: string;
+  lease_id: string;
+  password: string;
+}
+
+async function lease(flavor: FlavorKey, holder = "task-a"): Promise<Grant> {
+  const r = await cli(["get", flavor, "--holder", holder, "--json"]);
+  expect(r.code, r.stderr).toBe(0);
+  return JSON.parse(r.stdout) as Grant;
+}
+
+// Built asynchronously: a synchronous build would block the test worker's event loop for its duration.
+beforeAll(async () => {
+  await promisify(execFile)(process.execPath, [join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json"], {
+    cwd: repoRoot,
+  });
+}, 180_000);
+
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), "arashouse-cli-"));
+  media = join(home, "media");
+  printed = [];
+});
+
+afterEach(async () => {
+  await rm(home, { recursive: true, force: true });
+});
+
+describe("get --json", () => {
+  it("prints the lease contract, valid against its schema, and nothing else on stdout", async () => {
+    await seed({ "23": 1 });
+    const r = await cli(["get", "23", "--holder", "task-a", "--json"]);
+    expect(r.code).toBe(0);
+    const grant = JSON.parse(r.stdout) as Grant & Record<string, unknown>;
+    const validate = await validator("get.schema.json");
+    expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+    expect(grant).toMatchObject({ slot: "23-01", flavor: "23", engine: "14.0.7", database: "arashouse_23_01", user: "root", holder: "task-a" });
+    expect(r.stderr).toContain(`arashouse return ${grant.lease_id}`);
+    expect(r.stderr).not.toContain(grant.password);
+  });
+
+  it("without --json shows the connection and the lease id but not the password", async () => {
+    await seed({ "12sp9": 1 });
+    const r = await cli(["get", "12sp9", "--holder", "task-a"]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/lease id: +[0-9a-f]{32}/);
+    expect(r.stdout).toContain("password:  not shown");
+    const leaseId = /lease id: +([0-9a-f]{32})/.exec(r.stdout)![1]!;
+    const stored = await readFile(join(home, "leases", leaseId), "utf8");
+    expect(r.stdout + r.stderr).not.toContain(stored);
+  });
+});
+
+describe("run --lease", () => {
+  it("gives the password to the child's environment and to nothing else", async () => {
+    await seed({ "23": 2 });
+    const grant = await lease("23");
+    const envFile = join(home, "child-env.txt");
+    const r = await cli(["--verbose", "run", "--lease", grant.lease_id, "--", "sh", "-c", 'env > "$1"', "sh", envFile], { ARASHOUSE_DEBUG: "1" });
+    expect(r.code, r.stderr).toBe(0);
+    const childEnv = Object.fromEntries(
+      (await readFile(envFile, "utf8"))
+        .split("\n")
+        .filter((l) => l.includes("="))
+        .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+    expect(childEnv).toMatchObject({
+      ARAS_URL: "http://127.0.0.1/ah-23-01",
+      ARAS_DATABASE: "arashouse_23_01",
+      ARAS_USER: "root",
+      ARAS_PASSWORD: grant.password,
+      ARASHOUSE_SLOT: "23-01",
+      ARASHOUSE_FLAVOR: "23",
+      ARAS_PKG_ENGINE: "14.0.7",
+    });
+
+    // Everything else the binary can show, in its verbose and debug forms.
+    await cli(["--verbose", "status"], { ARASHOUSE_DEBUG: "1" });
+    await cli(["status", "--json"]);
+    await cli(["--verbose", "flavors"]);
+    await cli(["flavors", "--json"]);
+    await cli(["get", "23", "--holder", "task-b", "--verbose"]);
+    await cli(["run", "--lease", grant.lease_id, "--", "sh", "-c", "exit 3"]);
+    await cli(["return", "23-01", "--if-lease-id", "0".repeat(32)], { ARASHOUSE_DEBUG: "1" });
+    await cli(["--verbose", "return", grant.lease_id]);
+    await cli(["run", "--lease", grant.lease_id, "--", "true"], { ARASHOUSE_DEBUG: "1" });
+    // printed[0] is the get --json that is allowed to show it, once.
+    expect(printed[0]).toContain(grant.password);
+    for (const text of printed.slice(1)) expect(text).not.toContain(grant.password);
+    expect(await readFile(join(home, "state.json"), "utf8")).not.toContain(grant.password);
+    expect(await readFile(join(home, "events.log"), "utf8")).not.toContain(grant.password);
+  });
+
+  it("keeps the password in a 0600 lease file that return deletes", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    const file = join(home, "leases", grant.lease_id);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(statSync(join(home, "leases")).mode & 0o777).toBe(0o700);
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+    expect(existsSync(file)).toBe(false);
+    expect(await readdir(join(home, "leases"))).toEqual([]);
+  });
+
+  it("passes the command's exit code through, and 127 when it cannot start", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    expect((await cli(["run", "--lease", grant.lease_id, "--", "sh", "-c", "exit 9"])).code).toBe(9);
+    expect((await cli(["run", "--lease", grant.lease_id, "--", "sh", "-c", "exit 0"])).code).toBe(0);
+    const missing = await cli(["run", "--lease", grant.lease_id, "--", "no-such-command-arashouse"]);
+    expect(missing.code).toBe(127);
+    expect(missing.stderr).toContain("cannot run");
+  });
+
+  it("refuses a lease that is not leased, and one whose password is gone, with exit 4", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    await rm(join(home, "leases", grant.lease_id));
+    const gone = await cli(["run", "--lease", grant.lease_id, "--", "true"]);
+    expect(gone.code).toBe(EXIT_CODES.leaseMismatch);
+    expect(gone.stderr).toMatch(/take a new one/);
+
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+    const returned = await cli(["run", "--lease", grant.lease_id, "--", "true"]);
+    expect(returned.code).toBe(EXIT_CODES.leaseMismatch);
+    expect((await cli(["run", "--lease", "f".repeat(32), "--", "true"])).code).toBe(EXIT_CODES.leaseMismatch);
+  });
+
+  it("is a usage error without a lease, without a command, or with a malformed lease id", async () => {
+    expect((await cli(["run", "--", "true"])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["run", "--lease", "f".repeat(32)])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["run", "--lease", "f".repeat(32), "--"])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["run", "--lease", "nope", "--", "true"])).code).toBe(EXIT_CODES.usage);
+  });
+});
+
+describe("exit codes", () => {
+  it("0 for get, status, return and a repeated return", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    expect((await cli(["status"])).code).toBe(0);
+    const first = await cli(["return", "23-01", "--if-lease-id", grant.lease_id]);
+    expect(first.code).toBe(0);
+    const again = await cli(["return", grant.lease_id]);
+    expect(again.code).toBe(0);
+    expect(again.stdout).toContain("already returned");
+  });
+
+  it("2 for usage errors", async () => {
+    await seed({ "23": 1 });
+    for (const args of [
+      [],
+      ["bogus"],
+      ["help", "bogus"],
+      ["get"],
+      ["get", "99", "--holder", "x"],
+      ["get", "23"],
+      ["get", "23", "--holder", "x", "--wait", "soon"],
+      ["get", "23", "--holder", "x", "--frobnicate"],
+      ["return"],
+      ["return", "23-01"],
+      ["status", "extra"],
+      ["media"],
+    ]) {
+      const r = await cli(args);
+      expect(r.code, args.join(" ")).toBe(EXIT_CODES.usage);
+    }
+  });
+
+  it("3 when no slot is free", async () => {
+    await seed({ "23": 1 });
+    await lease("23");
+    const r = await cli(["get", "23", "--holder", "task-b"]);
+    expect(r.code).toBe(EXIT_CODES.noSlot);
+    expect(r.stderr).toContain("no 23 slot is free: 1 slot, 1 leased, 0 resetting, 0 quarantined");
+    expect((await cli(["get", "35", "--holder", "task-b", "--wait", "0"])).code).toBe(EXIT_CODES.noSlot);
+  });
+
+  it("4 when return names a lease the slot no longer holds", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    const r = await cli(["return", "23-01", "--if-lease-id", "0".repeat(32)]);
+    expect(r.code).toBe(EXIT_CODES.leaseMismatch);
+    expect(JSON.parse((await cli(["status", "--json"])).stdout).slots[0].status).toBe("leased");
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+  });
+
+  it("5 when return --wait sees no reset finish", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    const r = await cli(["return", grant.lease_id, "--wait=0"]);
+    expect(r.code).toBe(EXIT_CODES.resetFailed);
+  });
+
+  it("6 when the host is unreachable, 7 when a guard refuses", async () => {
+    await seed({ "23": 1 });
+    const fault = (error: string) => JSON.stringify([{ method: "readStamp", kind: "fail", error }]);
+    const unreachable = await cli(["get", "23", "--holder", "x"], { ARASHOUSE_FAKE_FAULTS: fault("Unreachable") });
+    expect(unreachable.code).toBe(EXIT_CODES.hostUnreachable);
+    const refused = await cli(["get", "23", "--holder", "x"], { ARASHOUSE_FAKE_FAULTS: fault("Refused") });
+    expect(refused.code).toBe(EXIT_CODES.refused);
+    // No broker client yet: the default host is unreachable.
+    expect((await cli(["get", "23", "--holder", "x"], { ARASHOUSE_HOST: "" })).code).toBe(EXIT_CODES.hostUnreachable);
+  });
+
+  it("documents every code of the table in docs/cli.md", async () => {
+    const doc = await readFile(join(repoRoot, "docs", "cli.md"), "utf8");
+    for (const code of [...Object.values(EXIT_CODES), 1, SECRET_REQUIRED_EXIT_CODE, 127]) {
+      expect(doc, `exit code ${code}`).toMatch(new RegExp(`^\\| ${code} \\|`, "m"));
+    }
+  });
+});
+
+describe("errors", () => {
+  it("are one line and a hint, with the stack only under ARASHOUSE_DEBUG=1", async () => {
+    await seed({ "23": 1 });
+    const env = { ARASHOUSE_FAKE_FAULTS: JSON.stringify([{ method: "readStamp", kind: "fail", error: "Unreachable" }]) };
+    const plain = await cli(["get", "23", "--holder", "x"], env);
+    const lines = plain.stderr.trimEnd().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^arashouse: /);
+    expect(lines[1]).toMatch(/^hint: /);
+    expect(plain.stderr).not.toMatch(/\n\s+at /);
+    const debug = await cli(["get", "23", "--holder", "x"], { ...env, ARASHOUSE_DEBUG: "1" });
+    expect(debug.stderr).toMatch(/\n\s+at /);
+  });
+});
+
+describe("flavors", () => {
+  it("--json matches its schema and counts slots per flavor", async () => {
+    await seed({ "12sp9": 2, "23": 1 });
+    await lease("12sp9");
+    const r = await cli(["flavors", "--json"]);
+    expect(r.code).toBe(0);
+    const report = JSON.parse(r.stdout) as { flavors: { flavor: string; engine: string; slots: object; media: unknown; baseline: unknown }[] };
+    const validate = await validator("flavors.schema.json");
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+    expect(report.flavors.map((f) => [f.flavor, f.engine])).toEqual([
+      ["12sp9", "12.0"],
+      ["23", "14.0.7"],
+      ["35", "14.35"],
+    ]);
+    expect(report.flavors[0]!.slots).toEqual({ free: 1, leased: 1, total: 2 });
+    expect(report.flavors[2]!.slots).toEqual({ free: 0, leased: 0, total: 0 });
+    expect(report.flavors.every((f) => f.baseline === true)).toBe(true);
+  });
+
+  it("finds media loose or inside a CD-image zip", async () => {
+    await mkdir(join(media, "12sp9"), { recursive: true });
+    for (const name of ["InnovatorSetup.msi", "Core120.bak", "CoreAndSolutions120.bak"]) await writeFile(join(media, "12sp9", name), "x");
+    await mkdir(join(media, "23"), { recursive: true });
+    await writeFile(
+      join(media, "23", "Release 23 CD Image.zip"),
+      buildZip(["InnovatorSetup.msi", "Core140.bak", "CoreAndSolutions140.bak"].map((name) => ({ name, data: "x" }))),
+    );
+    await mkdir(join(media, "35"), { recursive: true });
+    await writeFile(join(media, "35", "Core140.bak"), "x");
+    const report = JSON.parse((await cli(["flavors", "--json"])).stdout) as { flavors: { media: unknown }[] };
+    expect(report.flavors.map((f) => f.media)).toEqual([true, true, false]);
+  });
+
+  it("reports the baseline as unknown when the host cannot be asked", async () => {
+    const r = await cli(["flavors", "--json"], { ARASHOUSE_HOST: "" });
+    expect(r.code).toBe(0);
+    expect((JSON.parse(r.stdout) as { flavors: { baseline: unknown }[] }).flavors.map((f) => f.baseline)).toEqual([null, null, null]);
+  });
+});
+
+describe("help and version", () => {
+  it("prints help for the tool and for each command", async () => {
+    const overview = await cli(["help"]);
+    expect(overview.code).toBe(0);
+    for (const command of ["get", "return", "status", "flavors", "run", "help", "version"]) expect(overview.stdout).toContain(`  ${command}`);
+    for (const command of ["get", "return", "status", "flavors", "run", "media"]) {
+      const r = await cli([command, "--help"]);
+      expect(r.code, command).toBe(0);
+      expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));
+    }
+  });
+
+  it("prints the package version", async () => {
+    const pkg = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")) as { version: string };
+    for (const args of [["version"], ["--version"]]) {
+      const r = await cli(args);
+      expect(r.code).toBe(0);
+      expect(r.stdout.trim()).toBe(`arashouse ${pkg.version}`);
+    }
+  });
+});

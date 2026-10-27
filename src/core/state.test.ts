@@ -168,6 +168,22 @@ describe("the state file bytes", () => {
     expect(parseState(serialiseState(state))).toEqual(state);
   });
 
+  it("round-trips the get --wait queue and its next ticket", () => {
+    const queue = [
+      { ticket: 4, flavor: "23" as const, holder: "a", pid: 10, start_time: "123", queued_at: NOW.toISOString(), expires_at: null },
+      { ticket: 6, flavor: "35" as const, holder: "b", pid: 11, start_time: null, queued_at: NOW.toISOString(), expires_at: "2026-10-22T11:00:00.000Z" },
+    ];
+    const state = { ...stateWith(slotIn("free")), next_ticket: 7, queue };
+    expect(parseState(serialiseState(state))).toEqual(state);
+  });
+
+  it("reads a file written before the queue existed as an empty queue", () => {
+    const raw = JSON.parse(serialiseState(stateWith(slotIn("free")))) as Record<string, unknown>;
+    delete raw.next_ticket;
+    delete raw.queue;
+    expect(parseState(JSON.stringify(raw))).toMatchObject({ next_ticket: 1, queue: [] });
+  });
+
   it("round-trips the lease, with its bootstrap", () => {
     const leased = transitionSlot(slotIn("free"), { to: "leased", holder: "h", bootstrap: { recipe: "r", steps: 3 } }, ctx);
     const back = parseState(serialiseState(stateWith(leased)));
@@ -202,6 +218,10 @@ describe("the state file bytes", () => {
   });
 });
 
+function waiterRaw(ticket: number): Record<string, unknown> {
+  return { ticket, flavor: "23", holder: "h", pid: 5, start_time: null, queued_at: NOW.toISOString(), expires_at: null };
+}
+
 describe("parseState refuses a damaged file", () => {
   const good = () => JSON.parse(serialiseState(stateWith(slotIn("leased")))) as Record<string, any>;
   const parse = (raw: unknown) => parseState(JSON.stringify(raw), "/h/state.json");
@@ -232,6 +252,12 @@ describe("parseState refuses a damaged file", () => {
     ["a quarantined slot with no reason", (s) => ((s.slots[0].status = "quarantined"), delete s.slots[0].lease)],
     ["a resetting slot with no reset record", (s) => ((s.slots[0].status = "resetting"), delete s.slots[0].lease)],
     ["a secret-named bootstrap key", (s) => (s.slots[0].lease.bootstrap = { ["pass" + "word"]: "x" })],
+    ["a queue without a next ticket", (s) => delete s.next_ticket],
+    ["a queue that is not a list", (s) => (s.queue = {})],
+    ["a ticket at or past next_ticket", (s) => (s.queue = [waiterRaw(s.next_ticket)])],
+    ["tickets out of order", (s) => ((s.next_ticket = 9), (s.queue = [waiterRaw(3), waiterRaw(2)]))],
+    ["a waiter for an unknown flavor", (s) => ((s.next_ticket = 9), (s.queue = [{ ...waiterRaw(1), flavor: "28" }]))],
+    ["a waiter without a pid", (s) => ((s.next_ticket = 9), (s.queue = [{ ...waiterRaw(1), pid: 0 }]))],
   ])("%s", (_label, damage) => {
     const raw = good();
     damage(raw);

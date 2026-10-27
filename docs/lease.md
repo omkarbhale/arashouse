@@ -20,7 +20,8 @@ again; whoever returns a lease may assume its slot is gone.
    recorded and no lease, and the host's `healthCheck` must pass. A slot that fails is marked `dirty`
    (with the reason in the event log) and the next one is tried. A `Quarantine` host error quarantines
    the slot; a `Retryable` one skips it for this attempt. Ticket 32 owns the markers behind the check.
-3. Under the lock, the governor is asked and the slot moves `free -> leased` with a fresh lease id
+3. The host's free RAM is asked (`hostInfo`) and the governor gives a first answer on the unlocked
+   state, so a caller it refuses does not probe a slot. Under the lock, the governor is asked again and the slot moves `free -> leased` with a fresh lease id
    (128 bits, hex), provided it is still the same free slot that was checked. Two concurrent `get`
    calls therefore never receive the same slot: the loser looks again.
 4. After the reservation: a password is generated (128 bits, URL-safe) and stored in the secret store
@@ -31,13 +32,13 @@ again; whoever returns a lease may assume its slot is gone.
 5. Two `get` calls from one holder get two slots. `status` shows the holder on each.
 
 When no slot can be handed out: `--wait 0` (the default) fails at once with exit 3 and a message such
-as `no 12sp9 slot is free: 3 slots, 1 leased, 1 resetting, 1 quarantined`; `--wait N` polls the state
-every second for up to N seconds and fails with the same message if none appears.
+as `no 12sp9 slot is free: 3 slots, 1 leased, 1 resetting, 1 quarantined`; `--wait N` takes a queue
+ticket, polls the state every second for up to N seconds and fails with the same message if none
+appears.
 
-**The governor.** `max_active` (default 3, leased slots across all flavors) is checked under the lock,
-immediately before a slot is leased; a refusal reads `max_active 3 reached (3 leased): no 23 slot can
-be leased now` and exits 3. Ticket 17 replaces the default with the config-driven governor (reset cap,
-queue order, host RAM) through the same `Governor` interface.
+**The governor** (`docs/governor.md`): `max_active` leased slots across all flavors, the host's
+`min_free_ram_mb`, and the `get --wait` queue served in ticket order. A refusal reads, for example,
+`max_active 3 reached (3 leased): no 23 slot can be leased now` and exits 3.
 
 ### `get --json`: `docs/schemas/get.schema.json`
 
@@ -69,7 +70,8 @@ or log.
 ## `leaseStatus(deps)` / `status --json`: `docs/schemas/status.schema.json`
 
 One row per slot (status, flavor, holder, lease age, last reset duration, the quarantine reason),
-totals per flavor, and `max_active` (limit and in use). It reads without the lock. It carries no
+totals per flavor, `max_active` (limit and leased slots), `max_resets` (limit and resetting slots),
+and the live `get --wait` queue (ticket, flavor, holder, when queued). It reads without the lock. It carries no
 password and no full lease id: the `lease` column is the first 8 characters, enough to tell leases
 apart but not to return or run against one. The state file and the events log hold no password either
 (the events log shows a lease id as its first 8 characters).

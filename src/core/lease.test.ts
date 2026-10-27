@@ -10,8 +10,9 @@ import { HostError, type HostErrorKind } from "../host/errors.js";
 import { SECRET_REQUIRED_EXIT_CODE } from "./licence.js";
 import { EXIT_CODES } from "./exit-codes.js";
 import { FLAVORS, type FlavorKey } from "./flavors.js";
+import { DEFAULT_CONFIG } from "./config.js";
+import { poolGovernor } from "./governor.js";
 import {
-  DEFAULT_MAX_ACTIVE,
   GuardRefusedError,
   HostUnreachableError,
   LeaseMismatchError,
@@ -26,7 +27,6 @@ import {
   getLease,
   leaseSecretName,
   leaseStatus,
-  maxActiveGovernor,
   renderGetJson,
   returnLease,
   type LeaseDeps,
@@ -319,7 +319,7 @@ describe("get and concurrency", () => {
     const p = await pool({ "12sp9": 3 });
     const stores = [1, 2, 3, 4, 5, 6].map(() => new StateStore({ home }));
     const results = await Promise.allSettled(
-      stores.map((store, i) => getLease({ ...p.deps, store, maxActive: 99 }, { flavor: "12sp9", holder: `t${i}` })),
+      stores.map((store, i) => getLease({ ...p.deps, store, config: { ...DEFAULT_CONFIG, max_active: 99 } }, { flavor: "12sp9", holder: `t${i}` })),
     );
     const granted = results.flatMap((r) => (r.status === "fulfilled" ? [r.value.slot] : []));
     expect(granted.sort()).toEqual(["12sp9-01", "12sp9-02", "12sp9-03"]);
@@ -360,7 +360,7 @@ describe("get and the governor", () => {
     for (const flavor of ["12sp9", "12sp9", "23"] as const) await getLease(p.deps, { flavor, holder: "t" });
     const err = await failure(getLease(p.deps, { flavor: "23", holder: "t" }));
     expect(exitCodeFor(err)).toBe(3);
-    expect((err as Error).message).toBe(`max_active ${DEFAULT_MAX_ACTIVE} reached (3 leased): no 23 slot can be leased now`);
+    expect((err as Error).message).toBe(`max_active ${DEFAULT_CONFIG.max_active} reached (3 leased): no 23 slot can be leased now`);
     expect((await p.store.read()).slots["23-02"]?.status).toBe("free");
   });
 
@@ -382,7 +382,11 @@ describe("get and the governor", () => {
     const err = await failure(getLease(p.deps, { flavor: "23", holder: "who" }));
     expect((err as Error).message).toBe("RAM is low: no 23 slot can be leased now");
     expect(seen).toEqual([[2, "23", "who"]]);
-    expect(maxActiveGovernor(1).check({ slots: [], flavor: "23", holder: "t" })).toEqual({ ok: true });
+    const host = (await p.host.hostInfo()).info;
+    expect(poolGovernor({ ...DEFAULT_CONFIG, max_active: 1 }).check({ slots: [], flavor: "23", holder: "t", queue: [], ticket: null, host })).toEqual({
+      ok: false,
+      reason: "0 earlier waiters ahead in the queue",
+    });
   });
 });
 
@@ -646,6 +650,8 @@ describe("status", () => {
     });
     expect(report.slots[3]).toMatchObject({ status: "quarantined", quarantine_reason: "reset failed at database: restore timed out", holder: null, lease: null });
     expect(report.max_active).toEqual({ limit: 3, in_use: 1 });
+    expect(report.max_resets).toEqual({ limit: 2, in_use: 1 });
+    expect(report.queue).toEqual([]);
     expect(report.flavors["12sp9"]).toEqual({ total: 3, provisioning: 0, free: 0, leased: 1, dirty: 1, resetting: 1, quarantined: 0, disabled: 0 });
     expect(report.flavors["23"]).toMatchObject({ total: 2, free: 1, quarantined: 1 });
     expect(report.flavors["35"].total).toBe(0);
@@ -663,7 +669,7 @@ describe("status", () => {
 
   it("does not need the lock, so it answers while a get holds it", async () => {
     const p = await pool({ "23": 1 });
-    const report = await leaseStatus({ ...p.deps, maxActive: 5 });
+    const report = await leaseStatus({ ...p.deps, config: { ...DEFAULT_CONFIG, max_active: 5 } });
     expect(report.max_active.limit).toBe(5);
   });
 
@@ -678,6 +684,26 @@ describe("status", () => {
     expect(text).toContain("quarantined 23-02: reset failed at tree");
     expect(text).toContain("23: 0 free of 2 (1 leased, 0 dirty, 0 resetting, 1 quarantined)");
     expect(text).toContain("max_active: 1 of 3 in use");
+    expect(text).toContain("max_resets: 0 of 2 running");
+    expect(text).not.toContain("queue:");
+  });
+
+  it("shows the live get --wait queue, first served first", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => {
+      tx.joinQueue({ flavor: "23", holder: "task-b", pid: process.pid, start_time: null, expires_at: null });
+      tx.joinQueue({ flavor: "35", holder: "task-c", pid: process.pid, start_time: null, expires_at: null });
+      tx.joinQueue({ flavor: "23", holder: "gone", pid: 4_000_000, start_time: null, expires_at: null });
+    });
+    const report = await leaseStatus({ ...p.deps, isWaiterAlive: (w) => w.pid === process.pid });
+    const validate = await validator("status.schema.json");
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+    expect(report.queue).toEqual([
+      { ticket: 1, flavor: "23", holder: "task-b", queued_at: new Date(p.clock.t).toISOString() },
+      { ticket: 2, flavor: "35", holder: "task-c", queued_at: new Date(p.clock.t).toISOString() },
+    ]);
+    expect(formatStatus(report)).toContain("queue: #1 23 task-b, #2 35 task-c");
+    expect(validate({ ...report, queue: [{ ...report.queue[0], pid: 1 }] })).toBe(false);
   });
 
   it("formats ages", () => {

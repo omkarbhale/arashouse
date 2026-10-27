@@ -11,6 +11,7 @@ import {
   type Slot,
   type State,
   type TransitionRequest,
+  type Waiter,
   StateCorruptError,
   emptyState,
   newSlot,
@@ -41,8 +42,11 @@ export function resolveStorePaths(env: NodeJS.ProcessEnv = process.env): StorePa
 export interface StoreEvent {
   readonly ts: string;
   readonly pid: number;
-  readonly event: "transition" | "state-replaced" | LockEvent["event"];
+  readonly event: "transition" | "queue-join" | "queue-leave" | "state-replaced" | LockEvent["event"];
   readonly slot?: string;
+  /** The queue ticket of a `queue-join` or `queue-leave`. */
+  readonly ticket?: number;
+  readonly flavor?: string;
   readonly from?: string | null;
   readonly to?: string;
   readonly lease?: string;
@@ -102,6 +106,8 @@ export async function writeFileAtomic(
 /** The changes one `update` makes: every status move goes through the table and is logged. */
 export class Transaction {
   private readonly slots: Record<string, Slot>;
+  private queue: Waiter[];
+  private nextTicket: number;
   private readonly pending: StoreEvent[] = [];
 
   constructor(
@@ -109,6 +115,8 @@ export class Transaction {
     private readonly env: { now: () => Date; pid: number; newLeaseId: () => string },
   ) {
     this.slots = { ...base.slots };
+    this.queue = [...base.queue];
+    this.nextTicket = base.next_ticket;
   }
 
   get changed(): boolean {
@@ -157,9 +165,46 @@ export class Transaction {
     return next;
   }
 
+  /** The `get --wait` callers, in ticket order, as this transaction sees them. */
+  waiters(): readonly Waiter[] {
+    return [...this.queue];
+  }
+
+  /** Puts a caller at the back of the queue with the next ticket. */
+  joinQueue(waiter: Omit<Waiter, "ticket" | "queued_at">): Waiter {
+    const joined: Waiter = { ...waiter, ticket: this.nextTicket, queued_at: this.env.now().toISOString() };
+    this.nextTicket++;
+    this.queue.push(joined);
+    this.pending.push({
+      ts: this.env.now().toISOString(),
+      pid: this.env.pid,
+      event: "queue-join",
+      ticket: joined.ticket,
+      flavor: joined.flavor,
+      holder: joined.holder,
+    });
+    return joined;
+  }
+
+  /** Takes a ticket out of the queue; false (and nothing logged) if it is not there. */
+  leaveQueue(ticket: number, reason: string): boolean {
+    const waiter = this.queue.find((w) => w.ticket === ticket);
+    if (!waiter) return false;
+    this.queue = this.queue.filter((w) => w.ticket !== ticket);
+    this.pending.push({ ts: this.env.now().toISOString(), pid: this.env.pid, event: "queue-leave", ticket, flavor: waiter.flavor, holder: waiter.holder, reason });
+    return true;
+  }
+
   /** @internal */
   result(base: State): State {
-    return { ...base, revision: base.revision + 1, updated_at: this.env.now().toISOString(), slots: this.slots };
+    return {
+      ...base,
+      revision: base.revision + 1,
+      updated_at: this.env.now().toISOString(),
+      slots: this.slots,
+      next_ticket: this.nextTicket,
+      queue: this.queue,
+    };
   }
 
   private log(fields: Omit<StoreEvent, "ts" | "pid" | "event">): void {

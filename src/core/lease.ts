@@ -9,7 +9,7 @@
 
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleepMs } from "node:timers/promises";
-import type { HostDriver, SlotStamp } from "../host/driver.js";
+import type { HostDriver, HostInfo, SlotStamp } from "../host/driver.js";
 import { isHostError } from "../host/errors.js";
 import { hostAddress, slotUrl } from "../host/url.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
@@ -18,14 +18,13 @@ import { databaseName, parseSlotId, slotId, webAlias } from "./names.js";
 import { redact } from "./redact.js";
 import { Secret } from "./secret.js";
 import { type SecretStore } from "./secret-store.js";
-import { type Lease, SLOT_STATUSES, type Slot, type SlotStatus, type State, isLeaseId } from "./state.js";
+import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
+import { type Governor, isWaiterAlive, liveWaiters, poolGovernor, waiterProcess } from "./governor.js";
+import { type Lease, SLOT_STATUSES, type Slot, type SlotStatus, type State, type Waiter, isLeaseId } from "./state.js";
 import { type StateStore } from "./store.js";
 
 /** The Aras user a lease's password is for. */
 export const LEASE_USER = "root";
-
-/** Leased slots allowed at once, all flavors (the captain's answer 1). Ticket 17 moves this into the config. */
-export const DEFAULT_MAX_ACTIVE = 3;
 
 /** How often `get --wait` and `return --wait` look at the state. */
 export const DEFAULT_POLL_MS = 1_000;
@@ -33,7 +32,10 @@ export const DEFAULT_POLL_MS = 1_000;
 const MAX_HOLDER = 500;
 
 /** The part of the host driver the lease operations use. */
-export type LeaseHost = Pick<HostDriver, "readStamp" | "writeStamp" | "healthCheck" | "setLeaseCredentials">;
+export type LeaseHost = Pick<HostDriver, "hostInfo" | "readStamp" | "writeStamp" | "healthCheck" | "setLeaseCredentials">;
+
+/** A queue ticket stays valid this long past its caller's deadline, so a slow last poll keeps its place. */
+const TICKET_GRACE_MS = 30_000;
 
 // ---- errors, each with its stable exit code ----------------------------------------------------------
 
@@ -97,36 +99,6 @@ export function exitCodeFor(err: unknown): number {
   return mapped instanceof LeaseError ? mapped.exitCode : 1;
 }
 
-// ---- the governor seam (ticket 17) -----------------------------------------------------------------
-
-export interface GovernorContext {
-  /** Every slot, as the update that is about to lease one sees them. */
-  readonly slots: readonly Slot[];
-  readonly flavor: FlavorKey;
-  readonly holder: string;
-}
-
-export type GovernorVerdict = { readonly ok: true } | { readonly ok: false; readonly reason: string };
-
-/**
- * Decides whether one more lease may start. It runs under the state lock, immediately before the
- * slot is marked leased, so a count it takes cannot go stale. Ticket 17 replaces the default with
- * the config-driven governor (queue order, host RAM).
- */
-export interface Governor {
-  check(context: GovernorContext): GovernorVerdict | Promise<GovernorVerdict>;
-}
-
-/** Refuses when `limit` slots are already `leased`. */
-export function maxActiveGovernor(limit: number = DEFAULT_MAX_ACTIVE): Governor {
-  return {
-    check({ slots }) {
-      const active = slots.filter((s) => s.status === "leased").length;
-      return active >= limit ? { ok: false, reason: `max_active ${limit} reached (${active} leased)` } : { ok: true };
-    },
-  };
-}
-
 // ---- dependencies ----------------------------------------------------------------------------------
 
 export interface LeaseDeps {
@@ -136,10 +108,14 @@ export interface LeaseDeps {
   readonly secrets: SecretStore;
   /** The URL of a slot as seen from WSL, from its web alias. Defaults to the discovered host address (ticket 29). */
   readonly resolveUrl?: (alias: string) => Promise<string>;
-  /** Defaults to `maxActiveGovernor(maxActive)`. */
+  /** The pool's limits (`loadConfig`); defaults to `DEFAULT_CONFIG`. */
+  readonly config?: ArashouseConfig;
+  /** Defaults to `poolGovernor(config)`. */
   readonly governor?: Governor;
-  /** Leased slots allowed at once; defaults to `DEFAULT_MAX_ACTIVE`. Shown by `status`. */
-  readonly maxActive?: number;
+  /** Whether a queued caller still runs; defaults to a process check. A dead caller's ticket is dropped. */
+  readonly isWaiterAlive?: (waiter: Waiter) => boolean;
+  /** The pid recorded on this caller's queue ticket; defaults to this process. */
+  readonly pid?: number;
   /** A fresh per-lease password; defaults to 128 random bits, URL-safe. */
   readonly newPassword?: () => Secret;
   readonly now?: () => Date;
@@ -281,8 +257,9 @@ type Attempt =
 
 /**
  * Takes a lease on a free slot of `request.flavor` and returns what the holder needs to reach it.
- * `waitSeconds` > 0 polls for a slot up to that long; otherwise a call that finds none fails at
- * once with exit 3 and a message counting the flavor's leased, resetting and quarantined slots.
+ * `waitSeconds` > 0 takes a queue ticket and polls for a slot up to that long, served in ticket
+ * order; otherwise a call that finds none, or that the governor refuses, fails at once with exit 3
+ * and the reason.
  */
 export async function getLease(deps: LeaseDeps, request: GetRequest): Promise<LeaseGrant> {
   if (!isFlavorKey(request.flavor)) throw new UsageError(`unknown flavor "${String(request.flavor)}"; the flavors are ${FLAVOR_KEYS.join(", ")}`);
@@ -294,25 +271,72 @@ export async function getLease(deps: LeaseDeps, request: GetRequest): Promise<Le
   const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
   const deadline = now() + waitMs;
   const skipped = new Set<string>();
-  for (;;) {
-    const attempt = await attemptGet(deps, flavor, holder, skipped);
-    if (attempt.kind === "granted") return attempt.grant;
-    if (attempt.kind === "retry") continue;
-    const left = deadline - now();
-    if (left <= 0) throw new NoSlotAvailableError(attempt.message);
-    skipped.clear();
-    await sleep(Math.min(pollMs, left));
+  const ticket = waitMs > 0 ? await joinQueue(deps, flavor, holder, deadline) : null;
+  let granted = false;
+  try {
+    for (;;) {
+      const attempt = await attemptGet(deps, flavor, holder, ticket, skipped);
+      if (attempt.kind === "granted") {
+        granted = true;
+        return attempt.grant;
+      }
+      if (attempt.kind === "retry") continue;
+      const left = deadline - now();
+      if (left <= 0) throw new NoSlotAvailableError(attempt.message);
+      skipped.clear();
+      await sleep(Math.min(pollMs, left));
+    }
+  } finally {
+    // A granted lease left the queue in the same update that leased the slot.
+    if (ticket !== null && !granted) await deps.store.update((tx) => void tx.leaveQueue(ticket, "stopped waiting")).catch(() => undefined);
   }
 }
 
-async function attemptGet(deps: LeaseDeps, flavor: FlavorKey, holder: string, skipped: Set<string>): Promise<Attempt> {
+/** Puts a `get --wait` caller in the queue; its ticket holds its place until a little past `deadline`. */
+async function joinQueue(deps: LeaseDeps, flavor: FlavorKey, holder: string, deadline: number): Promise<number> {
+  const expires = deadline + TICKET_GRACE_MS;
+  const waiter = await deps.store.update((tx) =>
+    tx.joinQueue({
+      flavor,
+      holder,
+      ...waiterProcess(deps.pid),
+      expires_at: Number.isFinite(expires) ? new Date(expires).toISOString() : null,
+    }),
+  );
+  return waiter.ticket;
+}
+
+async function attemptGet(deps: LeaseDeps, flavor: FlavorKey, holder: string, ticket: number | null, skipped: Set<string>): Promise<Attempt> {
   const { store, host } = deps;
+  const nowDate = deps.now ?? (() => new Date());
+  const isAlive = deps.isWaiterAlive ?? isWaiterAlive;
+  const governor = deps.governor ?? poolGovernor(deps.config ?? DEFAULT_CONFIG);
   const state = await store.read();
   const ofFlavor = Object.values(state.slots)
     .filter((s) => s.flavor === flavor)
     .sort((a, b) => a.number - b.number);
   const candidate = ofFlavor.find((s) => s.status === "free" && !skipped.has(s.id));
   if (!candidate) return { kind: "none", message: describeNone(flavor, ofFlavor) };
+
+  // The host's free RAM, then a first word from the governor on the unlocked state, so a caller
+  // that is refused (or queued behind others) does not probe a slot it cannot have.
+  let info: HostInfo;
+  try {
+    info = (await host.hostInfo()).info;
+  } catch (err) {
+    if (isHostError(err, "Retryable")) return { kind: "none", message: `the host is busy: ${redact(errorText(err))}` };
+    throw asLeaseError(err);
+  }
+  const refusal = (reason: string): Attempt => ({ kind: "none", message: `${reason}: no ${flavor} slot can be leased now` });
+  const early = await governor.check({
+    slots: Object.values(state.slots),
+    flavor,
+    holder,
+    queue: liveWaiters(state.queue, nowDate(), isAlive),
+    ticket,
+    host: info,
+  });
+  if (!early.ok) return refusal(early.reason);
 
   // Verify outside the lock: it asks the host, and a free slot is touched by nothing else.
   let stamp: SlotStamp;
@@ -335,20 +359,23 @@ async function attemptGet(deps: LeaseDeps, flavor: FlavorKey, holder: string, sk
     throw asLeaseError(err);
   }
 
-  const governor = deps.governor ?? maxActiveGovernor(deps.maxActive);
   const reserved = await store.update(async (tx) => {
     const current = tx.slot(candidate.id);
     // The same free incarnation that was verified: not taken, and not reset or dirtied since.
     if (!current || current.status !== "free" || current.last_reset_at !== candidate.last_reset_at || current.golden_hash !== candidate.golden_hash) {
       return { kind: "taken" } as const;
     }
-    const verdict = await governor.check({ slots: Object.values(tx.snapshot()), flavor, holder });
+    // A waiter that is gone, or whose wait ran out, loses its place for good.
+    const live = liveWaiters(tx.waiters(), nowDate(), isAlive);
+    for (const w of tx.waiters()) if (w.ticket !== ticket && !live.includes(w)) tx.leaveQueue(w.ticket, "gone");
+    const verdict = await governor.check({ slots: Object.values(tx.snapshot()), flavor, holder, queue: live, ticket, host: info });
     if (!verdict.ok) return { kind: "refused", reason: verdict.reason } as const;
     const leased = tx.transition(candidate.id, { to: "leased", holder });
+    if (ticket !== null) tx.leaveQueue(ticket, "leased");
     return { kind: "reserved", lease: leased.lease as Lease } as const;
   });
   if (reserved.kind === "taken") return { kind: "retry" };
-  if (reserved.kind === "refused") return { kind: "none", message: `${reserved.reason}: no ${flavor} slot can be leased now` };
+  if (reserved.kind === "refused") return refusal(reserved.reason);
 
   const lease = reserved.lease;
   const password = (deps.newPassword ?? defaultPassword)();
@@ -524,16 +551,35 @@ export interface StatusRow {
 
 export type FlavorTotals = { readonly total: number } & Readonly<Record<SlotStatus, number>>;
 
+/** A `get --wait` caller in the queue, as `status` shows it. */
+export interface QueueRow {
+  readonly ticket: number;
+  readonly flavor: FlavorKey;
+  readonly holder: string;
+  readonly queued_at: string;
+}
+
 /** The `status --json` contract (docs/schemas/status.schema.json). */
 export interface StatusReport {
   readonly generated_at: string;
   readonly max_active: { readonly limit: number; readonly in_use: number };
+  /** `in_use` counts the `resetting` slots. */
+  readonly max_resets: { readonly limit: number; readonly in_use: number };
   readonly slots: readonly StatusRow[];
   readonly flavors: Readonly<Record<FlavorKey, FlavorTotals>>;
+  /** The live `get --wait` callers, first served first. */
+  readonly queue: readonly QueueRow[];
+}
+
+export interface StatusOptions {
+  readonly now: Date;
+  readonly config?: ArashouseConfig;
+  readonly isWaiterAlive?: (waiter: Waiter) => boolean;
 }
 
 /** The report for `state`. It carries no password and no lease id beyond its 8-character reference. */
-export function buildStatus(state: State, options: { readonly now: Date; readonly maxActive?: number }): StatusReport {
+export function buildStatus(state: State, options: StatusOptions): StatusReport {
+  const config = options.config ?? DEFAULT_CONFIG;
   const slots = Object.values(state.slots).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const rows: StatusRow[] = slots.map((s) => {
     const leasedAt = s.lease ? Date.parse(s.lease.leased_at) : Number.NaN;
@@ -558,16 +604,23 @@ export function buildStatus(state: State, options: { readonly now: Date; readonl
   ) as Record<FlavorKey, FlavorTotals>;
   return {
     generated_at: options.now.toISOString(),
-    max_active: { limit: options.maxActive ?? DEFAULT_MAX_ACTIVE, in_use: slots.filter((s) => s.status === "leased").length },
+    max_active: { limit: config.max_active, in_use: slots.filter((s) => s.status === "leased").length },
+    max_resets: { limit: config.max_resets, in_use: slots.filter((s) => s.status === "resetting").length },
     slots: rows,
     flavors,
+    queue: liveWaiters(state.queue, options.now, options.isWaiterAlive ?? isWaiterAlive).map((w) => ({
+      ticket: w.ticket,
+      flavor: w.flavor,
+      holder: w.holder,
+      queued_at: w.queued_at,
+    })),
   };
 }
 
 /** Reads the state (without the lock; the file is only ever replaced whole) and reports it. */
-export async function leaseStatus(deps: Pick<LeaseDeps, "store" | "now" | "maxActive">): Promise<StatusReport> {
+export async function leaseStatus(deps: Pick<LeaseDeps, "store" | "now" | "config" | "isWaiterAlive">): Promise<StatusReport> {
   const state = await deps.store.read();
-  return buildStatus(state, { now: (deps.now ?? (() => new Date()))(), maxActive: deps.maxActive });
+  return buildStatus(state, { now: (deps.now ?? (() => new Date()))(), config: deps.config, isWaiterAlive: deps.isWaiterAlive });
 }
 
 /** `2h13m`, `4m05s`, `37s`. */
@@ -600,5 +653,9 @@ export function formatStatus(report: StatusReport): string[] {
     lines.push(`${key}: ${t.free} free of ${t.total} (${t.leased} leased, ${t.dirty} dirty, ${t.resetting} resetting, ${t.quarantined} quarantined)`);
   }
   lines.push(`max_active: ${report.max_active.in_use} of ${report.max_active.limit} in use`);
+  lines.push(`max_resets: ${report.max_resets.in_use} of ${report.max_resets.limit} running`);
+  if (report.queue.length > 0) {
+    lines.push(`queue: ${report.queue.map((w) => `#${w.ticket} ${w.flavor} ${w.holder}`).join(", ")}`);
+  }
   return lines;
 }

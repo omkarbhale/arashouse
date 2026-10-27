@@ -32,13 +32,14 @@ export interface RuntimeRule {
 /**
  * The runtime directories every Aras flavor shares (design 5.2 and 6.2). The server sits under
  * `Innovator\Server\` in an installed tree (spike record, code follow-ups), and the client rewrites
- * `jsBundles\data.json` when it first serves (spike 06).
+ * `jsBundles\data.json` when it first serves (spike 06) and writes `jsBundles\compile.log` when it first
+ * compiles its bundles after a start (ticket 32's host proof: the first health check after a reset found it extra).
  */
 export const RUNTIME_DIRS: readonly RuntimeRule[] = [
   { dir: "Innovator/Server/temp" },
   { dir: "Innovator/Server/dll" },
   { dir: "Innovator/Server/logs" },
-  { dir: "Innovator/Client/jsBundles", files: ["data.json"] },
+  { dir: "Innovator/Client/jsBundles", files: ["data.json", "compile.log"] },
   { dir: "OAuthServer/App_Data", files: ["*.sqlite*", "key-*.xml"] },
 ];
 

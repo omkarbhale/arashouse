@@ -162,6 +162,13 @@ describe("healthCheck", () => {
     expect((await check(system)).byName.stamp).toMatchObject({ ok: false, detail: "the stamp is unreadable" });
   });
 
+  it("passes a slot whose client wrote its runtime files on its first start (jsBundles\\compile.log, data.json)", async () => {
+    const system = await provisioned();
+    system.put(inSlot("Innovator/Client/jsBundles/compile.log"), "compiled at the first request after a start");
+    system.put(inSlot("Innovator/Client/jsBundles/data.json"), '{"rewritten":true}');
+    expect((await check(system)).failed).toEqual([]);
+  });
+
   it("fails a slot with an extra file in its tree, a changed file, or a config that does not hold its rendering", async () => {
     const system = await provisioned();
     system.put(inSlot("Innovator/Client/added.js"), "added by a lease");

@@ -97,8 +97,8 @@ missing). It never throws for the file's content. Ticket 32 runs it after a rese
 | `OAuthServer/OAuthServer.config` | `InnovatorServerUrl` |
 | `VaultServer/vault.config` | `InnovatorServerUrl`; `LocalPath` (the slot's own vault folder) |
 
-`35`: provisional, the same edits less the two SelfServiceReporting files, from the spike install of
-Release 35 (2026-10-27), which has no SelfServiceReporting. Ticket 08 settles it.
+`35`: the same edits less the two SelfServiceReporting files, which the 14.35 installer no longer ships
+(spike 08, [`docs/spike-08-release-35.md`](spike-08-release-35.md)).
 
 Not edited: `ConversionServerConfig.xml` and an agent config (neither is installed with the default
 features); the per-application `OAuth.config` files, `appsettings.json` and `InnovatorServer.config`

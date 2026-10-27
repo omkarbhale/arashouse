@@ -373,17 +373,22 @@ export async function runBaselineBuild(system: BuildSystem, plan: BaselinePlan, 
       return `manifest of ${manifest.fileCount} files (${mb(manifest.totalBytes)} MB), hash ${manifest.manifestHash.slice(0, 12)}; wrote flavor.json`;
     },
     promote: async () => {
-      if (await system.exists(plan.golden.dir)) {
-        if (!plan.replace) throw new BuildStepError("promote", `${plan.golden.dir} appeared during the build; it is left as it is`);
-        if (await system.exists(plan.scratch.retiredDir)) await system.removeDir(plan.scratch.retiredDir);
-        await system.rename(plan.golden.dir, plan.scratch.retiredDir);
-        state.retired = true;
-      }
-      await system.rename(plan.scratch.candidateDir, plan.golden.dir);
-      state.promoted = true;
-      if (state.retired) {
-        await system.removeDir(plan.scratch.retiredDir);
-        state.retired = false;
+      await system.writeFile(plan.scratch.promotingMarker, startedAt);
+      try {
+        if (await system.exists(plan.golden.dir)) {
+          if (!plan.replace) throw new BuildStepError("promote", `${plan.golden.dir} appeared during the build; it is left as it is`);
+          if (await system.exists(plan.scratch.retiredDir)) await system.removeDir(plan.scratch.retiredDir);
+          await system.rename(plan.golden.dir, plan.scratch.retiredDir);
+          state.retired = true;
+        }
+        await system.rename(plan.scratch.candidateDir, plan.golden.dir);
+        state.promoted = true;
+        if (state.retired) {
+          await system.removeDir(plan.scratch.retiredDir);
+          state.retired = false;
+        }
+      } finally {
+        await system.removeFile(plan.scratch.promotingMarker);
       }
       return `moved the new golden into ${plan.golden.dir}${plan.replace ? " (replacing the old one)" : ""}`;
     },

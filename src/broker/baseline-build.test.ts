@@ -352,6 +352,22 @@ describe("the baseline build", () => {
     expect(system.under(plan.scratch.retiredDir)).toEqual([]);
   });
 
+  it("holds the promoting marker for the whole move of the golden, and removes it when the move fails", async () => {
+    const { plan, system } = setup(true);
+    system.put(plan.golden.manifest, "old");
+    const rename = system.rename.bind(system);
+    const marked: boolean[] = [];
+    let renames = 0;
+    system.rename = (from, to) => {
+      marked.push(system.text(plan.scratch.promotingMarker) !== undefined);
+      return ++renames === 2 ? Promise.reject(new Error("access denied")) : rename(from, to);
+    };
+    const report = await runBaselineBuild(system, plan, OPTIONS);
+    expect(report.error).toMatch(/^promote: access denied/);
+    expect(marked.slice(0, 2)).toEqual([true, true]);
+    expect(system.text(plan.scratch.promotingMarker)).toBeUndefined();
+  });
+
   it.each([
     ["install", (s: FakeBuildSystem): void => { s.installExit = 1603; }, /install: the MSI returned 1603/],
     ["verify", (s: FakeBuildSystem): void => { s.dbList = "<DBList/>"; }, /verify: DBList.aspx lists 0 databases/],

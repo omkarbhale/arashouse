@@ -170,12 +170,14 @@ export interface BuildScratch {
   readonly candidateDir: string;
   /** `<root>\golden-build\<key>.old`: a replaced golden, set aside while the new one moves in. */
   readonly retiredDir: string;
+  /** `<root>\golden-build\<key>.promoting`: present while the build moves the new golden into place; no reset reads golden then. */
+  readonly promotingMarker: string;
   /** `<root>\staging\baseline-<key>`: the bundle `arashouse baseline build` writes (the script, the build, the media). */
   readonly bundleDir: string;
 }
 
 /** The suffixes of the scratch folders next to `golden-build\<key>`; the guards admit only these. */
-export const BUILD_SCRATCH_SUFFIXES = ["msi", "vault", "golden", "old"] as const;
+export const BUILD_SCRATCH_SUFFIXES = ["msi", "vault", "golden", "old", "promoting"] as const;
 
 export function buildScratch(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROOT): BuildScratch {
   const build = buildNames(flavor, root);
@@ -186,6 +188,7 @@ export function buildScratch(flavor: FlavorKey, root: string = DEFAULT_INSTALL_R
     vaultRoot: `${build.dir}.vault`,
     candidateDir: `${build.dir}.golden`,
     retiredDir: `${build.dir}.old`,
+    promotingMarker: `${build.dir}.promoting`,
     bundleDir: win32.join(root, "staging", `baseline-${flavorOf(flavor)}`),
   };
 }

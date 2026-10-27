@@ -16,7 +16,7 @@ import { isHostError } from "../host/errors.js";
 import { hostAddress, slotUrl } from "../host/url.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
 import { FLAVOR_KEYS, type FlavorKey, getFlavor, isFlavorKey } from "./flavors.js";
-import type { GoldenSet } from "./reset.js";
+import { type GoldenSet, currentGoldenHash } from "./reset.js";
 import { databaseName, parseSlotId, slotId, webAlias } from "./names.js";
 import { redact } from "./redact.js";
 import { Secret } from "./secret.js";
@@ -390,7 +390,7 @@ async function attemptGet(
   // Verify outside the lock: it asks the host, and a free slot is touched by nothing else.
   let stamp: SlotStamp;
   try {
-    const current = deps.golden ? (await deps.golden(flavor)).tree.hash : undefined;
+    const current = deps.golden ? await currentGoldenHash(deps.golden, flavor) : undefined;
     const verdict = await checkClean(host, candidate, current);
     if (!verdict.clean) {
       await moveIfStillFree(store, candidate, { to: "dirty" }, verdict.reason);

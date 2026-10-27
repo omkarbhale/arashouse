@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeClock } from "../host/clock.js";
 import type { HostMethod } from "../host/driver.js";
+import { HostError } from "../host/errors.js";
 import { FakeHost, fakeGoldenHash } from "../host/fake.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
@@ -456,6 +457,44 @@ describe("a replaced golden", () => {
     const newer = async (flavor: FlavorKey) => ({ tree: { flavor, hash: "new-golden" }, backup: { ...p.host.backup(flavor), hash: "new-golden" } });
     await expect(getLease({ ...p.deps, reset: undefined, golden: newer }, { flavor: "23", holder: "b" })).rejects.toBeInstanceOf(NoSlotAvailableError);
     expect((await p.status("23-01"))?.status).toBe("dirty");
+  });
+
+  it("hands out a free slot, checked as before, when the current golden cannot be named", async () => {
+    const p = await pool({ "23": 1 });
+    const unnamed = async (): Promise<never> => Promise.reject(new HostError("Unreachable", "the broker cannot name a flavor's golden"));
+    const grant = await getLease({ ...p.deps, golden: unnamed }, { flavor: "23", holder: "b" });
+    expect(grant.slot).toBe("23-01");
+  });
+
+  it("does not read a golden that is being promoted, and leaves a slot dirty when a promote overlaps its reset", async () => {
+    const p = await pool({ "23": 2 });
+    for (const holder of ["a", "b"]) {
+      const grant = await getLease(p.deps, { flavor: "23", holder });
+      use(p, grant);
+      await returnLease(p.deps, { target: grant.lease_id });
+    }
+    p.host.setPromoting("23", true);
+    const before = p.host.calls.length;
+    const refused = await resetSlot(p.reset, "23-01");
+    expect(refused).toMatchObject({ kind: "dirty", slot: "23-01" });
+    expect(hostCallsSince(p, before)).toEqual([]);
+    p.host.setPromoting("23", false);
+
+    const host = p.host;
+    const overlapping: ResetHost = {
+      quiesce: (r) => host.quiesce(r),
+      resetDatabase: (r, b) => host.resetDatabase(r, b),
+      resetTree: async (r, g) => {
+        host.setPromoting("23", true);
+        return host.resetTree(r, g);
+      },
+      startSlot: (r, o) => host.startSlot(r, o),
+      healthCheck: (r) => host.healthCheck(r),
+      readStamp: (r) => host.readStamp(r),
+    };
+    const outcome = await resetSlot({ ...p.reset, host: overlapping }, "23-02");
+    expect(outcome).toEqual({ kind: "dirty", slot: "23-02", reason: "the golden changed during the reset" });
+    expect((await p.status("23-02"))?.status).toBe("dirty");
   });
 
   it("leaves a slot dirty when the golden changes while it is reset", async () => {

@@ -33,7 +33,7 @@ import { licenceStatus } from "./licence.js";
 import { type SlotRef, parseSlotId, slotId, slotNames, slotNumber } from "./names.js";
 import { rebuildState } from "./recovery.js";
 import { redact } from "./redact.js";
-import { type ResetDeps, type ResetHost, describeOutcome, recoverDeadResets, resetSlot } from "./reset.js";
+import { type ResetDeps, type ResetHost, currentGoldenHash, describeOutcome, recoverDeadResets, resetSlot } from "./reset.js";
 import { type SetupObservation, checkSetup } from "./setup-host.js";
 import { checkSqlLogin } from "./setup-sql.js";
 import type { SecretStore } from "./secret-store.js";
@@ -647,7 +647,7 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
       case "free": {
         let verdict;
         try {
-          verdict = await checkClean(host, slot, (await deps.reset.golden(slot.flavor)).tree.hash);
+          verdict = await checkClean(host, slot, await currentGoldenHash(deps.reset.golden, slot.flavor));
         } catch (err) {
           if (!isHostError(err)) throw err;
           add("warn", check, `free, but could not be checked: ${errorText(err)}`);

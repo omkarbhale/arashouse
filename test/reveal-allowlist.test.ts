@@ -10,9 +10,11 @@ import { repoRoot } from "./helpers.js";
  * the file here, in the same PR that needs it, where a reviewer sees it. The host-side DPAPI store
  * (ticket 21) is the expected addition. `renderGetJson` (src/core/lease.ts) is where `get --json`
  * shows the lease password, once; the lease-file store writes it to its 0600 file; `run` puts it in
- * its child's environment.
+ * its child's environment; the config edit list writes the licence key and the slot's SQL login
+ * passwords into the slot's rendered config files.
  */
 const ALLOWED: Readonly<Record<string, number>> = {
+  "src/core/edits.ts": 1,
   "src/core/lease.ts": 1,
   "src/core/lease-files.ts": 1,
   "src/cli/run.ts": 1,

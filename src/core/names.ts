@@ -117,6 +117,33 @@ export function goldenDir(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROOT
   return win32.join(root, "golden", flavorOf(flavor));
 }
 
+/** The MSI's default agent port (`AS_PORT`), which a baseline install keeps and its golden config names. */
+export const MSI_DEFAULT_AGENT_PORT = 8734;
+
+/**
+ * The names a flavor's baseline is installed under (ticket 24): a throw-away instance whose tree is
+ * then copied to golden, so the golden's config files still name it and the edit list replaces them.
+ */
+export interface BuildNames {
+  /** `ah-build-<key>` */
+  readonly alias: string;
+  /** `arashouse_build_<key>`; the build's SQL logins are this plus `_dbo` and `_reg`. */
+  readonly database: string;
+  /** `<root>\golden-build\<key>`: the install directory. */
+  readonly dir: string;
+  readonly agentPort: number;
+}
+
+export function buildNames(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROOT): BuildNames {
+  const key = flavorOf(flavor);
+  return {
+    alias: `ah-build-${key}`,
+    database: `arashouse_build_${key}`,
+    dir: win32.join(root, "golden-build", key),
+    agentPort: MSI_DEFAULT_AGENT_PORT,
+  };
+}
+
 /** `<root>\staging\<lease_id>` */
 export function stagingDir(leaseId: string, root: string = DEFAULT_INSTALL_ROOT): string {
   if (!LEASE_ID.test(leaseId)) throw new Error("lease id must be 1 to 64 letters, digits, '_' or '-'");

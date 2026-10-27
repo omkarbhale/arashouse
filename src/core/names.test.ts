@@ -7,6 +7,7 @@ import {
   agentPort,
   agentServiceName,
   appPoolName,
+  buildNames,
   databaseName,
   goldenDir,
   isSecretName,
@@ -51,6 +52,17 @@ describe("derived names", () => {
     expect(stagingDir("lease-1")).toBe("C:\\aras_installations\\staging\\lease-1");
     expect(sqlDataDir()).toBe("C:\\aras_installations\\sqldata");
     expect(slotDir(ref, "D:\\ah")).toBe("D:\\ah\\slots\\12sp9\\03");
+  });
+
+  it("names a flavor's baseline install (ticket 24), which its golden config files still name", () => {
+    expect(buildNames("23")).toEqual({
+      alias: "ah-build-23",
+      database: "arashouse_build_23",
+      dir: "C:\\aras_installations\\golden-build\\23",
+      agentPort: 8734,
+    });
+    expect(buildNames("12sp9", "D:\\ah").dir).toBe("D:\\ah\\golden-build\\12sp9");
+    expect(() => buildNames("olm" as never)).toThrow(/unknown flavor/);
   });
 
   it("zero-pads the slot number and refuses anything outside 1 to 99", () => {

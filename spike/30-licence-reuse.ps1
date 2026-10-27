@@ -6,8 +6,11 @@ param(
     [ValidateSet('12sp9', '23', '35')][string]$Flavor = '12sp9',
     [ValidatePattern('^[a-z0-9]{1,8}$')][string]$SuffixA = 'a',
     [ValidatePattern('^[a-z0-9]{1,8}$')][string]$SuffixB = 'b',
-    # Recorded as lic_type; not secret.
+    # Recorded as lic_type; not secret. With -LicenceSourceConfig the source's lic_type is used instead.
     [string]$LicenceType = 'Unlimited',
+    # Read lic_key, act_key, lic_type and company from another install's InnovatorServerConfig.xml instead of prompting (the captain's choice,
+    # 2026-10-27: "Pick up license key from any of my already Aras installed Aras"). The file is only read; the key is never printed.
+    [string]$LicenceSourceConfig,
     # Overrides, mainly for the guard tests.
     [string]$AliasA,
     [string]$AliasB
@@ -20,13 +23,18 @@ try {
     Assert-SpikeName -Kind Alias -Name $AliasA
     Assert-SpikeName -Kind Alias -Name $AliasB
     if ($LicenceType -notmatch '^[A-Za-z0-9 _-]{1,32}$') { throw 'PARAM: -LicenceType is not a plain word.' }
+    if ($LicenceSourceConfig) {
+        # Read-only access to one file of an existing install: only an InnovatorServerConfig.xml directly in an Aras root under Program Files.
+        $LicenceSourceConfig = ConvertTo-SpikeFullPath $LicenceSourceConfig
+        if ($LicenceSourceConfig -notmatch '^C:\\Program Files( \(x86\))?\\Aras[^\\]*\\Innovator\\InnovatorServerConfig\.xml$') { throw "PARAM: -LicenceSourceConfig must be <Aras root>\Innovator\InnovatorServerConfig.xml under Program Files." }
+    }
     $treeA = Assert-SpikePath -Path (Join-Path $script:SpikeRoot ("golden-build\" + $(if ($SuffixA -eq 'a') { $Flavor } else { "$Flavor-$SuffixA" }))) -Mode Read
     $treeB = Assert-SpikePath -Path (Join-Path $script:SpikeRoot "slot-$Flavor-$SuffixB") -Mode Write
 
     Start-Spike -Name "30-licence-reuse-$Flavor" -Apply $Apply.IsPresent -NeedsElevation
     Add-SpikeFact 'licenceType' $LicenceType
 
-    $ctx = @{ cfgA = $null; cfgB = $null; idA = $null; idB = $null; lic = $null; act = $null; pw = $null }
+    $ctx = @{ cfgA = $null; cfgB = $null; idA = $null; idB = $null; lic = $null; act = $null; pw = $null; company = $null }
 
     function Set-LicenceAttrs([string]$configPath, [securestring]$lic, [securestring]$act) {
         # Rewrites lic_type / lic_key / act_key of <License>; a null secret blanks the attribute.
@@ -36,6 +44,7 @@ try {
         $node = $xml.SelectSingleNode('//License')
         if (-not $node) { throw 'CONFIG: no <License> element in the slot config.' }
         $node.SetAttribute('lic_type', $LicenceType)
+        if ($null -ne $ctx.company) { $node.SetAttribute('company', $ctx.company) }
         foreach ($pair in @(@('lic_key', $lic), @('act_key', $act))) {
             $value = ''
             if ($pair[1]) { $value = ConvertTo-SpikePlainText $pair[1] }
@@ -54,8 +63,10 @@ try {
 
     function Test-BothLogins {
         $a = Test-SpikeArasLogin -Alias $AliasA -DatabaseId $ctx.idA -ArasPassword $ctx.pw
+        $errA = $script:SpikeLastLoginError
         $b = Test-SpikeArasLogin -Alias $AliasB -DatabaseId $ctx.idB -ArasPassword $ctx.pw
-        return [ordered]@{ slotA = $a; slotB = $b }
+        $errB = $script:SpikeLastLoginError
+        return [ordered]@{ slotA = $a; slotB = $b; refusalA = $(if ($a) { $null } else { $errA }); refusalB = $(if ($b) { $null } else { $errB }) }
     }
 
     Invoke-SpikeStep "locate both slots' InnovatorServerConfig.xml ($treeA and $treeB) and record whether each already holds a key (a boolean)" {
@@ -76,10 +87,37 @@ try {
         Add-SpikeFact 'loginWithoutKey' (Test-BothLogins)
     }
 
-    Invoke-SpikeStep 'prompt (hidden) for the licence key and the activation key (press Enter to skip the activation key)' {
-        $ctx.lic = Read-SpikeSecret -Prompt 'Licence key lic_key (hidden)'
-        $ctx.act = Read-SpikeSecret -Prompt 'Activation key act_key (hidden; Enter if there is none)' -AllowEmpty
-        if ($ctx.act.Length -eq 0) { $ctx.act = $null }
+    if ($LicenceSourceConfig) {
+        Invoke-SpikeStep "read the licence (lic_key, act_key, lic_type, company) from $LicenceSourceConfig (read only; the key is never printed)" {
+            $src = New-Object Xml.XmlDocument
+            $src.Load($LicenceSourceConfig)
+            $node = $src.SelectSingleNode('//License')
+            if (-not $node -or -not $node.GetAttribute('lic_key')) { throw "SOURCE: $LicenceSourceConfig has no lic_key." }
+            foreach ($name in @('lic_key', 'act_key')) {
+                $value = $node.GetAttribute($name)
+                $secure = $null
+                if ($value) {
+                    $secure = New-Object Security.SecureString
+                    foreach ($c in $value.ToCharArray()) { $secure.AppendChar($c) }
+                    $secure.MakeReadOnly()
+                    Register-SpikeSecret $secure
+                }
+                if ($name -eq 'lic_key') { $ctx.lic = $secure } else { $ctx.act = $secure }
+                $value = $null
+            }
+            $type = $node.GetAttribute('lic_type')
+            if ($type) { $script:LicenceType = $type; Set-Variable -Name LicenceType -Value $type -Scope Script }
+            $ctx.company = $node.GetAttribute('company')
+            Add-SpikeFact 'licenceSource' $LicenceSourceConfig
+            Add-SpikeFact 'licenceType' $type
+            Add-SpikeFact 'sourceHasActKey' ([bool]$ctx.act)
+        }
+    } else {
+        Invoke-SpikeStep 'prompt (hidden) for the licence key and the activation key (press Enter to skip the activation key)' {
+            $ctx.lic = Read-SpikeSecret -Prompt 'Licence key lic_key (hidden)'
+            $ctx.act = Read-SpikeSecret -Prompt 'Activation key act_key (hidden; Enter if there is none)' -AllowEmpty
+            if ($ctx.act.Length -eq 0) { $ctx.act = $null }
+        }
     }
 
     Invoke-SpikeStep 'phase 2: write the same licence value into both slots, recycle both pools, log in to both' {

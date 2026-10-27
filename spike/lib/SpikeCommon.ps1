@@ -84,6 +84,7 @@ function ConvertTo-SpikeFullPath {
 function Get-SpikeProperty {
     # A property of an object, or $null when it has none (safe under strict mode).
     param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
     $prop = $Object.PSObject.Properties[$Name]
     if ($prop) { return $prop.Value }
     return $null
@@ -138,6 +139,8 @@ $script:SpikeName = ''
 $script:SpikeFacts = [ordered]@{}
 $script:SpikeSecrets = New-Object System.Collections.ArrayList
 $script:SpikeStopwatch = $null
+$script:SpikeStartedUtc = $null
+$script:SpikeLastLoginError = $null
 
 function Test-SpikeElevated {
     if ([Environment]::OSVersion.Platform -ne 'Win32NT') { return $false }
@@ -151,6 +154,7 @@ function Start-Spike {
     $script:SpikeApply = $Apply
     $script:SpikeFacts = [ordered]@{}
     $script:SpikeStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $script:SpikeStartedUtc = [DateTime]::UtcNow.AddSeconds(-2)
     if ($Apply) {
         if ($NeedsElevation -and -not (Test-SpikeElevated)) {
             throw 'ELEVATION: -Apply for this script needs an elevated PowerShell (Run as administrator).'
@@ -215,8 +219,10 @@ function Complete-Spike {
 
 # ---- secrets: SecureString in, plain text only inside the call that needs it ----
 function Register-SpikeSecret {
-    param([Parameter(Mandatory)][securestring]$Secure)
-    [void]$script:SpikeSecrets.Add($Secure)
+    # -ContextOnly: a low-entropy secret that is also an ordinary word in Aras data (the shipped backup's well-known login password equals the
+    # stock SQL login name), so the scan flags it only right after 'password' or 'pwd', not wherever the word appears.
+    param([Parameter(Mandatory)][securestring]$Secure, [switch]$ContextOnly)
+    [void]$script:SpikeSecrets.Add([pscustomobject]@{ Secure = $Secure; ContextOnly = $ContextOnly.IsPresent })
 }
 
 function ConvertTo-SpikePlainText {
@@ -228,25 +234,41 @@ function ConvertTo-SpikePlainText {
 
 function Read-SpikeSecret {
     # Hidden prompt. Never echoed. Registered so the end-of-run scan looks for it.
-    param([Parameter(Mandatory)][string]$Prompt, [switch]$AllowEmpty)
+    param([Parameter(Mandatory)][string]$Prompt, [switch]$AllowEmpty, [switch]$ContextOnly)
+    # A worker that was authorised to supply the local sa password leaves it as a DPAPI blob (ConvertFrom-SecureString, bound to this
+    # Windows user) in spike\handoff\sa.dpapi; it is never on a command line. The blob is one-shot: deleted as soon as it is read.
+    $handoff = Join-Path $script:SpikeRoot 'handoff\sa.dpapi'
+    if ($Prompt -like 'SQL sa password*' -and (Test-Path -LiteralPath $handoff)) {
+        $fromFile = ConvertTo-SecureString -String ([IO.File]::ReadAllText($handoff).Trim())
+        Remove-Item -LiteralPath $handoff -Force
+        Register-SpikeSecret $fromFile
+        Add-SpikeFact 'saHandoffUsed' $true
+        return $fromFile
+    }
     $secure = Read-Host -Prompt $Prompt -AsSecureString
     if ($secure.Length -eq 0 -and -not $AllowEmpty) { throw "PROMPT: nothing was entered for '$Prompt'." }
-    if ($secure.Length -gt 0) { Register-SpikeSecret $secure }
+    if ($secure.Length -gt 0) { Register-SpikeSecret $secure -ContextOnly:$ContextOnly }
     return $secure
 }
 
 function Get-SpikeArasPassword {
     # The password of the shipped backup's Aras login. From a hidden prompt, or from the environment variable
     # ARASHOUSE_SPIKE_ARAS_PASSWORD when the captain exported it in this session (to type it once per sitting).
+    $handoff = Join-Path $script:SpikeRoot 'handoff\aras.dpapi'
+    if (Test-Path -LiteralPath $handoff) {
+        $fromFile = ConvertTo-SecureString -String ([IO.File]::ReadAllText($handoff).Trim())
+        Register-SpikeSecret $fromFile -ContextOnly
+        return $fromFile
+    }
     $fromEnv = [Environment]::GetEnvironmentVariable('ARASHOUSE_SPIKE_ARAS_PASSWORD')
     if ($fromEnv) {
         $secure = New-Object Security.SecureString
         foreach ($c in $fromEnv.ToCharArray()) { $secure.AppendChar($c) }
         $secure.MakeReadOnly()
-        Register-SpikeSecret $secure
+        Register-SpikeSecret $secure -ContextOnly
         return $secure
     }
-    return (Read-SpikeSecret -Prompt 'Aras login password of the shipped backup (hidden; used to log in only)')
+    return (Read-SpikeSecret -Prompt 'Aras login password of the shipped backup (hidden; used to log in only)' -ContextOnly)
 }
 
 function New-SpikePassword {
@@ -270,18 +292,22 @@ function New-SpikePassword {
 function Find-SpikeSecretLeaks {
     # File paths under -Paths whose text contains a registered secret. Only paths are returned, never the secret.
     param([Parameter(Mandatory)][string[]]$Paths)
+    # Only files this run wrote are scanned (and so can be deleted): another script's results are not this run's to judge.
     $plain = @()
-    foreach ($s in $script:SpikeSecrets) { $plain += (ConvertTo-SpikePlainText $s) }
+    foreach ($s in $script:SpikeSecrets) { $plain += [pscustomobject]@{ Text = (ConvertTo-SpikePlainText $s.Secure); ContextOnly = $s.ContextOnly } }
     $leaks = New-Object System.Collections.ArrayList
     if ($plain.Count -eq 0) { return @() }
     foreach ($root in $Paths) {
         if (-not (Test-Path -LiteralPath $root)) { continue }
         foreach ($f in (Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue)) {
             if ($f.Length -gt 64MB) { continue }
+            if ($script:SpikeStartedUtc -and $f.LastWriteTimeUtc -lt $script:SpikeStartedUtc) { continue }
             $text = [IO.File]::ReadAllText($f.FullName)
             foreach ($p in $plain) {
-                if (-not $p) { continue }
-                $hit = if ($p.Length -lt 6) { $text -cmatch ('(?<![A-Za-z0-9_])' + [regex]::Escape($p) + '(?![A-Za-z0-9_])') } else { $text.Contains($p) }
+                if (-not $p.Text) { continue }
+                $word = [regex]::Escape($p.Text) + '(?![A-Za-z0-9_])'
+                $hit = if ($p.ContextOnly) { $text -match ('(?i)(pass(word)?|pwd)[^A-Za-z0-9\r\n]{0,4}' + $word) }
+                    elseif ($p.Text.Length -lt 6) { $text -cmatch ('(?<![A-Za-z0-9_])' + $word) } else { $text.Contains($p.Text) }
                 if ($hit) { [void]$leaks.Add($f.FullName); break }
             }
         }
@@ -546,6 +572,39 @@ function Remove-SpikeIisApps {
     return [pscustomobject]@{ apps = $apps; pools = $pools }
 }
 
+function Move-SpikeAppsToOwnPools {
+    # The MSI puts its applications into fixed, machine-wide pools ("Aras Innovator AppPool ASP.NET 4.0" and so on) that the captain's own installs
+    # share. Gives every application of one spike alias its own pool "<alias>-<role>" with the same settings, so recycling a spike never touches theirs.
+    param([Parameter(Mandatory)][string]$Alias, [string]$SiteName = 'Default Web Site')
+    Assert-SpikeName -Kind Alias -Name $Alias
+    $mgr = Get-SpikeIisManager
+    $moved = @()
+    try {
+        $site = $mgr.Sites[$SiteName]
+        foreach ($app in @($site.Applications | Where-Object { $_.Path -eq "/$Alias" -or $_.Path -like "/$Alias/*" })) {
+            $sub = $app.Path.Substring($Alias.Length + 1)
+            $poolName = "$Alias-" + (Get-SpikePoolRole $sub)
+            Assert-SpikeName -Kind Pool -Name $poolName
+            if ($app.ApplicationPoolName -eq $poolName) { continue }
+            $from = $mgr.ApplicationPools[$app.ApplicationPoolName]
+            $pool = $mgr.ApplicationPools[$poolName]
+            if (-not $pool) {
+                $pool = $mgr.ApplicationPools.Add($poolName)
+                if ($from) {
+                    $pool.ManagedRuntimeVersion = $from.ManagedRuntimeVersion
+                    $pool.ManagedPipelineMode = $from.ManagedPipelineMode
+                    $pool.Enable32BitAppOnWin64 = $from.Enable32BitAppOnWin64
+                    $pool.ProcessModel.IdentityType = $from.ProcessModel.IdentityType
+                    $pool.ProcessModel.IdleTimeout = $from.ProcessModel.IdleTimeout
+                }
+            }
+            $moved += [pscustomobject]@{ path = $app.Path; fromPool = $app.ApplicationPoolName; toPool = $poolName }
+            $app.ApplicationPoolName = $poolName
+        }
+        $mgr.CommitChanges()
+    } finally { $mgr.Dispose() }
+    return $moved
+}
 function Restart-SpikePools {
     # Recycles (or starts) every pool of one spike alias.
     param([Parameter(Mandatory)][string]$Alias, [switch]$Stop, [switch]$Start)
@@ -557,7 +616,10 @@ function Restart-SpikePools {
             Assert-SpikeName -Kind Pool -Name $pool.Name
             if ($Stop) {
                 if ($pool.State -eq [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Stop() }
+                # Stop returns before the worker process has gone; a Start in that window fails with 0x80070425.
+                for ($i = 0; $i -lt 60 -and $pool.State -ne [Microsoft.Web.Administration.ObjectState]::Stopped; $i++) { Start-Sleep -Milliseconds 500 }
             } elseif ($Start) {
+                for ($i = 0; $i -lt 60 -and $pool.State -eq [Microsoft.Web.Administration.ObjectState]::Stopping; $i++) { Start-Sleep -Milliseconds 500 }
                 if ($pool.State -ne [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Start() }
             } else {
                 if ($pool.State -eq [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Recycle() } else { [void]$pool.Start() }
@@ -635,7 +697,19 @@ function Get-SpikeArasToken {
             $reader = New-Object IO.StreamReader($res.GetResponseStream())
             $json = $reader.ReadToEnd() | ConvertFrom-Json
         } finally { $res.Close() }
-    } catch [Net.WebException] { return $null }
+    } catch [Net.WebException] {
+        # The OAuth server's refusal (error and error_description) is kept for the results: it names the cause, never the password.
+        $script:SpikeLastLoginError = $null
+        $resp = $_.Exception.Response
+        if ($resp) {
+            try {
+                $body = (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() | ConvertFrom-Json
+                $script:SpikeLastLoginError = ('{0}: {1}' -f $body.error, $body.error_description)
+            } catch { $script:SpikeLastLoginError = 'HTTP ' + [int]$resp.StatusCode }
+        } else { $script:SpikeLastLoginError = $_.Exception.Message }
+        return $null
+    }
+    $script:SpikeLastLoginError = $null
     if (-not $json.access_token) { return $null }
     $secure = New-Object Security.SecureString
     foreach ($c in $json.access_token.ToCharArray()) { $secure.AppendChar($c) }

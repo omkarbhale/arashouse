@@ -40,7 +40,7 @@ try {
                 $loc = Get-SpikeProperty $e 'InstallLocation'
                 if (-not $loc -or -not (Test-SpikeUnder ($loc.TrimEnd('\')) $script:SpikeRoot)) { continue }
                 if ($k.PSChildName -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { continue }
-                $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/x', $k.PSChildName, '/qn', 'REMOVE_DATABASES=0', '/norestart') -Wait -PassThru
+                $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/x', $k.PSChildName, '/qn', 'REMOVE_DATABASES=0', 'REBOOT=ReallySuppress', 'MSIRESTARTMANAGERCONTROL=Disable', '/norestart') -Wait -PassThru
                 $done += [ordered]@{ productCode = $k.PSChildName; exitCode = $p.ExitCode }
             }
         }
@@ -51,7 +51,7 @@ try {
         Invoke-SpikeStep 'prompt (hidden) for the SQL sa password' { $ctx.sqlPassword = Read-SpikeSecret -Prompt 'SQL sa password (hidden)' }
     }
 
-    Invoke-SpikeStep 'drop databases arashouse_spike_* (single-user, roll back connections) and logins arashouse_spike_*' {
+    Invoke-SpikeStep 'drop databases arashouse_spike_* (single-user, roll back connections), their users in master and logins arashouse_spike_*' {
         $conn = if ($SqlAuth -eq 'Sa') { New-SpikeSqlConnection -Auth Sa -Password $ctx.sqlPassword } else { New-SpikeSqlConnection -Auth Windows }
         try {
             $dbs = @(Invoke-SpikeSql -Connection $conn -Query "SELECT name FROM sys.databases WHERE name LIKE N'arashouse[_]spike[_]%'" | ForEach-Object { $_.name })
@@ -61,6 +61,13 @@ try {
                 Invoke-SpikeSql -Connection $conn -Query "ALTER DATABASE $q SET SINGLE_USER WITH ROLLBACK IMMEDIATE" | Out-Null
                 Invoke-SpikeSql -Connection $conn -Query "DROP DATABASE $q" | Out-Null
             }
+            # The MSI also adds its owner and regular logins as users of master (ticket 05, 2026-10-27: a leftover user made the next install abort in DoesDBExists).
+            $masterUsers = @(Invoke-SpikeSql -Connection $conn -Query "SELECT name FROM master.sys.database_principals WHERE type IN ('S', 'U') AND name LIKE N'arashouse[_]spike[_]%'" | ForEach-Object { $_.name })
+            foreach ($u in $masterUsers) {
+                Assert-SpikeName -Kind Login -Name $u
+                Invoke-SpikeSql -Connection $conn -Query ("USE master; DROP USER " + (Format-SpikeSqlIdent $u)) | Out-Null
+            }
+            Add-SpikeFact 'masterUsersDropped' $masterUsers
             $logins = @(Invoke-SpikeSql -Connection $conn -Query "SELECT name FROM sys.server_principals WHERE type = 'S' AND name LIKE N'arashouse[_]spike[_]%'" | ForEach-Object { $_.name })
             foreach ($l in $logins) {
                 Assert-SpikeName -Kind Login -Name $l
@@ -100,7 +107,8 @@ try {
             $base = Join-Path $env:windir "Microsoft.NET\$fw\v4.0.30319\Temporary ASP.NET Files"
             if (-not (Test-Path -LiteralPath $base)) { continue }
             foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory -Filter 'ah-spike-*' -ErrorAction SilentlyContinue)) {
-                Assert-SpikeName -Kind Alias -Name $d.Name
+                # ASP.NET names these after the application: the alias itself, or the alias plus '_client', '_server' and so on.
+                Assert-SpikeName -Kind Alias -Name ($d.Name -replace '_[a-z]+$', '')
                 Remove-Item -LiteralPath $d.FullName -Recurse -Force
                 $removed++
             }
@@ -122,7 +130,7 @@ try {
             $pools = @($mgr.ApplicationPools | Where-Object { $_.Name -like 'ah-spike-*' }).Count
         } finally { $mgr.Dispose() }
         $svcs = @(Get-CimInstance Win32_Service -Filter "Name LIKE 'ArasHouseAgent[_]spike[_]%'").Count
-        $dirs = @(Get-ChildItem -LiteralPath $script:SpikeRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @('out', 'lib') }).Count
+        $dirs = @(Get-ChildItem -LiteralPath $script:SpikeRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -notin @('out', 'lib', 'handoff') }).Count
         Add-SpikeFact 'leftover' ([ordered]@{ iisApps = $apps; iisPools = $pools; services = $svcs; spikeFolders = $dirs })
         if (($apps + $pools + $svcs + $dirs) -gt 0) { Write-Host 'warning: something with a spike prefix is left; see leftover in the results' }
     }

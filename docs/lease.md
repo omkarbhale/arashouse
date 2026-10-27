@@ -17,10 +17,12 @@ handed out until it is `free` again; whoever returns a lease may assume its slot
 
 1. Reads the state and takes the lowest-numbered `free` slot of the flavor. `dirty`, `resetting`,
    `quarantined`, `provisioning` and `disabled` slots are never handed out.
-2. **Dirty check**, before the slot is touched: the host's stamp must carry the golden hash the state
-   recorded, no lease and a reset time, and the host's `healthCheck` must pass. A slot that fails is
-   marked `dirty` (with the reason in the event log) and the next one is tried. A `Quarantine` host error quarantines
-   the slot; a `Retryable` one skips it for this attempt. Ticket 32 owns the markers behind the check.
+2. **Dirty check**, before the slot is touched (`checkClean`, ticket 32): the host's stamp, the database marker
+   the health check reads and the state record must agree on the golden hash, the stamp must name no lease, the
+   stamp's and the marker's reset times must be no earlier than the end of the slot's last lease
+   (`last_lease_ended_at` in the state, written when the slot leaves `leased`), and the host's `healthCheck` must
+   pass (`docs/health.md`). A slot that fails is marked `dirty` (with the reason in the event log) and the next one
+   is tried. A `Quarantine` host error quarantines the slot; a `Retryable` one skips it for this attempt.
 3. The host's free RAM is asked (`hostInfo`) and the governor gives a first answer on the unlocked
    state, so a caller it refuses does not probe a slot. Under the lock, the governor is asked again and the slot moves `free -> leased` with a fresh lease id
    (128 bits, hex), provided it is still the same free slot that was checked. Two concurrent `get`

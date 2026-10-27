@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeHost, fakeGoldenHash } from "../host/fake.js";
+import { FakeClock } from "../host/clock.js";
 import { HostError, type HostErrorKind } from "../host/errors.js";
 import { SECRET_REQUIRED_EXIT_CODE } from "./licence.js";
 import { EXIT_CODES } from "./exit-codes.js";
@@ -79,10 +80,19 @@ interface Pool {
 
 /** A pool of free, provisioned slots: `{ "23": 2 }` is 23-01 and 23-02. Time is virtual: `sleep` moves it. */
 async function pool(spec: Partial<Record<FlavorKey, number>>, overrides: Partial<LeaseDeps> = {}): Promise<Pool> {
-  const clock = { t: Date.UTC(2026, 9, 22, 12, 0, 0) };
+  // One clock for the state and the host, so a reset's stamp is never older than the lease it follows.
+  const time = new FakeClock(Date.UTC(2026, 9, 22, 12, 0, 0));
+  const clock = {
+    get t() {
+      return time.now();
+    },
+    set t(at: number) {
+      time.advance(at - time.now());
+    },
+  };
   const now = () => new Date(clock.t);
   const store = new StateStore({ home, now });
-  const host = new FakeHost();
+  const host = new FakeHost({ clock: time });
   for (const [flavor, count] of Object.entries(spec) as [FlavorKey, number][]) {
     for (let n = 1; n <= count; n++) {
       const r = ref(flavor, n);
@@ -423,6 +433,78 @@ describe("get and the dirty check", () => {
     expect(exitCodeFor(await failure(getLease(p.deps, { flavor: "23", holder: "t" })))).toBe(3);
     expect(await p.status("23-01")).toBe("dirty");
     expect(await p.status("23-02")).toBe("dirty");
+  });
+
+  describe("the stamp, the database marker and the state record must agree (ticket 32)", () => {
+    /** A slot that was leased and returned, then made free again without a real reset: only `rewrite` touches the host. */
+    async function returnedWithoutReset(rewrite: (p: Pool, stamp: NonNullable<ReturnType<FakeHost["inspect"]>>["stamp"]) => Promise<void>) {
+      const p = await pool({ "23": 1 });
+      const grant = await getLease(p.deps, { flavor: "23", holder: "t" });
+      p.clock.t += 60_000;
+      await returnLease(p.deps, { target: grant.lease_id });
+      p.clock.t += 60_000;
+      await rewrite(p, p.host.inspect(ref("23", 1))!.stamp);
+      await p.drive("23-01", { to: "resetting", pid: 7 }, { to: "free", golden_hash: fakeGoldenHash("23"), reset_ms: 1 });
+      return p;
+    }
+
+    async function refusedFor(p: Pool): Promise<string | undefined> {
+      expect(exitCodeFor(await failure(getLease(p.deps, { flavor: "23", holder: "t2" })))).toBe(3);
+      expect(await p.status("23-01")).toBe("dirty");
+      return (await p.store.events()).filter((e) => e.slot === "23-01" && e.to === "dirty").at(-1)?.reason;
+    }
+
+    it("records when the lease ended", async () => {
+      const p = await pool({ "23": 1 });
+      const grant = await getLease(p.deps, { flavor: "23", holder: "t" });
+      p.clock.t += 5_000;
+      await returnLease(p.deps, { target: grant.lease_id });
+      expect((await p.store.read()).slots["23-01"]?.last_lease_ended_at).toBe(new Date(p.clock.t).toISOString());
+    });
+
+    it("refuses a slot whose stamp alone is from another golden", async () => {
+      const p = await pool({ "23": 1 });
+      p.host.dirty(ref("23", 1), "stamp");
+      expect(await refusedFor(p)).toContain("the stamp does not carry the golden hash the state recorded");
+    });
+
+    it("refuses a slot whose database marker alone is gone", async () => {
+      const p = await pool({ "23": 1 });
+      p.host.dirty(ref("23", 1), "database");
+      expect(p.host.inspect(ref("23", 1))?.stamp?.goldenHash).toBe(fakeGoldenHash("23"));
+      expect(await refusedFor(p)).toContain("health check failed");
+    });
+
+    it("refuses a slot whose state record alone names another golden", async () => {
+      const p = await pool({ "23": 1 });
+      await p.drive("23-01", { to: "dirty" }, { to: "resetting", pid: 7 }, { to: "free", golden_hash: "f".repeat(64), reset_ms: 1 });
+      expect(await refusedFor(p)).toContain("the stamp does not carry the golden hash the state recorded");
+    });
+
+    it("refuses a slot whose stamp was reset before its last lease ended", async () => {
+      const p = await returnedWithoutReset(async (q, stamp) => {
+        // The lease's id taken off the stamp, but no reset: its reset time is the one from before the lease.
+        await q.host.writeStamp(ref("23", 1), { ...stamp!, leaseId: null });
+      });
+      expect(await refusedFor(p)).toBe("the stamp's reset is older than the end of the last lease");
+    });
+
+    it("refuses a slot whose database was reset before its last lease ended, though its stamp is new", async () => {
+      const p = await returnedWithoutReset(async (q, stamp) => {
+        await q.host.writeStamp(ref("23", 1), { ...stamp!, leaseId: null, lastResetAt: new Date(q.clock.t).toISOString() });
+      });
+      expect(await refusedFor(p)).toBe("the database was reset before the end of the last lease");
+    });
+
+    it("hands out a slot that was really reset after its lease", async () => {
+      const p = await pool({ "23": 1 });
+      const grant = await getLease(p.deps, { flavor: "23", holder: "t" });
+      p.clock.t += 60_000;
+      await returnLease(p.deps, { target: grant.lease_id });
+      p.clock.t += 60_000;
+      await p.reset("23-01");
+      expect((await getLease(p.deps, { flavor: "23", holder: "t2" })).slot).toBe("23-01");
+    });
   });
 
   it("skips a slot whose check fails with a retryable host error, and tries it again after waiting", async () => {

@@ -382,11 +382,18 @@ export function slotLoginSecretName(ref: SlotRef, role: LoginRole): string {
 }
 
 /**
- * `slot-<key>-<NN>-root`: a free slot's Aras `root` password, random, which the reset sets after the pools start
- * (ticket 32) and `setLeaseCredentials` logs in with to set the lease's password, then deletes (ticket 34).
+ * `slot-<key>-<NN>-root`: a free slot's Aras `root` (and `admin`) password, random, which the reset's health check sets
+ * through the slot's server after the pools start (ticket 32) and `setLeaseCredentials` logs in with to set the lease's
+ * password, then deletes (ticket 34).
  */
 export function slotRootSecretName(ref: SlotRef): string {
   return `slot-${dashTag(ref)}-root`;
+}
+
+/** `ootb-root-<key>`: the password `root` has in the flavor's golden backup, which a restore brings back. */
+export function ootbRootSecretName(flavor: FlavorKey): string {
+  if (!isFlavorKey(flavor)) throw new Error(`unknown flavor "${String(flavor)}"`);
+  return `ootb-root-${flavor}`;
 }
 
 /** `<root>\secrets\<name>.bin` */

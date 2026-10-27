@@ -448,6 +448,44 @@ describe("dirty detection before handing out", () => {
   });
 });
 
+describe("dirty detection before handing out (ticket 32)", () => {
+  it("resets a free slot whose state record alone names another golden, then hands it out", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => {
+      tx.transition("23-01", { to: "dirty" });
+      tx.transition("23-01", { to: "resetting", pid: 7 });
+      tx.transition("23-01", { to: "free", golden_hash: "f".repeat(64), reset_ms: 1 });
+    });
+    const grant = await getLease(p.deps, { flavor: "23", holder: "b", waitSeconds: 60 });
+    expect(grant.slot).toBe("23-01");
+    expect(p.host.callLog).toContain("resetTree");
+    expect((await p.status("23-01"))?.golden_hash).toBe(fakeGoldenHash("23"));
+  });
+
+  it("resets a free slot that was not reset after its last lease, then hands it out", async () => {
+    const p = await pool({ "23": 1 });
+    const first = await getLease(p.deps, { flavor: "23", holder: "a" });
+    use(p, first);
+    p.clock.advance(60_000);
+    await returnLease(p.deps, { target: first.lease_id });
+    // Made free by hand, its stamp's lease taken off and its database marked again, but nothing reset after the lease.
+    const ref = parseSlotId("23-01");
+    await p.host.writeStamp(ref, { ...p.host.inspect(ref)!.stamp!, leaseId: null });
+    await p.host.resetDatabase(ref, p.host.backup("23"));
+    await p.store.update((tx) => {
+      tx.transition("23-01", { to: "resetting", pid: 7 });
+      tx.transition("23-01", { to: "free", golden_hash: fakeGoldenHash("23"), reset_ms: 1 });
+    });
+    const before = p.host.calls.length;
+    const second = await getLease(p.deps, { flavor: "23", holder: "b", waitSeconds: 60 });
+    expect(second.slot).toBe("23-01");
+    expect(hostCallsSince(p, before)).toContain("resetTree");
+    expect(atGolden(p, "23-01")).toBe(true);
+    const events = (await p.store.events()).filter((e) => e.slot === "23-01" && e.to === "dirty").map((e) => e.reason);
+    expect(events).toContain("the stamp's reset is older than the end of the last lease");
+  });
+});
+
 describe("a replaced golden", () => {
   it("does not hand out a free slot reset from an older golden", async () => {
     const p = await pool({ "23": 1 });

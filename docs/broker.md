@@ -34,7 +34,7 @@ WSL side first, so a refused name is never sent.
 | `resetTree` | slot | on a quiesced slot, to the golden manifest hash in `args.hash`: the mirror, the runtime state cleared, the configs rendered, the `fast` verify (a mismatch is `Quarantine`), then a fresh stamp (`docs/reset.md`) | 30 |
 | `writeStamp` | slot | writes `args.stamp` to `<slot folder>\.arashouse-slot.json`; a stamp of another slot, or a slot with no folder, is `Refused` | 30 |
 | `resetDatabase` | slot | restores the golden's `db\ootb.bak` (`args.file`, which must be that file) over the slot database as its owner, after `kill_connections`, and once more on 3101; then `MULTI_USER`, the two users mapped again and the marker (`args.hash`, which must be the golden's manifest hash now) written; a slot without a database is `Refused`, a marker or version that does not read back `Quarantine` (`docs/reset-database.md`) | 31 |
-| `healthCheck` | slot | | 32 |
+| `healthCheck` | slot | whether the slot may be handed out: the stamp (from the golden now, a reset time, no lease), `Client/`, `Server/DBList.aspx` (only the slot's database) and OAuth discovery from the slot's own server, the `fast` tree verify, the configs' rendering, the database marker against the stamp, the version rows against the flavor, and `root`'s login with a one-time password (set for `root` and `admin` and kept as `slot-<key>-<NN>-root`); each check named and timed, `ok: false` when one fails, and the marker read back; no arguments (`docs/health.md`) | 32 |
 | `startSlot` | slot | starts the slot's pools, its agent service only with `args.agent` (`Refused` when the slot has none), then warms three URLs, and asks the agent's health URL when it started; `ok: false` when one does not answer (`docs/start-stop.md`) | 33, 33b |
 | `stopSlot` | slot | stops the slot's agent, then its pools, and waits for its worker processes to end; the reset's quiesce (`docs/start-stop.md`) | 33 |
 | `setLeaseCredentials` | slot | `args.password` (the lease's, 16 to 128 URL-safe characters) for `root` and `admin`: an OAuth login as `root` with the slot's stored random password (`slot-<key>-<NN>-root`), an AML `edit` of both `User` items, a login with the new password, then the stored one deleted; no stored password is `Retryable`, a refusal by the server `Quarantine` (`docs/lease-credentials.md`) | 34 |
@@ -60,7 +60,7 @@ of quarantining it. A ticket that adds a verb registers it in `src/broker/` the 
   sent: `BrokerHost` measures the round trip on its own clock.
 - Limits: a request line of 64 KiB, a response line of 1 MiB; the broker drops a connection that has not
   sent its line within 5 s; each verb has a time bound (`VERB_TIMEOUT_MS`: `ping` 5 s, `readStamp` 10 s,
-  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot`, `destroySlot` and `resetTree` 30 minutes, `quiesce`, `resetDatabase` and `setLeaseCredentials` 10 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
+  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot`, `destroySlot` and `resetTree` 30 minutes, `quiesce`, `resetDatabase`, `setLeaseCredentials` and `healthCheck` 10 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
   the bound plus 5 s, and `BrokerHost` the bound plus 10 s, killing the client after that.
 
 | failure | kind |

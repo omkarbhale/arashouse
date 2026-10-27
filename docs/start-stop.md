@@ -67,7 +67,8 @@ Through firstmate's elevated gate, `setup-host.ps1 -Apply -UpdateBroker` install
 - `destroySlot`: 23.6 s (stop 9.0 s); nothing of the slot left, the deny-list unchanged.
 
 The warm-up runs on the broker, so it does not depend on reaching the slot from WSL; in this run the WSL-side address
-discovery (`docs/slot-url.md`) found no address that answered, which is the health check's concern (ticket 32).
+discovery (`docs/slot-url.md`) found no address that answered: it asked `/<alias>/DBList.aspx`, which 404s (ticket 32 moved
+it to `/<alias>/Server/DBList.aspx`, `docs/health.md`).
 
 ## Measured with the agent (2026-10-28, ticket 33b)
 

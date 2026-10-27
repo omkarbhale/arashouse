@@ -67,7 +67,7 @@ export function resetHostAddressCache(): void {
 /**
  * The address WSL uses for the Windows host. `ARASHOUSE_HOST_ADDR` wins and is not probed. Otherwise
  * the default gateway is tried first, then `localhost`, each with an anonymous `GET /<alias>/Client/`;
- * the first that answers (Client/ not 404, and `DBList.aspx` 200 with a `<DBList>` document, so a LAN
+ * the first that answers (Client/ not 404, and `Server/DBList.aspx` 200 with a `<DBList>` document, so a LAN
  * router answering 302/401/403 is not mistaken for the host) is kept for the rest of the process. `alias` is the web alias of any slot the tool owns.
  */
 export async function hostAddress(alias: string, options: HostAddressOptions = {}): Promise<string> {
@@ -90,7 +90,7 @@ export async function hostAddress(alias: string, options: HostAddressOptions = {
       timeoutMs: options.timeoutMs ?? COLD_TIMEOUT_MS,
     });
     if (answer.status === undefined || answer.status === 404) continue;
-    const dbList = await anonymousGet(`${slotUrl(address, alias)}/DBList.aspx`, {
+    const dbList = await anonymousGet(`${slotUrl(address, alias)}/Server/DBList.aspx`, {
       timeoutMs: options.timeoutMs ?? COLD_TIMEOUT_MS,
       readBody: true,
     });

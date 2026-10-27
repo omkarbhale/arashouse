@@ -115,6 +115,20 @@ describe("what a transition records", () => {
     expect(dirty.lease).toBeUndefined();
   });
 
+  it("records when a lease ended, on a return or a quarantine, and keeps it through the reset", () => {
+    const at = NOW.toISOString();
+    expect(transitionSlot(slotIn("leased"), { to: "dirty" }, ctx).last_lease_ended_at).toBe(at);
+    expect(transitionSlot(slotIn("leased"), request("quarantined"), ctx).last_lease_ended_at).toBe(at);
+    expect(transitionSlot(slotIn("free"), request("leased"), ctx).last_lease_ended_at).toBeUndefined();
+    const later = { now: new Date("2026-10-22T11:00:00.000Z") };
+    const freed = transitionSlot(
+      transitionSlot(transitionSlot(slotIn("leased"), { to: "dirty" }, ctx), request("resetting"), later),
+      request("free"),
+      later,
+    );
+    expect(freed.last_lease_ended_at).toBe(at);
+  });
+
   it("counts reset attempts until the slot is clean", () => {
     const first = transitionSlot(slotIn("dirty"), { to: "resetting", pid: 11 }, ctx);
     expect(first.reset).toEqual({ started_at: NOW.toISOString(), pid: 11, attempt: 1 });
@@ -194,6 +208,12 @@ describe("the state file bytes", () => {
     expect(parseState(serialiseState(stateWith(unknown))).slots["23-02"]?.reset).toEqual(unknown.reset);
   });
 
+  it("round-trips when the last lease ended, and reads a slot written without it", () => {
+    const returned = transitionSlot(slotIn("leased"), { to: "dirty" }, ctx);
+    expect(parseState(serialiseState(stateWith(returned))).slots["23-02"]?.last_lease_ended_at).toBe(NOW.toISOString());
+    expect("last_lease_ended_at" in (parseState(serialiseState(stateWith(slotIn("free")))).slots["23-02"] ?? {})).toBe(false);
+  });
+
   it("round-trips the lease, with its bootstrap", () => {
     const leased = transitionSlot(slotIn("free"), { to: "leased", holder: "h", bootstrap: { recipe: "r", steps: 3 } }, ctx);
     const back = parseState(serialiseState(stateWith(leased)));
@@ -268,6 +288,7 @@ describe("parseState refuses a damaged file", () => {
     ["tickets out of order", (s) => ((s.next_ticket = 9), (s.queue = [waiterRaw(3), waiterRaw(2)]))],
     ["a waiter for an unknown flavor", (s) => ((s.next_ticket = 9), (s.queue = [{ ...waiterRaw(1), flavor: "28" }]))],
     ["a waiter without a pid", (s) => ((s.next_ticket = 9), (s.queue = [{ ...waiterRaw(1), pid: 0 }]))],
+    ["a lease end that is not a time", (s) => (s.slots[0].last_lease_ended_at = "yesterday")],
   ])("%s", (_label, damage) => {
     const raw = good();
     damage(raw);

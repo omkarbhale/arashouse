@@ -106,7 +106,8 @@ describe("encodeLine", () => {
 describe("verbTimeout", () => {
   it("bounds the quick verbs tighter than the default", () => {
     expect(verbTimeout("ping")).toBeLessThan(DEFAULT_VERB_TIMEOUT_MS);
-    expect(verbTimeout("healthCheck")).toBe(DEFAULT_VERB_TIMEOUT_MS);
+    expect(verbTimeout("deployCode")).toBe(DEFAULT_VERB_TIMEOUT_MS);
+    expect(verbTimeout("healthCheck")).toBeGreaterThan(DEFAULT_VERB_TIMEOUT_MS);
     expect(verbTimeout("resetDatabase")).toBeGreaterThan(DEFAULT_VERB_TIMEOUT_MS);
   });
 });

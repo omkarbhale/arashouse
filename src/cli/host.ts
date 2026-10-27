@@ -16,6 +16,7 @@ import type { StateStore } from "../core/store.js";
 import { BrokerHost } from "../host/broker-host.js";
 import { DEFAULT_WINDOWS_NODE, WINDOWS_NODE_ENV, interopTransport } from "../host/broker-transport.js";
 import { HostError } from "../host/errors.js";
+import { LiveClock } from "../host/clock.js";
 import { FakeHost, type Fault } from "../host/fake.js";
 import { HOST_ADDR_ENV, hostAddress, slotUrl } from "../host/url.js";
 
@@ -50,7 +51,8 @@ export function hostKind(env: NodeJS.ProcessEnv): "fake" | "broker" {
  * `127.0.0.1`, and are never probed.
  */
 async function fakeHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {
-  const host = new FakeHost({ baselines: FLAVOR_KEYS });
+  // On the system clock, as the state is: a reset's stamp is then never older than the lease it follows.
+  const host = new FakeHost({ baselines: FLAVOR_KEYS, clock: new LiveClock() });
   // An unusable state file provisions nothing, so `doctor` can still report it.
   const slots = await store.read().then((state) => Object.values(state.slots), (err: unknown) => {
     if (err instanceof StateCorruptError) return [];

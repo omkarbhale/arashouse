@@ -260,11 +260,20 @@ function describeNone(flavor: FlavorKey, slots: readonly Slot[]): string {
 
 export type Clean = { readonly clean: true; readonly stamp: SlotStamp } | { readonly clean: false; readonly reason: string };
 
+/** Whether the ISO time `at` is no earlier than `since` (a lease's end); an unreadable time is not. */
+function notBefore(at: string | null, since: string | undefined): boolean {
+  if (since === undefined) return true;
+  const t = at === null ? Number.NaN : Date.parse(at);
+  return !Number.isNaN(t) && t >= Date.parse(since);
+}
+
 /**
- * The dirty check that runs before a free slot is handed out (ticket 32 owns the markers): the
- * stamp must carry the golden hash the state recorded and no lease, and the host's health check
- * (tree, database marker and applications against that stamp) must pass. With `currentGolden`, the
- * flavor's golden manifest hash now, a slot reset from an older golden is not clean.
+ * The dirty check that runs before a free slot is handed out (ticket 32): the stamp, the database
+ * marker and the state record must agree on the golden hash, the stamp must name no lease, both the
+ * stamp's and the marker's reset times must be no earlier than the end of the slot's last lease, and
+ * the host's health check (tree, configs, database marker and applications against that stamp) must
+ * pass. With `currentGolden`, the flavor's golden manifest hash now, a slot reset from an older golden
+ * is not clean.
  */
 export async function checkClean(host: Pick<LeaseHost, "readStamp" | "healthCheck">, slot: Slot, currentGolden?: string): Promise<Clean> {
   if (currentGolden !== undefined && slot.golden_hash !== currentGolden) {
@@ -278,8 +287,16 @@ export async function checkClean(host: Pick<LeaseHost, "readStamp" | "healthChec
   }
   if (stamp.leaseId) return { clean: false, reason: "the stamp still names a lease" };
   if (!stamp.lastResetAt) return { clean: false, reason: "the stamp records no reset" };
+  if (!notBefore(stamp.lastResetAt, slot.last_lease_ended_at)) return { clean: false, reason: "the stamp's reset is older than the end of the last lease" };
   const health = await host.healthCheck(ref);
   if (!health.ok) return { clean: false, reason: `health check failed: ${redact(health.detail)}` };
+  // A host that reports the marker (the broker and the fake do) is held to it as well.
+  if (health.marker !== undefined) {
+    if (health.marker === null || health.marker.goldenHash !== slot.golden_hash) {
+      return { clean: false, reason: "the database marker does not carry the golden hash the state recorded" };
+    }
+    if (!notBefore(health.marker.resetAt, slot.last_lease_ended_at)) return { clean: false, reason: "the database was reset before the end of the last lease" };
+  }
   return { clean: true, stamp };
 }
 

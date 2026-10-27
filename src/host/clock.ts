@@ -24,3 +24,17 @@ export class FakeClock implements Clock {
     this.current += ms;
   }
 }
+
+/**
+ * A `FakeClock` that reads the system time: for a fake host whose stamps and markers must be as new as the leases the
+ * state ended by its own clock (the CLI's fake host, tests on real timers). `advance` is ignored.
+ */
+export class LiveClock extends FakeClock {
+  override now(): number {
+    return Date.now();
+  }
+
+  override advance(ms: number): void {
+    void ms;
+  }
+}

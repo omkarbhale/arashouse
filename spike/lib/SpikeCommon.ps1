@@ -140,6 +140,7 @@ $script:SpikeFacts = [ordered]@{}
 $script:SpikeSecrets = New-Object System.Collections.ArrayList
 $script:SpikeStopwatch = $null
 $script:SpikeStartedUtc = $null
+$script:SpikeLastLoginError = $null
 
 function Test-SpikeElevated {
     if ([Environment]::OSVersion.Platform -ne 'Win32NT') { return $false }
@@ -613,7 +614,10 @@ function Restart-SpikePools {
             Assert-SpikeName -Kind Pool -Name $pool.Name
             if ($Stop) {
                 if ($pool.State -eq [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Stop() }
+                # Stop returns before the worker process has gone; a Start in that window fails with 0x80070425.
+                for ($i = 0; $i -lt 60 -and $pool.State -ne [Microsoft.Web.Administration.ObjectState]::Stopped; $i++) { Start-Sleep -Milliseconds 500 }
             } elseif ($Start) {
+                for ($i = 0; $i -lt 60 -and $pool.State -eq [Microsoft.Web.Administration.ObjectState]::Stopping; $i++) { Start-Sleep -Milliseconds 500 }
                 if ($pool.State -ne [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Start() }
             } else {
                 if ($pool.State -eq [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Recycle() } else { [void]$pool.Start() }
@@ -691,7 +695,19 @@ function Get-SpikeArasToken {
             $reader = New-Object IO.StreamReader($res.GetResponseStream())
             $json = $reader.ReadToEnd() | ConvertFrom-Json
         } finally { $res.Close() }
-    } catch [Net.WebException] { return $null }
+    } catch [Net.WebException] {
+        # The OAuth server's refusal (error and error_description) is kept for the results: it names the cause, never the password.
+        $script:SpikeLastLoginError = $null
+        $resp = $_.Exception.Response
+        if ($resp) {
+            try {
+                $body = (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() | ConvertFrom-Json
+                $script:SpikeLastLoginError = ('{0}: {1}' -f $body.error, $body.error_description)
+            } catch { $script:SpikeLastLoginError = 'HTTP ' + [int]$resp.StatusCode }
+        } else { $script:SpikeLastLoginError = $_.Exception.Message }
+        return $null
+    }
+    $script:SpikeLastLoginError = $null
     if (-not $json.access_token) { return $null }
     $secure = New-Object Security.SecureString
     foreach ($c in $json.access_token.ToCharArray()) { $secure.AppendChar($c) }

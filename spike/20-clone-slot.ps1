@@ -156,7 +156,9 @@ try {
         $ctx.port = $port
         Add-SpikeFact 'agentPort' $port
         $files = Get-ChildItem -LiteralPath $NewTree -Recurse -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -notmatch '\\(Server\\temp|Server\\dll|node_modules|logs)\\' -and ($_.Name -like '*Config.xml' -or $_.Name -in @('web.config', 'OAuth.config', 'vault.config', 'appsettings.json') -or $_.Name -like 'appsettings.*.json') -and $_.Length -lt 2MB }
+            Where-Object { $_.FullName -notmatch '\\(Server\\temp|Server\\dll|node_modules|logs)\\' -and ($_.Name -like '*Config.xml' -or $_.Name -like '*.config' -or $_.Name -in @('Innovator.xml', 'SelfServiceReport.xml') -or $_.Name -like 'appsettings*.json') -and $_.Length -lt 2MB }
+        # Innovator.xml (Client and Server) and SelfServiceReport.xml hold ConfigFilePath, an absolute config path, and OAuthServer.config the
+        # InnovatorServerUrl: a clone that misses them reads the source slot's database and authenticates against the source (2026-10-27).
         $report = @()
         foreach ($f in $files) {
             $text = [IO.File]::ReadAllText($f.FullName)
@@ -228,6 +230,11 @@ try {
             }
         }
         Add-SpikeFact 'editedFiles' $report
+        $left = @(Get-ChildItem -LiteralPath $NewTree -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\node_modules\\' -and ($_.Extension -in @('.config', '.xml', '.json')) -and $_.Length -lt 2MB } |
+            Where-Object { $t = [IO.File]::ReadAllText($_.FullName); $t.IndexOf($src.Alias, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or $t.IndexOf($oldTree, [StringComparison]::OrdinalIgnoreCase) -ge 0 } |
+            ForEach-Object { $_.FullName.Substring($NewTree.Length).TrimStart('\') })
+        Add-SpikeFact 'filesStillNamingTheSource' $left
+        if ($left.Count -gt 0) { Write-Host "warning: $($left.Count) files of the clone still name the source alias or tree; see filesStillNamingTheSource" }
         Add-SpikeFact 'vaultLocalPathSet' (@($report | Where-Object { $_.replacements -is [System.Collections.IDictionary] -and $_.replacements.Contains('vaultLocalPath') }).Count -gt 0)
         $ctx.edited = @($report | ForEach-Object { Join-Path $NewTree $_.file })
     }

@@ -29,6 +29,22 @@ export function isHostError(value: unknown, kind?: HostErrorKind): value is Host
   return value instanceof HostError && (kind === undefined || value.kind === kind);
 }
 
+/**
+ * The broker runs one verb that changes a slot at a time (`SlotLocks`, src/broker/provision.ts); a second is `Retryable`
+ * with this message. A reset that finds it waits for the first to end rather than counting it as a failed attempt: the
+ * first may be a verb of a reset worker that died while the broker went on running it (ticket 35).
+ */
+export function slotBusyError(slot: string): HostError {
+  return new HostError("Retryable", `slot ${slot} ${SLOT_BUSY}`);
+}
+
+const SLOT_BUSY = "is being provisioned, destroyed, started, stopped or reset already";
+
+/** Whether `value` is the broker's answer that another verb is changing the slot now. */
+export function isSlotBusy(value: unknown): boolean {
+  return isHostError(value, "Retryable") && value.message.endsWith(SLOT_BUSY);
+}
+
 /** A guard refusal is a `Refused` host error, so a real host and the fake fail the same way. */
 export function refusedFromGuard(err: GuardError): HostError {
   return new HostError("Refused", err.message, { cause: err });

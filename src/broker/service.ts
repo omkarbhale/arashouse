@@ -13,6 +13,7 @@ import { guarded } from "../host/owned.js";
 import { FileAudit, type AuditSink } from "./audit.js";
 import { registerBaselineVerbs } from "./baseline-verbs.js";
 import { registerLicenceVerbs } from "./licence-verbs.js";
+import { registerOotbRootVerb } from "./ootb-root.js";
 import { SlotLocks, registerSlotVerbs, type SlotSystem } from "./provision.js";
 import { registerHealthVerb } from "./health.js";
 import { registerResetVerbs } from "./reset-tree.js";
@@ -82,6 +83,7 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
   registerResetVerbs(broker, slotSystem, locks);
   registerHealthVerb(broker, slotSystem, locks);
   registerLicenceVerbs(broker, slotSystem.secrets);
+  registerOotbRootVerb(broker, slotSystem.secrets);
   const token = newToken();
   await writeTokenFile(options.tokenPath ?? brokerTokenFile(root), token);
   const server = await servePipe({ path: options.pipePath ?? PIPE_PATH, token, broker, clock: options.clock, onError: options.onError });

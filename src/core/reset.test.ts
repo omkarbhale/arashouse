@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeClock } from "../host/clock.js";
 import type { HostMethod } from "../host/driver.js";
-import { HostError } from "../host/errors.js";
+import { HostError, slotBusyError } from "../host/errors.js";
 import { FakeHost, fakeGoldenHash } from "../host/fake.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
@@ -13,6 +13,8 @@ import { type LeaseDeps, type LeaseGrant, NoSlotAvailableError, checkClean, exit
 import { parseSlotId } from "./names.js";
 import {
   MAX_RESET_ATTEMPTS,
+  SLOT_BUSY_POLL_MS,
+  SLOT_BUSY_WAIT_MS,
   type ResetDeps,
   type ResetHost,
   type ResetOutcome,
@@ -85,6 +87,7 @@ async function pool(spec: Partial<Record<FlavorKey, number>>, options: { config?
     startTime: null,
     isWorkerAlive: (pid) => alive.has(pid),
     now,
+    sleep: async (ms) => clock.advance(ms),
   };
   const started: { slot: string; status: string | undefined }[] = [];
   const deps: LeaseDeps = {
@@ -183,6 +186,9 @@ describe("the reset worker", () => {
     const slot = await p.status("23-01");
     expect(slot).toMatchObject({ status: "free", golden_hash: fakeGoldenHash("23"), last_reset_ms: 12_000 });
     expect(slot?.reset).toBeUndefined();
+    // The event log carries each step's seconds, for the record of a reset on the host (ticket 35).
+    const freed = (await p.store.events()).filter((e) => e.slot === "23-01" && e.to === "free").at(-1);
+    expect(freed?.reason).toMatch(/^reset: golden [\d.]+ s, quiesce [\d.]+ s, database [\d.]+ s, tree [\d.]+ s, start [\d.]+ s, health [\d.]+ s$/);
     expect(atGolden(p, "23-01")).toBe(true);
     expect(p.host.inspect(parseSlotId("23-01"))?.stamp?.leaseId).toBeNull();
   });
@@ -209,6 +215,26 @@ describe("the reset worker", () => {
     p.host.injectFault({ method: "resetDatabase", kind: "fail" });
     expect(await resetSlot(p.reset, "23-01")).toMatchObject({ kind: "free" });
     expect(p.host.callLog.filter((m) => m === "resetDatabase")).toHaveLength(2);
+  });
+
+  it("waits for a verb the broker still runs on the slot (a dead worker's), without using up the retry", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    // The broker answers busy while the dead worker's quiesce runs on; then the step fails once and is retried.
+    p.host.injectFault({ method: "quiesce", kind: "fail", times: 5, message: slotBusyError("23-01").message });
+    p.host.injectFault({ method: "quiesce", kind: "fail", nth: 6, message: "a pool did not stop" });
+    expect(await resetSlot(p.reset, "23-01")).toMatchObject({ kind: "free" });
+    expect(p.host.callLog.filter((m) => m === "quiesce")).toHaveLength(7);
+  });
+
+  it("counts a slot that stays busy past the bound as a failure", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    p.host.injectFault({ method: "quiesce", kind: "fail", times: Infinity, message: slotBusyError("23-01").message });
+    const outcome = await resetSlot(p.reset, "23-01");
+    expect(outcome).toMatchObject({ kind: "quarantined", step: "quiesce", reason: expect.stringContaining("failed twice: slot 23-01 is being provisioned") });
+    const calls = p.host.callLog.filter((m) => m === "quiesce").length;
+    expect(calls).toBeGreaterThanOrEqual(SLOT_BUSY_WAIT_MS / SLOT_BUSY_POLL_MS);
   });
 
   it("quarantines the slot with the step named after two consecutive failures, and never hands it out", async () => {

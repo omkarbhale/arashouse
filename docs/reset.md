@@ -128,6 +128,7 @@ and the database step (ticket 31).
 |---|---|
 | A step throws `Retryable` (or any non-host error), or returns `ok: false` | Tries the step once more (every step is idempotent). A second failure quarantines the slot: `reset step <step> failed twice: <error>`. |
 | A step throws `Refused` (a guard) or `Quarantine` | Quarantines at once: `reset step <step> was refused: <error>`. |
+| The broker answers that it is still running another verb on the slot (`Retryable`, "is being provisioned, destroyed, started, stopped or reset already"; `isSlotBusy`) | Waits for it, polling every 2 s for up to 15 minutes, and does not count it as an attempt. A worker killed mid-reset leaves its broker verb running to its end (the broker does not know the caller died), so the reset that recovers the slot meets it: before ticket 35 that busy answer, twice within 1.5 s, quarantined a healthy slot. Past the 15 minutes it is a failure like any other. |
 | The `golden` step throws `Retryable` (the build's `golden-build\<key>.promoting` marker is present: a new golden is being moved into place) | Gives the slot back as `dirty` at once, as for `Unreachable`, so no reset reads a half-moved golden. |
 | A step throws `Unreachable` twice | Gives the slot back as `dirty` (the slot is not at fault) and stops; a later worker or `get` tries again, and this reset does not count toward the attempt cap. A lazy reset in `get` exits 6. |
 | The slot's reset is started a 4th time after 3 workers died mid-reset (`MAX_RESET_ATTEMPTS`) | Quarantines it: `reset started 4 times without finishing`. |

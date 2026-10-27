@@ -41,7 +41,7 @@ import type {
 } from "./driver.js";
 import { HostError } from "./errors.js";
 import { VERIFY_LEVELS, type ManifestDiff, type VerifyLevel } from "../core/manifest.js";
-import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, type OwnedContext } from "./owned.js";
+import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, assertStagedPath, type OwnedContext } from "./owned.js";
 
 /** The ticket that adds each verb the broker does not have yet. */
 const PENDING: Partial<Record<HostMethod, string>> = {
@@ -184,6 +184,14 @@ export class BrokerHost implements HostDriver {
     return () => void assertSlotOwned(slot, this.owned);
   }
 
+  /** The slot, then the staged path, as `FakeHost` checks them (here without the lease id, which only the stamp knows). */
+  private stagedGuard(slot: SlotRef, path: string): () => void {
+    return () => {
+      assertSlotOwned(slot, this.owned);
+      assertStagedPath(slot, path, this.owned);
+    };
+  }
+
   async ping(): Promise<HostResult> {
     const { result, ms } = await this.call("ping");
     return { ok: result.ok, ms, detail: result.detail };
@@ -274,16 +282,16 @@ export class BrokerHost implements HostDriver {
     return { ok: result.ok, ms, detail: result.detail };
   }
 
-  deployCode(slot: SlotRef, _stagedPath: string): Promise<HostResult> {
-    return this.pending("deployCode", this.slotGuard(slot));
+  deployCode(slot: SlotRef, stagedPath: string): Promise<HostResult> {
+    return this.pending("deployCode", this.stagedGuard(slot, stagedPath));
   }
 
-  restoreDatabase(slot: SlotRef, _stagedBak: string): Promise<HostResult> {
-    return this.pending("restoreDatabase", this.slotGuard(slot));
+  restoreDatabase(slot: SlotRef, stagedBak: string): Promise<HostResult> {
+    return this.pending("restoreDatabase", this.stagedGuard(slot, stagedBak));
   }
 
-  backupDatabase(slot: SlotRef, _stagedPath: string): Promise<HostResult> {
-    return this.pending("backupDatabase", this.slotGuard(slot));
+  backupDatabase(slot: SlotRef, stagedPath: string): Promise<HostResult> {
+    return this.pending("backupDatabase", this.stagedGuard(slot, stagedPath));
   }
 
   async healthCheck(slot: SlotRef): Promise<HealthResult> {

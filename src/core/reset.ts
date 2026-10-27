@@ -17,7 +17,8 @@
 // host that does not answer gives the slot back as `dirty` instead, for a later reset.
 
 import type { BackupRef, GoldenRef, HostDriver, HostResult } from "../host/driver.js";
-import { isHostError } from "../host/errors.js";
+import { isHostError, isSlotBusy } from "../host/errors.js";
+import { setTimeout as sleepMs } from "node:timers/promises";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { HostUnreachableError, type ResetHooks } from "./lease.js";
 import type { FlavorKey } from "./flavors.js";
@@ -51,6 +52,8 @@ export interface ResetDeps {
   /** Whether another reset's worker still runs; defaults to a process check. */
   readonly isWorkerAlive?: ResetWorkerAlive;
   readonly now?: () => Date;
+  /** How a step waits for a slot the broker is still busy with; defaults to a timer. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /** The flavor's golden manifest hash now, or undefined when the host cannot name it. */
@@ -68,6 +71,14 @@ export type ResetStep = (typeof RESET_STEPS)[number];
 
 /** A slot whose reset has been started this many times without finishing is quarantined, not started again. */
 export const MAX_RESET_ATTEMPTS = 3;
+
+/**
+ * How long a step waits, polling, while the broker is still running another verb on the slot (`isSlotBusy`): the verb
+ * of a reset worker that died mid-reset runs on to its end (ticket 35 measured it), and a step that tried twice at
+ * once would quarantine a healthy slot. Longer than any reset verb's own bound; past it the busy answer is a failure.
+ */
+export const SLOT_BUSY_WAIT_MS = 15 * 60_000;
+export const SLOT_BUSY_POLL_MS = 2_000;
 
 /** Room for the step and the error in a quarantine reason (state.ts allows 500 characters). */
 const MAX_REASON = 480;
@@ -169,6 +180,7 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
     return { kind: "not-started", slot: slot.id, reason: `slot ${slot.id} is ${slot.status}, not resetting` };
   }
   const now = deps.now ?? (() => new Date());
+  const sleep = deps.sleep ?? ((ms: number) => sleepMs(ms).then(() => undefined));
   const started = now().getTime();
 
   const owns = (current: Slot | undefined): current is Slot =>
@@ -232,9 +244,20 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
     },
   };
 
+  /** Each step's seconds on the clock, its retry included: the event log's breakdown of a reset that ends free. */
+  const timings: string[] = [];
   const runStep = async (step: ResetStep): Promise<StepResult> => {
+    const stepStarted = now().getTime();
+    try {
+      return await attemptStep(step);
+    } finally {
+      timings.push(`${step} ${(Math.max(0, now().getTime() - stepStarted) / 1000).toFixed(1)} s`);
+    }
+  };
+  const attemptStep = async (step: ResetStep): Promise<StepResult> => {
     let failure = "";
     let unreachable = false;
+    const busySince = now().getTime();
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         const ref = await target();
@@ -244,6 +267,12 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
         failure = result.detail;
         unreachable = false;
       } catch (err) {
+        // Another verb still runs on the slot (a dead worker's, say): wait for it, without using up an attempt.
+        if (isSlotBusy(err) && now().getTime() - busySince < SLOT_BUSY_WAIT_MS) {
+          await sleep(SLOT_BUSY_POLL_MS);
+          attempt--;
+          continue;
+        }
         // A guard refusal or a slot the host says is beyond retrying is quarantined at once.
         if (isHostError(err, "Refused") || isHostError(err, "Quarantine")) {
           return { ok: false, outcome: await quarantine(step, `was refused: ${errorText(err)}`) };
@@ -270,7 +299,7 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
     const reason = "the golden changed during the reset";
     return settle({ to: "dirty" }, reason, { kind: "dirty", slot: slot.id, reason });
   }
-  return settle({ to: "free", golden_hash: (golden as GoldenSet).tree.hash, reset_ms: ms }, "reset", { kind: "free", slot: slot.id, ms });
+  return settle({ to: "free", golden_hash: (golden as GoldenSet).tree.hash, reset_ms: ms }, `reset: ${timings.join(", ")}`, { kind: "free", slot: slot.id, ms });
 }
 
 function notOk(detail: string): HostResult {

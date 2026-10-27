@@ -16,7 +16,7 @@ arashouse ── BrokerHost ── spawn ──▶ node.exe <root>\broker\app\br
 
 ## Verbs
 
-The verb list is the host-driver method list (`HOST_METHODS`), plus `storeLicence`, which no WSL caller sends
+The verb list is the host-driver method list (`HOST_METHODS`), plus `storeLicence` and `storeOotbRoot`, which no WSL caller sends
 (`HOST_SIDE_VERBS`); there is no verb that runs a command, SQL or a path the client chose. A request names its target as a slot record `{ flavor, slot }` or a flavor.
 The broker derives every name and path from it and runs the guards (`assertSlotOwned` or
 `assertFlavorOwned`, `src/host/owned.ts`) before the verb runs. `BrokerHost` runs the same guards on the
@@ -42,6 +42,7 @@ WSL side first, so a refused name is never sent.
 | `baselineVerify` | flavor | checks `golden\<key>` against its manifest at `args.level` (`golden`, the default; `fast`; `full`): `ok`, `level`, the diff (counts and paths only) and `goldenHash` (the manifest hash a reset mirrors to); "not built" when there is no manifest | 28, 24, 30 |
 | `baselineBuild` | flavor | never served: the build runs in the captain's elevated session, since the broker's SQL login may not create its database (`docs/baselines.md`); `BrokerHost` refuses it without asking | 24 |
 | `storeLicence` | none | `args.line` (`12` or `14`) and `args.licence`, the four `<License>` attributes: stored as the line's licence (`licence-<line>`), replacing the one before; answers with the line only. Sent only by `scripts/store-licence.ps1`, not a host-driver method (`docs/secrets.md`) | 34b |
+| `storeOotbRoot` | none | `args.flavor` and `args.password`, the password `root` has in the flavor's golden backup: stored as `ootb-root-<key>`, replacing the one before; answers with the flavor only. Sent only by `scripts/store-ootb-root.ps1`, not a host-driver method (`docs/health.md`) | 35 |
 
 The broker answers a verb it does not have `Refused`. Until a verb's ticket lands, `BrokerHost` fails that
 method `Unreachable` naming the ticket, without asking the broker, so a reset leaves the slot dirty instead

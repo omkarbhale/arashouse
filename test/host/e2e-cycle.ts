@@ -482,6 +482,13 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     };
     const leaks = Object.entries(places).filter(([, text]) => seenPasswords.some((p) => text.includes(p.reveal()))).map(([where]) => where);
     check("9.no lease password in the state file, the events log, status or the record", leaks.length === 0, leaks.length === 0 ? `${seenPasswords.length} passwords looked for in ${Object.keys(places).length} places` : `found in: ${leaks.join(", ")}`);
+    // The broker's logs are Administrators-only: the passwords, now dead, go to the elevated audit-log check DPAPI-encrypted.
+    const leakFile = `C:\\aras_installations\\staging\\e2e-${flavor}\\leak-cycle-${cycle}.dpapi`;
+    const sealed = await runPs([
+      "-Command",
+      `$f = '${leakFile}'; New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null; [Console]::In.ReadToEnd() -split "\`r?\`n" | Where-Object { $_ } | ForEach-Object { ConvertTo-SecureString -String $_ -AsPlainText -Force | ConvertFrom-SecureString } | Set-Content -LiteralPath $f -Encoding ASCII`,
+    ], seenPasswords.map((p) => `${p.reveal()}\n`).join(""));
+    check("9.the lease passwords sealed for the elevated audit-log check", sealed.code === 0, sealed.code === 0 ? `${leakFile} holds ${seenPasswords.length} passwords, the input of test/host/audit-leak-check.ps1` : `exit ${sealed.code}: ${redact(sealed.stderr).slice(0, 400)}`);
   } catch (err) {
     if (!(err instanceof CycleFailed)) record("error", false, 0, String((err as Error)?.stack ?? err));
     else failures = Math.max(failures, 1);
@@ -514,7 +521,7 @@ function runProcess(cmd: string, args: string[], input?: string): Promise<{ code
   });
 }
 
-const runPs = (args: string[]) => runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args]);
+const runPs = (args: string[], input?: string) => runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args], input);
 
 /**
  * The deny-list objects the worker can read without elevation: the SHA-256 of each of the captain's install roots'

@@ -305,6 +305,8 @@ function assertOwnedPath(raw: unknown, slot: SlotRef | undefined, options: Owned
     }
     case "sqldata":
     case "secrets":
+    case "logs":
+    case "broker":
       break;
     default:
       throw fail("not-allowlisted", "is not one of the tool's folders under the install root");

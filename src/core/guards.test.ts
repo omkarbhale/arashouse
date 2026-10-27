@@ -19,6 +19,9 @@ import {
   UTILITY_DATABASE,
   agentServiceName,
   appPoolName,
+  auditLogFile,
+  brokerClientScript,
+  brokerTokenFile,
   databaseName,
   goldenDir,
   loginName,
@@ -82,6 +85,9 @@ describe("derived names against the allowlists and the deny-list", () => {
     expect(assertOwned("path", sqlDataDir(), ref)).toBe(sqlDataDir());
     expect(assertOwned("path", secretsDir(), ref)).toBe(secretsDir());
     expect(assertOwned("path", secretFile("licence-14"), ref)).toBe(secretFile("licence-14"));
+    for (const p of [auditLogFile(new Date(Date.UTC(2026, 9, 27))), brokerTokenFile(), brokerClientScript()]) {
+      expect(assertOwned("path", p), p).toBe(p);
+    }
   });
 
   it("owns the utility database", () => {

@@ -1,8 +1,9 @@
 // Which host driver the CLI talks to. `ARASHOUSE_HOST=fake` selects the fake host (the CLI tests use
-// it); otherwise the broker on Windows, whose client does not exist yet (tickets 20 and 21), so every
-// host call fails as unreachable with a hint. Commands that need no host (`status`, `return`, `run`)
-// work either way; a reset and the operator commands need it (with the broker missing, a slot stays
-// dirty until it is there).
+// it); otherwise `BrokerHost`, which reaches the broker on Windows through the Windows `node.exe`
+// (`ARASHOUSE_WINDOWS_NODE` overrides where it is). Until the broker is installed (ticket 21) every
+// host call fails as unreachable with a hint, and so do the verbs it does not have yet. Commands that
+// need no host (`status`, `return`, `run`) work either way; a reset and the operator commands need it
+// (with the broker missing, a slot stays dirty until it is there).
 
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import { UsageError, type LeaseHost } from "../core/lease.js";
@@ -10,6 +11,8 @@ import type { OperatorHost } from "../core/operator.js";
 import type { GoldenSet } from "../core/reset.js";
 import { StateCorruptError } from "../core/state.js";
 import type { StateStore } from "../core/store.js";
+import { BrokerHost } from "../host/broker-host.js";
+import { DEFAULT_WINDOWS_NODE, WINDOWS_NODE_ENV, interopTransport } from "../host/broker-transport.js";
 import { HostError } from "../host/errors.js";
 import { FakeHost, type Fault } from "../host/fake.js";
 import { HOST_ADDR_ENV, hostAddress, slotUrl } from "../host/url.js";
@@ -72,37 +75,18 @@ async function fakeHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<Sele
   };
 }
 
-const NO_BROKER = "the arashouse broker is not installed on Windows yet (arashouse setup, tickets 20 and 21)";
-
-function unavailable(): Promise<never> {
-  return Promise.reject(new HostError("Unreachable", NO_BROKER));
+/** The golden tree and backup refs come from the broker's baseline verbs (tickets 28, 30 and 31). */
+function noGolden(): Promise<never> {
+  return Promise.reject(new HostError("Unreachable", "the broker cannot name a flavor's golden tree and backup yet (tickets 28, 30 and 31)"));
 }
-
-/** Stands in for the broker client until it exists: every call fails `Unreachable`. */
-const brokerHost: CliHost = {
-  hostInfo: unavailable,
-  readStamp: unavailable,
-  writeStamp: unavailable,
-  healthCheck: unavailable,
-  setLeaseCredentials: unavailable,
-  baselineVerify: unavailable,
-  quiesce: unavailable,
-  resetDatabase: unavailable,
-  resetTree: unavailable,
-  startSlot: unavailable,
-  stopSlot: unavailable,
-  ping: unavailable,
-  listSlots: unavailable,
-  provisionSlot: unavailable,
-  destroySlot: unavailable,
-};
 
 export async function selectHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {
   if (hostKind(env) === "fake") return fakeHost(env, store);
+  const node = env[WINDOWS_NODE_ENV]?.trim() || DEFAULT_WINDOWS_NODE;
   return {
     kind: "broker",
-    host: brokerHost,
+    host: new BrokerHost(interopTransport({ node })),
     resolveUrl: async (alias) => slotUrl(await hostAddress(alias, { env }), alias),
-    golden: unavailable,
+    golden: noGolden,
   };
 }

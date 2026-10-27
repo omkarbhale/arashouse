@@ -7,11 +7,16 @@ import {
   agentPort,
   agentServiceName,
   appPoolName,
+  auditLogFile,
+  brokerClientScript,
+  brokerDir,
+  brokerTokenFile,
   buildNames,
   databaseName,
   goldenDir,
   isSecretName,
   loginName,
+  logsDir,
   parseSlotId,
   secretFile,
   secretsDir,
@@ -21,6 +26,7 @@ import {
   slotNumber,
   sqlDataDir,
   stagingDir,
+  stampFile,
   vaultDir,
   webAlias,
 } from "./names.js";
@@ -115,6 +121,25 @@ describe("secret storage names", () => {
       expect(isSecretName(bad)).toBe(false);
       if (typeof bad === "string") expect(() => secretFile(bad)).toThrow(/secret name/);
     }
+  });
+});
+
+describe("broker names", () => {
+  it("puts the audit log under <root>\\logs, one file per UTC day", () => {
+    expect(logsDir()).toBe("C:\\aras_installations\\logs");
+    expect(auditLogFile(new Date("2026-10-27T23:59:59Z"))).toBe("C:\\aras_installations\\logs\\broker-20261027.log");
+    expect(auditLogFile(new Date("2026-10-28T00:00:00Z"), "D:\\ah")).toBe("D:\\ah\\logs\\broker-20261028.log");
+    expect(() => auditLogFile(new Date(Number.NaN))).toThrow(/valid date/);
+  });
+
+  it("puts the slot stamp in the slot folder", () => {
+    expect(stampFile(ref)).toBe("C:\\aras_installations\\slots\\12sp9\\03\\.arashouse-slot.json");
+  });
+
+  it("puts the broker's code and client token under <root>\\broker", () => {
+    expect(brokerDir()).toBe("C:\\aras_installations\\broker");
+    expect(brokerClientScript()).toBe("C:\\aras_installations\\broker\\app\\broker\\client.js");
+    expect(brokerTokenFile("D:\\ah")).toBe("D:\\ah\\broker\\client.token");
   });
 });
 

@@ -209,7 +209,8 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | variable | effect |
 |---|---|
 | `ARASHOUSE_HOME` | the state folder (default `~/.arashouse`): `state.json`, `events.log`, `leases/` |
-| `ARASHOUSE_HOST` | `broker` (default) or `fake`. The broker client is tickets 20 and 21; until then every host call exits 6. `fake` is the offline fake host, rebuilt in each process from the state file (each slot clean, each baseline built; none when the file is unusable); the CLI tests use it. |
+| `ARASHOUSE_HOST` | `broker` (default) or `fake`. `broker` is `BrokerHost` (`docs/broker.md`): until the broker is installed (`arashouse setup`, ticket 21) every host call exits 6, and so does a call whose verb the broker does not have yet. `fake` is the offline fake host, rebuilt in each process from the state file (each slot clean, each baseline built; none when the file is unusable); the CLI tests use it. |
+| `ARASHOUSE_WINDOWS_NODE` | the Windows `node.exe` that runs the broker client, as a WSL path (default `/mnt/c/Program Files/nodejs/node.exe`) |
 | `ARASHOUSE_FAKE_FAULTS` | with the fake host: a JSON array of faults to inject (`src/host/fake.ts`, `Fault`), for tests |
 | `ARASHOUSE_HOST_ADDR` | the Windows host address for slot URLs (`docs/slot-url.md`) |
 | `ARASHOUSE_RESET_WORKER` | `off`: `return` and `get` start no detached reset worker (a lazy reset in `get --wait` still runs); the CLI tests use it |

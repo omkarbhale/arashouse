@@ -40,7 +40,7 @@ function cli(args: readonly string[], env: NodeJS.ProcessEnv = {}): Promise<Resu
       [BIN, ...args],
       {
         // No detached reset worker unless a test asks for one, so none outlives its test's home.
-        env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ARASHOUSE_RESET_WORKER: "off", ...env },
+        env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ARASHOUSE_RESET_WORKER: "off", ARASHOUSE_WINDOWS_NODE: join(home, "no-node.exe"), ...env },
         encoding: "utf8",
         timeout: 30_000,
       },
@@ -272,7 +272,7 @@ describe("exit codes", () => {
     expect(unreachable.code).toBe(EXIT_CODES.hostUnreachable);
     const refused = await cli(["get", "23", "--holder", "x"], { ARASHOUSE_FAKE_FAULTS: fault("Refused") });
     expect(refused.code).toBe(EXIT_CODES.refused);
-    // No broker client yet: the default host is unreachable.
+    // No broker on this machine: the default host is unreachable.
     expect((await cli(["get", "23", "--holder", "x"], { ARASHOUSE_HOST: "" })).code).toBe(EXIT_CODES.hostUnreachable);
   });
 

@@ -2,7 +2,7 @@
 
 Every effect on Windows goes through `HostDriver` (`src/host/driver.ts`), so lease and reset logic is
 tested without Windows. Two implementations: `FakeHost` (`src/host/fake.ts`, offline) and `BrokerHost`
-(the broker client, ticket 20 and the verb tickets).
+(`src/host/broker-host.ts`, the broker client; `docs/broker.md`).
 
 - Each call takes a resolved slot record (or a flavor), never a user string, and runs the guards first
   (`src/host/owned.ts`: `assertSlotOwned`, `assertStagedPath`, `assertGoldenPath`, `assertFlavorOwned`).

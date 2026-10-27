@@ -54,6 +54,26 @@ Exit codes: 0 stored, 1 the broker refused or failed, 2 a wrong parameter or pre
 could not be reached. `storeLicence` is not a host-driver method, since no WSL caller has a licence to send; the hidden
 prompt of `ensureLicence` stays the fallback for a line with no such source.
 
+### Measured on the host (2026-10-28, ticket 34b)
+
+Through firstmate's elevated gate, after the broker was updated from this branch: `store-licence.ps1 -Line 12` with the
+captain's existing 12.0 install's config as the source (read only) exited 0 and printed `stored the licence for line
+12`; `arashouse doctor` then reported `licence line 12: present` and `licence line 14: absent`. From WSL as the worker,
+under a scratch `ARASHOUSE_HOME`:
+
+- `provision 12sp9 1` made `12sp9-01` in 25.1 s, with no "cannot log in" note: its `<License>` carried `lic_type`,
+  `lic_key` and `act_key` from the stored licence and `company` blank, as the source holds it. Its health check
+  (ticket 32) then quarantined it at the login only, since no `root` password is stored for it yet (`ootb-root-12sp9`
+  is ticket 35's).
+- `repair 12sp9-01` (one reset) wrote the config again from golden's bytes; the health check's `configs` check, which
+  holds every edit of the list, passed.
+- An OAuth password grant as `root` on `ah-12sp9-01`, with the shipped backup's password, run through the gate: `login:
+  ok`. Before this ticket a slot's server refused every login ("License Key is invalid" with the key alone).
+- No value of the licence (each of four characters or more) was found in the broker's audit log and service log
+  (`<root>\logs`, read through the gate), the events log, the state file, or the output of `doctor`, `provision`,
+  `repair` and `destroy`; the checks printed counts only.
+- `destroy 12sp9-01 --yes` removed the slot and everything of it.
+
 ## Not here
 
 The worker commands and the exit-code table are in `docs/cli.md`; `doctor` is in `docs/cli.md`; the DPAPI store and its ACLs are tickets 20 and 21; the `sa` prompt is ticket 22; setting the lease password on the slot is `docs/lease-credentials.md` (ticket 34).

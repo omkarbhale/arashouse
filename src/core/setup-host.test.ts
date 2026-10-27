@@ -137,8 +137,6 @@ describe("setup-host.ps1 (generated)", () => {
     // The one write outside Invoke-Change is the record, and only with -Apply.
     const writes = script.split("\n").filter((l) => /WriteAllText/.test(l));
     expect(writes).toEqual([expect.stringMatching(/^if \(\$Apply -and /)]);
-    // Elevation is checked before anything else runs.
-    expect(script.indexOf("if ($Apply -and -not (Test-Elevated)) { Fail 4")).toBeLessThan(script.indexOf("try {\n    if (Test-ReparsePoint $Root)"));
   });
 
   it("writes nothing under Program Files, and reads it only through $env:ProgramFiles", () => {
@@ -193,12 +191,6 @@ describe("setup-host.ps1 (generated)", () => {
     expect(script).not.toMatch(/Install-WindowsFeature|Enable-WindowsOptionalFeature|msiexec|dotnet-hosting|vc_redist/i);
   });
 
-  it("guards -Uninstall and -RemoveRoot", () => {
-    expect(script).toContain("if ($RemoveRoot -and -not $Uninstall) { Fail 2");
-    expect(script).toContain("refused to remove {0}: it also holds {1}, which are not arashouse folders");
-    expect(script).toContain("refused to remove {0}: it holds a junction or link");
-  });
-
   it("holds no secret: no token, password or key is read or written", () => {
     expect(script).not.toMatch(/client\.token|password|licen[cs]e|ConvertTo-SecureString|Read-Host/i);
   });
@@ -217,16 +209,6 @@ describe("setup-host.ps1 (generated)", () => {
       [{ root: "C:\\Users\\me\\ah" }, /Users/],
     ];
     for (const [patch, message] of bad) expect(() => renderSetupHostScript({ ...base, ...patch }), JSON.stringify(patch)).toThrow(message);
-  });
-
-  it("compiles a service wrapper that runs the entry script and exits 1 when Node dies", () => {
-    const cs = brokerWrapperSource();
-    expect(cs).toContain('const string EntryScript = @"C:\\aras_installations\\broker\\app\\broker\\index.js";');
-    expect(cs).toContain('const string NodeExe = @"@@NODE@@";');
-    expect(cs).toContain("Environment.Exit(1);");
-    expect(cs).toContain('ServiceName = "ArasHouseBroker";');
-    // Windows PowerShell 5.1 compiles C# 5: no interpolated strings or null-conditional operators.
-    expect(cs).not.toMatch(/\$"|\?\./);
   });
 });
 

@@ -64,3 +64,9 @@ Write-Output "drift: $($drift -join '; ')"
 Set-FolderAcl $staging $stagingPlan $sids
 $repaired = Get-FolderDeviations $staging $stagingPlan $sids
 Write-Output "repaired: $($repaired.Count)"
+# A LocalSystem SQL Server shares SYSTEM's SID: it gets one rule with both rights, and a re-run sees nothing to repair.
+$shared = Get-Sids ([ordered]@{ name = 'LocalSystem'; sid = $SystemSid })
+$sqlPlan = @{ system = 'read'; sql = 'modify'; worker = 'modify' }
+Set-FolderAcl $staging $sqlPlan $shared
+$sharedLeft = Get-FolderDeviations $staging $sqlPlan $shared
+Write-Output "shared sid: $($sharedLeft -join '; ')"

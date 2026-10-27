@@ -503,6 +503,16 @@ function Get-Sids($SqlAccount) {
     return $sids
 }
 
+function Get-SidRights($Plan, $Sids) {
+    # The rights the plan gives each SID, combined: two principals can be one account (a LocalSystem SQL Server is SYSTEM).
+    $out = @{}
+    foreach ($principal in $Plan.Keys) {
+        $sid = $Sids[$principal]
+        if ($sid) { $out[$sid] = [int]$out[$sid] -bor [int]$Rights[$Plan[$principal]] }
+    }
+    return $out
+}
+
 function Get-FolderDeviations([string]$Path, $Plan, $Sids) {
     # How the folder's DACL differs from the plan; empty when it matches exactly.
     $out = New-Object System.Collections.ArrayList
@@ -515,12 +525,12 @@ function Get-FolderDeviations([string]$Path, $Plan, $Sids) {
         if ($r.InheritanceFlags -ne $WholeTree -or $r.PropagationFlags -ne 'None') { [void]$out.Add(('{0} has a rule that does not cover the whole folder' -f (Get-SidName $sid))) }
         $have[$sid] = [int]$have[$sid] -bor [int]$r.FileSystemRights
     }
-    foreach ($principal in $Plan.Keys) {
-        $sid = $Sids[$principal]
-        if (-not $sid) { [void]$out.Add("$principal is not known on this host"); continue }
+    foreach ($principal in $Plan.Keys) { if (-not $Sids[$principal]) { [void]$out.Add("$principal is not known on this host") } }
+    $wanted = Get-SidRights $Plan $Sids
+    foreach ($sid in $wanted.Keys) {
         # .NET adds Synchronize to every allow rule it writes; Modify and ReadAndExecute do not include it.
-        $want = [int]$Rights[$Plan[$principal]] -bor [int][Security.AccessControl.FileSystemRights]::Synchronize
-        if (([int]$have[$sid] -bor [int][Security.AccessControl.FileSystemRights]::Synchronize) -ne $want) { [void]$out.Add(('{0} should have {1}' -f (Get-SidName $sid), $Plan[$principal])) }
+        $want = $wanted[$sid] -bor [int][Security.AccessControl.FileSystemRights]::Synchronize
+        if (([int]$have[$sid] -bor [int][Security.AccessControl.FileSystemRights]::Synchronize) -ne $want) { [void]$out.Add(('{0} should have {1}' -f (Get-SidName $sid), [Security.AccessControl.FileSystemRights]$wanted[$sid])) }
         $have.Remove($sid)
     }
     foreach ($sid in $have.Keys) { [void]$out.Add(('{0} should have no access' -f (Get-SidName $sid))) }
@@ -628,9 +638,10 @@ function Set-FolderAcl([string]$Path, $Plan, $Sids) {
     Assert-UnderRoot $Path
     $sec = New-Object Security.AccessControl.DirectorySecurity
     $sec.SetAccessRuleProtection($true, $false)
-    foreach ($principal in $Plan.Keys) {
-        $sid = New-Object Security.Principal.SecurityIdentifier($Sids[$principal])
-        $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, $Rights[$Plan[$principal]], $WholeTree, 'None', 'Allow')))
+    $wanted = Get-SidRights $Plan $Sids
+    foreach ($sid in $wanted.Keys) {
+        $id = New-Object Security.Principal.SecurityIdentifier($sid)
+        $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, [Security.AccessControl.FileSystemRights]$wanted[$sid], $WholeTree, 'None', 'Allow')))
     }
     (Get-Item -LiteralPath $Path -Force).SetAccessControl($sec)
 }

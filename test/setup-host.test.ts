@@ -100,6 +100,20 @@ describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
     expect(r.out).not.toMatch(/would do:/);
   });
 
+  it("-Uninstall -RemoveRoot refuses a root that holds a folder that is not arashouse's, and leaves it", () => {
+    const foreign = `${root}\\not-arashouse`;
+    runPs(["-Command", `New-Item -ItemType Directory -Path '${foreign}' -Force | Out-Null`]);
+    try {
+      const r = run(["-Uninstall", "-RemoveRoot"]);
+      expect(r.err).toMatch(/refused to remove .*not-arashouse, which are not arashouse folders/);
+      expect(r.out).not.toMatch(/would do: remove /);
+      expect(existsSync(`/mnt/c/${foreign.slice(3).replace(/\\/g, "/")}`)).toBe(true);
+    } finally {
+      runPs(["-Command", `Remove-Item -LiteralPath '${root}' -Recurse -Force`]);
+    }
+    expect(rootOnHost()).toBe(false);
+  });
+
   it("sets and reads back the folder ACLs and the root's own ACL on a scratch root, without elevation", () => {
     // The script must name the current user as the worker: a folder's owner may rewrite its DACL, so no elevation is needed.
     const me = /^"([^"]+)","(S-1-5-21-[0-9-]+)"/m.exec(runPs(["-Command", "whoami.exe /user /fo csv /nh"]).out) as RegExpExecArray;
@@ -128,7 +142,7 @@ describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
       expect(lines.slice(1, 3)).toEqual(["root after: ", "other unchanged: True"]);
       for (const folder of ROOT_FOLDERS) expect(lines).toContainEqual(expect.stringMatching(new RegExp(`^${folder}: [1-9]\\d* -> $`)));
       expect(lines).toContainEqual(expect.stringMatching(/^drift: .*Authenticated Users should have no access$/));
-      expect(lines.at(-1)).toBe("repaired: 0");
+      expect(lines.slice(-2)).toEqual(["repaired: 0", "shared sid: "]);
     } finally {
       expect(runPs(["-File", harness, "-Script", toHostPath(aclScript), "-Cleanup"]).out.trim()).toBe("cleanup: True");
     }

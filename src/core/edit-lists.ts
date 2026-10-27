@@ -5,7 +5,8 @@
 // `spike/20-clone-slot.ps1`), with the attribute names read from the spike installs' configs and,
 // for `SelfServiceReportConfig.xml`, from the 12.0 MSI's own script that writes it. 35: six files,
 // Release 23's eight without the two SelfServiceReporting ones, which the 14.35 installer no longer
-// ships (spike 08, docs/spike-08-release-35.md).
+// ships (spike 08, docs/spike-08-release-35.md). Ticket 33b adds each release's agent configuration (docs/edits.md): the
+// goldens built since carry the agent.
 
 import { type FlavorKey } from "./flavors.js";
 import { EDIT_LIST_SCHEMA, type Edit, type EditList, parseEditList } from "./edits.js";
@@ -40,8 +41,31 @@ const serverConfig: readonly Edit[] = [
     path: "/Innovator/operating_parameter[@key='debug_log_prefix']/@value",
     value: "{{slotDir}}\\Innovator\\Server\\logs\\",
   },
-  // `http://localhost:8734/` (14.x) or `.../ArasInnovatorAgent` (12.0): only the port changes.
-  { file: SERVER_CONFIG, kind: "text", path: "//localhost:{{build.agentPort}}/", value: "//localhost:{{agentPort}}/" },
+];
+
+/**
+ * Where the server calls the agent and the agent listens: the slot's reserved port, and on 12.0 its alias as the path
+ * (names.ts `agentUrl`). The whole value is set, so it does not depend on the build's port or `AS_FOLDER`.
+ */
+const AGENT_ADDRESS_12 = "http://localhost:{{agentPort}}/{{alias}}";
+const AGENT_ADDRESS_14 = "http://localhost:{{agentPort}}/";
+
+const agentAddressIn = (value: string): Edit => ({ file: SERVER_CONFIG, kind: "xml", path: "/Innovator/AgentService/@InnovatorToServiceAddress", value });
+
+/** 12.0: the WCF host's config, as the MSI's XML table writes it (its baseAddress and the server URL). */
+const AGENT_CONFIG_12 = "AgentService/Aras.Server.Agent.Service.exe.config";
+const agent12: readonly Edit[] = [
+  agentAddressIn(AGENT_ADDRESS_12),
+  { file: AGENT_CONFIG_12, kind: "xml", path: "/configuration/system.serviceModel/services/service/host/baseAddresses/add/@baseAddress", value: AGENT_ADDRESS_12 },
+  { file: AGENT_CONFIG_12, kind: "xml", path: "/configuration/appSettings/add[@key='InnovatorServer']/@value", value: "{{serverUrl}}" },
+];
+
+/** 14.x: the Kestrel host's `appsettings.json`, as the MSI's search-and-replace table writes it. */
+const AGENT_SETTINGS_14 = "AgentService/appsettings.json";
+const agent14: readonly Edit[] = [
+  agentAddressIn(AGENT_ADDRESS_14),
+  { file: AGENT_SETTINGS_14, kind: "json", path: "/AgentService/InnovatorServerUrl", value: "{{serverUrl}}" },
+  { file: AGENT_SETTINGS_14, kind: "json", path: "/Kestrel/Endpoints/HTTP/Url", value: AGENT_ADDRESS_14 },
 ];
 
 /** Each holds `<ConfigFilePath value="<tree>\InnovatorServerConfig.xml">`: missed, a slot runs on the build's config. */
@@ -87,12 +111,10 @@ const selfServiceReporting: readonly Edit[] = [
   { file: "SelfServiceReporting/SelfServiceReport.xml", kind: "text", path: "{{build.dir}}\\", value: "{{slotDir}}\\" },
 ];
 
-const RELEASE_12_AND_14: readonly Edit[] = [...serverConfig, ...selfServiceReporting, ...configFilePaths, ...oauthAndVault];
-
 const EDITS: Readonly<Record<FlavorKey, readonly Edit[]>> = {
-  "12sp9": RELEASE_12_AND_14,
-  "23": RELEASE_12_AND_14,
-  "35": [...serverConfig, ...configFilePaths, ...oauthAndVault],
+  "12sp9": [...serverConfig, ...selfServiceReporting, ...configFilePaths, ...oauthAndVault, ...agent12],
+  "23": [...serverConfig, ...selfServiceReporting, ...configFilePaths, ...oauthAndVault, ...agent14],
+  "35": [...serverConfig, ...configFilePaths, ...oauthAndVault, ...agent14],
 };
 
 /** The flavor's edit list, validated. */

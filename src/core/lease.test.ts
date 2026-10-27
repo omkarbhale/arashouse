@@ -541,7 +541,7 @@ describe("get --agent", () => {
 
   it("refuses with exit 7 when the slot has no agent, and gives the slot up for reset", async () => {
     const p = await pool({ "23": 1 });
-    p.host.injectFault({ method: "startSlot", kind: "fail", error: "Refused", message: "slot 23-01 has no agent service: the 23 golden was built without one (ticket 33b)" });
+    p.host.injectFault({ method: "startSlot", kind: "fail", error: "Refused", message: "slot 23-01 has no agent service: the 23 golden was built without one (rebuild it: baseline build 23 --replace)" });
     const err = await failure(getLease(p.deps, { flavor: "23", holder: "t", agent: true }));
     expect(exitCodeFor(err)).toBe(7);
     expect((err as Error).message).toContain("has no agent service");

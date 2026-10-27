@@ -7,6 +7,7 @@
 // removes the instance. Golden is immutable: only another build, with `--replace`, changes it.
 
 import { win32 } from "node:path";
+import { innovatorServerUrl } from "./edits.js";
 import { FLAVORS, getFlavor, type FlavorKey, type HostPrerequisite } from "./flavors.js";
 import {
   BROKER_SERVICE_NAME,
@@ -118,15 +119,27 @@ export function baselinePlan(flavor: FlavorKey, options: PlanOptions): BaselineP
  * The MSI's public properties for the unattended install (spike record, section 1), none of them
  * secret. `INSTALLDIR` and `VAULT_ROOT` are Directory-table keys and always set: omitted, the MSI
  * installs into Program Files and `C:\Aras\Vault`. No database (`INSTALL_DATABASE=0`: the build
- * restores the shipped backup itself), no agent, no restart, Windows authentication.
+ * restores the shipped backup itself), no restart, Windows authentication.
+ *
+ * The agent service (ticket 33b): `AS_FOLDER` names the service `ArasInnovatorAgent_<AS_FOLDER>` (and is 12.0's URL
+ * path), so it is the build's own, never the default `ArasInnovatorAgent`; `AS_PORT` and `INNOVATOR_TO_SERVICE_ADDRESS`
+ * put it on the build's own port (14.x's custom actions parse the port from the address and refuse an occupied one,
+ * 12.0's XML table reads `AS_HOST`, `AS_PORT` and `AS_FOLDER`); `ARAS_AGENTSERVICE_TO_INNOVATORSERVER_URL` points it at
+ * the build's server (its default names `/InnovatorServer/`, the captain's alias).
  */
 export function msiInstallProperties(plan: BaselinePlan): Readonly<Record<string, string>> {
+  const agent = plan.scratch.agent;
   return {
     INSTALLDIR: plan.names.dir,
     VAULT_ROOT: plan.scratch.vaultRoot,
     WEBALIAS: plan.names.alias,
     INSTALL_DATABASE: "0",
-    INSTALL_AGENT_SERVICE: "0",
+    INSTALL_AGENT_SERVICE: "1",
+    AS_FOLDER: agent.folder,
+    AS_HOST: "localhost",
+    AS_PORT: String(agent.port),
+    INNOVATOR_TO_SERVICE_ADDRESS: agent.address,
+    ARAS_AGENTSERVICE_TO_INNOVATORSERVER_URL: innovatorServerUrl(plan.names.alias),
     IS_SQLSERVER_SERVER: "(local)",
     IS_SQLSERVER_DATABASE: plan.names.database,
     IS_SQLSERVER_AUTHENTICATION: "0",
@@ -139,6 +152,13 @@ export function msiInstallProperties(plan: BaselinePlan): Readonly<Record<string
 
 /** Properties Windows Installer itself defines: not rows of the MSI's Property table, so `media check` cannot list them. */
 export const MSI_BUILT_IN_PROPERTIES: readonly string[] = ["INSTALLDIR", "VAULT_ROOT", "REBOOT", "MSIRESTARTMANAGERCONTROL"];
+
+/**
+ * Read by the MSI's own custom actions but not a row of every MSI's Property table, so neither `media check` nor the
+ * install step can require one: the 14.x MSIs have no `INNOVATOR_TO_SERVICE_ADDRESS` row, and without it their
+ * `ParseHostPortFromInnovatorToAgentServiceAddress` fails the install (12.0 has the row).
+ */
+export const MSI_CUSTOM_ACTION_PROPERTIES: readonly string[] = ["INNOVATOR_TO_SERVICE_ADDRESS"];
 
 /**
  * Kept out of the MSI log by `MsiHiddenProperties`. The build passes none of them, but the MSI's own
@@ -195,14 +215,25 @@ export interface IisRecord {
   readonly applications: readonly IisApplication[];
 }
 
-/** `service.json`: the agent service, or that the build installed none (`INSTALL_AGENT_SERVICE=0`). */
+/**
+ * `service.json`: the agent service as the build's MSI made it (ticket 33b), the template ticket 25's `agent` step makes
+ * `ArasHouseAgent_<key>_<NN>` from; or, in a golden built before ticket 33b (`INSTALL_AGENT_SERVICE=0`), that there is none.
+ */
 export interface ServiceRecord {
   readonly schema: 1;
   readonly installed: boolean;
+  /** The service's name in the build (`ArasInnovatorAgent_ah-build-<key>`); a slot's is its own. */
   readonly name: string | null;
+  /** The executable, relative to the tree (`AgentService\...`). */
   readonly binaryPath: string | null;
+  /** The MSI's start mode (`Auto`); a slot's service starts Manual. */
   readonly startMode: string | null;
+  /** What follows the executable in the service's command line, the install directory written `{{tree}}`; absent or null: none. */
+  readonly arguments?: string | null;
 }
+
+/** Stands for the tree in `ServiceRecord.arguments`: the build's install directory, a slot's folder. */
+export const SERVICE_TREE_TOKEN = "{{tree}}";
 
 /** `flavor.json` */
 export interface FlavorRecord {

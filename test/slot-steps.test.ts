@@ -135,7 +135,14 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).not.toMatch(/Write-(Host|Output|Verbose)|Console\]::Error\.WriteLine\([^"]/);
   });
 
-  it("shares the deny-list fingerprints with the baseline build", () => {
+  it("makes the agent service from service.json with the build's arguments, the tree the slot's, and no path outside it", () => {
+    expect(steps).toContain("$arguments = ([string]$record.arguments).Replace('{{tree}}', $SlotDir)");
+    expect(steps).toContain(`foreach ($m in [regex]::Matches($arguments, '[A-Za-z]:\\\\[^"\\s]*')) { if (-not (Test-Under $m.Value $SlotDir)) { Stop-Step "service.json's arguments name a path outside the slot" } }`);
+    expect(steps).toContain('New-Service -Name $Service -BinaryPathName $command -StartupType Manual');
+  });
+
+  it("shares the deny-list fingerprints with the baseline build, leaving no service out", () => {
+    expect(steps).toContain("$OwnServices = @()");
     expect(steps).toContain(PS_DENY_LIST_PRINTS);
     expect(renderBuildStepsScript()).toContain(PS_DENY_LIST_PRINTS);
     expect(steps).toContain("Write-Result @{ prints = (Get-DenyListPrints) }");

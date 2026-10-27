@@ -1,6 +1,6 @@
 # Baselines: `arashouse baseline build` and `baseline verify`
 
-Tickets 24 (the builder, `12sp9`) and 26 (`23`, and the engine check). A flavor's **golden** (`C:\aras_installations\golden\<key>`) is what every slot of the flavor is made
+Tickets 24 (the builder, `12sp9`), 26 (`23`, and the engine check) and 33b (the agent service). A flavor's **golden** (`C:\aras_installations\golden\<key>`) is what every slot of the flavor is made
 from and reset to: its code tree, its database backups and the records that describe them. It is built once per
 flavor from the captain's installer in `media/<key>/`, into a throw-away instance that is removed again, and it is
 immutable: only another build, with `--replace`, changes it. Building is the only operation that needs the installer
@@ -69,15 +69,15 @@ else from the request but the restore step's two generated passwords.
 | `pools` | each application of `/ah-build-<key>` moves from the MSI's machine-wide pools (which the captain's installs share) to its own `ah-build-<key>-<role>`; then `IIS_IUSRS` (every pool identity is a member) gets modify on every folder and file of the install directory and the vault root, and IUSR read. `golden-build\` has a protected ACL that names no IIS account, and the MSI turns inheritance off on `OAuthServer\App_Data` and grants `IIS_IUSRS` that folder only, not the SQLite file in it: without this the first builds answered HTTP 500 and the OAuth server died with "unable to open database file". The grants stay on the throw-away instance: robocopy copies no ACL into golden, so a slot (ticket 25) needs the same grants |
 | `database` | creates `arashouse_build_<key>_dbo` and `_reg` (24 random letters and digits each), restores the shipped `CoreAndSolutions*.bak` as `arashouse_build_<key>` with its files in `sqldata\`, and maps its users `innovator` and `innovator_regular` to them (spike record, section 4; the CD's SQL scripts are not run) |
 | `configure` | writes the two passwords, and the licence key when given, into the build's `InnovatorServerConfig.xml` with the edit engine |
-| `verify` | (a 500 or 503 is asked again for up to a minute, a fresh application's first start) `Server/DBList.aspx` (where the MSI installs it) lists exactly the build database; `OAuthServer/.well-known/openid-configuration` answers 200; `Aras.Server.Core.dll` is the registry's build; with the licence key and the admin password, an OAuth password grant as `root`; after the login, in a bundle written with `--engine-check`, the engine check (below) |
-| `stop` | stops the build's pools and waits for their worker processes to exit, then for every process started from the build folder (from 14.0 the applications run out of process: `Aras.Server.exe`, `Aras.Client.exe`, spike 07), ending any still there after 30 s; `remove` does the same after it removes the pools |
+| `verify` | (a 500 or 503 is asked again for up to a minute, a fresh application's first start) `Server/DBList.aspx` (where the MSI installs it) lists exactly the build database; `OAuthServer/.well-known/openid-configuration` answers 200; `Aras.Server.Core.dll` is the registry's build; the build's agent service (below) exists, runs an executable inside the build folder, is started if it is not running, listens on its port and answers its health request; with the licence key and the admin password, an OAuth password grant as `root`; after the login, in a bundle written with `--engine-check`, the engine check (below) |
+| `stop` | stops the build's agent service through the service manager (by its name), then the build's pools, and waits for their worker processes to exit, then for every process started from the build folder (from 14.0 the applications run out of process: `Aras.Server.exe`, `Aras.Client.exe`, spike 07), ending any still there after 30 s; `remove` does the same after it removes the pools |
 | `blank-secrets` | blanks `dbo_pwd`, `regular_pwd` and `lic_key` in the build's config, before anything is copied |
 | `capture-tree` | `robocopy /E /XJ /COPY:DAT /DCOPY:T` of the install directory (without a `DB\` folder) to the new golden's `tree\`, then checks that no secret of this build is in its config files |
 | `capture-db` | the shipped `Core*.bak` and `CoreAndSolutions*.bak`, and a `COPY_ONLY, CHECKSUM` backup of the build database as `ootb.bak` (SQL Server writes it to `sqldata\`, since it may not write `golden\`; the build copies it in), taken after the database is handed to the broker's login (`ALTER AUTHORIZATION`), so the `dbo` inside `ootb.bak` is the broker and a slot restored from it is the broker's inside too (ticket 25, `docs/provision.md`) |
-| `metadata` | `edits.json` (the flavor's edit list, `docs/edits.md`), `iis.json` (the applications: sub-path, physical path, role, pool settings), `service.json` (no agent: `INSTALL_AGENT_SERVICE=0`) |
+| `metadata` | `edits.json` (the flavor's edit list, `docs/edits.md`), `iis.json` (the applications: sub-path, physical path, role, pool settings), `service.json` (the agent service, below), after checking the agent's executable is in the new golden's tree |
 | `manifest` | `manifest.json` (`docs/manifest.md`) of `tree\`, and `flavor.json`: release, server build, MSI SHA-256 and version, build time and seconds, host prerequisites, tree counts, each backup's size and SHA-256, the manifest hash, and `ootbOwner` (the broker's login, above; a golden without it is refused by `provision`) |
 | `promote` | moves the new golden (assembled in `golden-build\<key>.golden`) into `golden\<key>`; with `-Replace` the old one is set aside in `golden-build\<key>.old` first and removed after |
-| `remove` | removes the throw-away instance: its IIS applications and pools, its product registration (`msiexec /x`, after the applications, as spike 90 did), the database, the two logins and their `master` users, any service whose binary is in the build folder, ASP.NET's temporary files of the alias, and the folders `golden-build\<key>*` |
+| `remove` | removes the throw-away instance: its IIS applications and pools, its product registration (`msiexec /x`, after the applications, as spike 90 did), the database, the two logins and their `master` users, the build's agent service by its name if the uninstall left it (stopped first, and only when its executable is in the build folder), ASP.NET's temporary files of the alias, and the folders `golden-build\<key>*`. Any other service whose executable is in the build folder is reported, never touched |
 | `deny-list` | the fingerprints again; any difference fails the build |
 | `seal` | `golden\<key>`: SYSTEM and Administrators full, the broker and SQL Server read, and the broker **denied** every change (it is an Administrator, so a plain read grant would not hold it), applied again to every file under it |
 
@@ -89,12 +89,54 @@ is written into `golden\<key>` but by the `promote` move, so a failed build leav
 **The unattended install** (spike record, section 1): `INSTALLDIR=<root>\golden-build\<key>` and
 `VAULT_ROOT=<root>\golden-build\<key>.vault` always (omitted, the MSI installs into Program Files and `C:\Aras\Vault`);
 `WEBALIAS=ah-build-<key>`; `INSTALL_DATABASE=0` (no database, no SQL rights in the installer; the build restores the
-shipped backup); `INSTALL_AGENT_SERVICE=0`; `IS_SQLSERVER_SERVER=(local)`, `IS_SQLSERVER_DATABASE=arashouse_build_<key>`,
+shipped backup); `INSTALL_AGENT_SERVICE=1` with the agent's properties (below); `IS_SQLSERVER_SERVER=(local)`, `IS_SQLSERVER_DATABASE=arashouse_build_<key>`,
 `IS_SQLSERVER_AUTHENTICATION=0`; `SQL_SERVER_LOGIN_NAME` and `_REGULAR_NAME` the build's logins (their defaults are the
 machine-wide `innovator` logins); `REBOOT=ReallySuppress`, `MSIRESTARTMANAGERCONTROL=Disable`;
 `MsiHiddenProperties=LICENSEKEY;IS_SQLSERVER_PASSWORD;SQL_SERVER_LOGIN_PASSWORD;SQL_SERVER_LOGIN_REGULAR_PASSWORD;OAUTH_CERTIFICATES_PASSWORD`.
 No password and no licence key is passed to the MSI. Each public property must be a row of the MSI's Property table
-(`media check`'s names, and again inside the step), or the install is refused before it starts.
+(`media check`'s names, and again inside the step), or the install is refused before it starts; the one exception is
+`INNOVATOR_TO_SERVICE_ADDRESS`, which the 14.x custom actions read but whose Property table has no row for it.
+
+## The agent service
+
+Ticket 33b. Every golden built before it had no agent (`INSTALL_AGENT_SERVICE=0`, `service.json` `installed: false`),
+so `get --agent` was refused. A build now installs the agent with the rest, records it as the template a slot's
+`ArasHouseAgent_<key>_<NN>` is made from, and removes it with the throw-away instance. What the MSIs do with it, read
+from their tables and shipped files (non-elevated, read-only, 2026-10-28):
+
+| | 12.0 (`12sp9`) | 14.x (`23`, `35`: the same components) |
+|---|---|---|
+| Service | a `ServiceInstall` row: `ArasInnovatorAgent_[AS_FOLDER]`, own process, automatic start, LocalSystem; `ServiceControl` starts it at install and stops and deletes it at uninstall | no `ServiceInstall` row: the custom action `StartAgentService` makes and starts it, `RemoveAgentService` removes it at uninstall; `CheckAgentServiceExists` aborts the install when `ArasInnovatorAgent_<AS_FOLDER>` exists |
+| Executable | `AgentService\Aras.Server.Agent.Service.exe` (.NET Framework 4.7.2) | `AgentService\bin\Aras.Server.Agent.Service.exe` (.NET 6 or 8) |
+| Host | WCF, `basicHttpBinding`, base address `http://[AS_HOST]:[AS_PORT]/[AS_FOLDER]`, WSDL by HTTP GET | Kestrel, `Kestrel:Endpoints:HTTP:Url`, a `/health` route |
+| Config the MSI writes | `Aras.Server.Agent.Service.exe.config` (XML table): the base address and `appSettings` `InnovatorServer` | `appsettings.json` (search and replace): `http://0.0.0.0:8734/` becomes `INNOVATOR_TO_SERVICE_ADDRESS`, the server URL `ARAS_AGENTSERVICE_TO_INNOVATORSERVER_URL` |
+| Server config | `<AgentService InnovatorToServiceAddress="http://[AS_HOST]:[AS_PORT]/[AS_FOLDER]">` | `<AgentService InnovatorToServiceAddress="http://[AS_HOST]:[AS_PORT]/">`; `AS_PORT` is parsed from `INNOVATOR_TO_SERVICE_ADDRESS`, and `ValidateAgentServicePort` refuses an occupied port |
+
+The build's properties: `AS_FOLDER=ah-build-<key>` (never the default `ArasInnovatorAgent`, which the captain's installs
+may use; the service is `ArasInnovatorAgent_ah-build-<key>`), `AS_HOST=localhost`, `AS_PORT` the build's own port
+(`8800 + 100 x flavor index`: 8800, 8900, 9000, below the flavor's first slot and never the 8734 the captain's agents
+listen on), `INNOVATOR_TO_SERVICE_ADDRESS` the matching address (`http://localhost:8800/ah-build-12sp9`,
+`http://localhost:8900/`), and `ARAS_AGENTSERVICE_TO_INNOVATORSERVER_URL` the build's own server (its default names
+`/InnovatorServer/`, the captain's alias).
+
+The service's name matches the deny-list prefix `ArasInnovatorAgent_`, so the build treats that one name, and only
+it, as its own: the fingerprints (below) leave it out, the survey reports it by name (so a leftover is found and a
+build refuses to start over it), `verify` starts it only by that name and only when its executable is in the build
+folder, `stop` and `remove` stop it through the service manager (the MSI sets it to restart when its process ends) and
+`remove` deletes it by that name if the uninstall did not. No other guard is loosened, and no slot service is ever
+named `ArasInnovatorAgent_*`.
+
+`service.json`:
+
+```json
+{ "schema": 1, "installed": true, "name": "ArasInnovatorAgent_ah-build-12sp9",
+  "binaryPath": "AgentService\\Aras.Server.Agent.Service.exe", "startMode": "Auto", "arguments": null }
+```
+
+`binaryPath` is relative to the tree (the build checks the file is in the new golden's tree); `arguments` is what
+follows the executable in the service's command line, with the install directory written `{{tree}}`, or null. A
+provision makes `ArasHouseAgent_<key>_<NN>` from it, Manual and stopped, on the slot's reserved port; the edit list
+points the agent's config at the slot (`docs/edits.md`), and `startSlot` asks its health URL (`docs/start-stop.md`).
 
 ## The engine check
 
@@ -126,7 +168,7 @@ golden\<key>\
   manifest.json     every file of tree\ outside the runtime directories, hashed (docs/manifest.md)
   edits.json        the flavor's config edit list (docs/edits.md)
   iis.json          the build alias's applications and pool settings (ticket 25's slot templates)
-  service.json      the agent service's definition, or that there is none
+  service.json      the agent service's definition (ticket 33b), or, in an older golden, that there is none
   flavor.json       release, build, MSI SHA-256, built-at, prerequisites, counts, backups, manifest hash
 ```
 
@@ -144,7 +186,8 @@ it changes anything and again after it has removed the throw-away instance:
   has none or is absent);
 - every IIS application and every pool whose name does not start with `ah-`: the pool and physical path of each
   application, and each pool's settings and member applications (the MSI's machine-wide pools are among them);
-- every service whose name starts `ArasInnovatorAgent_`: its binary, start mode and account;
+- every service whose name starts `ArasInnovatorAgent_`: its binary, start mode and account, except the build's own
+  `ArasInnovatorAgent_ah-build-<key>`, which appears with the install and goes with the removal (above);
 - every product registered as `Aras*` whose install location is not under the root: name, version, location.
 
 Each fingerprint is a SHA-256 of those properties; the report and the error name the objects only. Databases are

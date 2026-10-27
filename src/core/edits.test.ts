@@ -18,7 +18,7 @@ import {
   verifyFile,
 } from "./edits.js";
 import { FLAVOR_KEYS, type FlavorKey } from "./flavors.js";
-import { buildNames, slotNames } from "./names.js";
+import { agentUrl, buildNames, buildScratch, slotNames } from "./names.js";
 import { Secret } from "./secret.js";
 
 // Values are assembled at run time so no secret-shaped literal sits in the source.
@@ -55,7 +55,7 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
 
   it("edits exactly the sample files", () => {
     expect(editListFiles(edits).map((f) => f.toLowerCase()).sort()).toEqual(Object.keys(golden).map((f) => f.toLowerCase()).sort());
-    expect(editListFiles(edits)).toHaveLength(flavor === "35" ? 6 : 8);
+    expect(editListFiles(edits)).toHaveLength(flavor === "35" ? 7 : 9);
   });
 
   it.each(Object.keys(golden))("applies every edit to %s, then finds them all already applied", (file) => {
@@ -79,7 +79,8 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
   it("leaves no build name, build password or build path anywhere, and keeps the line structure", () => {
     for (const [file, text] of Object.entries(golden)) {
       const out = dec(renderFile(file, enc(text), edits, vars, secrets).bytes);
-      for (const stale of [build.alias, build.database, build.dir, `:${build.agentPort}/`, BUILD_PASSWORDS.dbo, BUILD_PASSWORDS.reg]) {
+      const buildAgentPort = `:${buildScratch(flavor).agent.port}/`;
+      for (const stale of [build.alias, build.database, build.dir, `:${build.agentPort}/`, buildAgentPort, BUILD_PASSWORDS.dbo, BUILD_PASSWORDS.reg]) {
         expect(out).not.toContain(stale);
       }
       expect(out.split("\r\n")).toHaveLength(text.split("\r\n").length);
@@ -97,7 +98,18 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
     expect(server).toContain(`lic_key="${LICENCE.replace("&", "&amp;").replace("<", "&lt;")}" act_key=""`);
     expect(server).toContain(`<operating_parameter key="temp_folder" value="${names.slotDir}\\Innovator\\Server\\temp\\" />`);
     expect(server).toContain(`<operating_parameter key="debug_log_prefix" value="${names.slotDir}\\Innovator\\Server\\logs\\" />`);
-    expect(server).toContain(`InnovatorToServiceAddress="http://localhost:${names.agentPort}/`);
+    expect(server).toContain(`<AgentService InnovatorToServiceAddress="${agentUrl(ref)}"/>`);
+    if (flavor === "12sp9") {
+      const agent = render("AgentService/Aras.Server.Agent.Service.exe.config");
+      expect(agent).toContain(`<add baseAddress="http://localhost:${names.agentPort}/${names.alias}" />`);
+      expect(agent).toContain(`<add key="InnovatorServer" value="${innovatorServerUrl(names.alias)}" />`);
+      // The commented-out HTTPS block is not configuration: it stays as shipped.
+      expect(agent).toContain(`<add baseAddress="Https://localhost:8735/ArasInnovatorAgent" />`);
+    } else {
+      const settings = render("AgentService/appsettings.json");
+      expect(settings).toContain(`"InnovatorServerUrl": "${innovatorServerUrl(names.alias)}"`);
+      expect(settings).toContain(`"Url": "http://localhost:${names.agentPort}/"`);
+    }
     expect(render("Innovator/Server/Innovator.xml")).toContain(`<ConfigFilePath value="${names.slotDir}\\InnovatorServerConfig.xml">`);
     const oauth = render("OAuthServer/OAuth.config");
     expect(oauth.split(`/${names.alias}/Client/OAuth/`)).toHaveLength(21);

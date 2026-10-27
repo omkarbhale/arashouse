@@ -12,7 +12,7 @@ one at a time per slot with `provisionSlot`, `destroySlot` and `resetDatabase` (
 
 | verb | what it does |
 |---|---|
-| `startSlot(slot, { agent })` | Starts each of the slot's pools `ah-<key>-<NN>-<role>` that is not running (waiting out a pool still stopping) and fails if one does not start. With `agent: true` it starts `ArasHouseAgent_<key>_<NN>` and waits until the service runs and something listens on the slot's agent port (`8800 + 100 x flavor index + NN`); a slot with no agent service is `Refused`. Then it requests `Client/`, `Server/DBList.aspx` and `OAuthServer/.well-known/openid-configuration` under `http://localhost/<alias>/` once each, together, with a 2-minute bound: any answer from 200 to 399 is warm; anything else makes the result `ok: false`, naming the URL. |
+| `startSlot(slot, { agent })` | Starts each of the slot's pools `ah-<key>-<NN>-<role>` that is not running (waiting out a pool still stopping) and fails if one does not start. With `agent: true` it starts `ArasHouseAgent_<key>_<NN>` and waits until the service runs and something listens on the slot's agent port (`8800 + 100 x flavor index + NN`); a slot with no agent service is `Refused`. Then it requests `Client/`, `Server/DBList.aspx` and `OAuthServer/.well-known/openid-configuration` under `http://localhost/<alias>/` once each, together, with a 2-minute bound, and, when the agent started, its health URL (below): any answer from 200 to 399 is warm, and any answer below 500 from the agent; anything else makes the result `ok: false`, naming the URL. |
 | `stopSlot(slot)` | Stops the agent service if the slot has one, then the slot's pools, and waits (up to a minute) until no `w3wp.exe` of the slot's pools is left; one that is left is `Retryable`. Idempotent. |
 
 `stopSlot` is the quiesce the spike measured (spike record, section 4: stopping the pools frees every locked file and
@@ -20,10 +20,14 @@ closes Aras's SQL sessions), so the reset's `quiesce` (ticket 30) and `destroySl
 `arashouse disable` calls it. A stopped pool does not start on a request (IIS answers 503), so a slot stays offline
 until `startSlot`: the reset's `start` step, or `get --agent`.
 
-**The agent.** No golden has one yet: every build ran with `INSTALL_AGENT_SERVICE=0`, so `service.json` says
-`installed: false`, provisioning makes no service, and `startSlot` with `agent: true` is refused with "slot
-`<id>` has no agent service: the `<flavor>` golden was built without one (ticket 33b)". Ticket 33b puts the agent in
-the golden, renders its configuration (the slot's port and server URL) and adds its health endpoint to the check.
+**The agent.** A golden built since ticket 33b holds the agent (`docs/baselines.md`): provisioning makes the slot's
+service from its `service.json`, and the edit list points the agent at the slot's port and server (`docs/edits.md`).
+Its health URL is the slot's agent address (names.ts `agentUrl`) plus the release's health path: 12.0's WCF host
+serves its WSDL, `http://localhost:<port>/<alias>?wsdl`; 14.x's Kestrel host has a `/health` route,
+`http://localhost:<port>/health`. Any HTTP answer below 500 counts (12.0's WSDL sits behind the endpoint's Basic
+authentication and may answer 401). A slot made from an older golden (`installed: false`) has no service, and
+`startSlot` with `agent: true` is refused with "slot `<id>` has no agent service: the `<flavor>` golden was built
+without one (rebuild it: baseline build `<flavor>` --replace)".
 
 ## `get --agent`
 
@@ -67,6 +71,5 @@ discovery (`docs/slot-url.md`) found no address that answered, which is the heal
 
 ## Not here
 
-- The agent in the golden, its configuration and its health endpoint (ticket 33b).
 - `sc sdset` with `(A;;LCRPWP;;;<user SID>)` would let a non-admin start and stop a slot's service without the broker
   (spike record); nothing uses it, since the broker does it.

@@ -53,8 +53,18 @@ describe("provisionSlot", () => {
       lastResetAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
       leaseId: null,
     });
-    expect(result.detail).toMatch(/^provisioned 12sp9-01 from golden 999999999999 in \d+\.\d s \(7 IIS applications; no agent; configs: 8 files, \d+ edits; no licence key is stored for line 12/);
+    expect(result.detail).toMatch(/^provisioned 12sp9-01 from golden 999999999999 in \d+\.\d s \(7 IIS applications; no agent; configs: 9 files, \d+ edits; no licence key is stored for line 12/);
     expect(result.detail).toMatch(/golden 0\.1, snapshot 0\.1, folders 0\.1, tree 0\.1, iis 0\.1, agent 0\.1, database [\d.]+, configs [\d.]+, stamp [\d.]+, deny-list 0\.1\)$/);
+  });
+
+  it("makes the slot's agent service on its reserved port when the golden has one, and points the agent at the slot", async () => {
+    const system = new FakeSlotSystem();
+    system.agentInstalled = true;
+    const result = await provision(system);
+    expect(result.detail).toContain("(7 IIS applications; agent on port 8801; configs: 9 files");
+    const agentConfig = system.text(win32.join(slotNames(s1, ROOT).slotDir, "AgentService", "Aras.Server.Agent.Service.exe.config"))!;
+    expect(agentConfig).toContain('<add baseAddress="http://localhost:8801/ah-12sp9-01" />');
+    expect(agentConfig).toContain('<add key="InnovatorServer" value="http://localhost/ah-12sp9-01/Server/InnovatorServer.aspx" />');
   });
 
   it("renders the slot's names and its stored login passwords into the configs, from the golden's bytes", async () => {

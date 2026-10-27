@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INSTALL_ROOT, slotNames, type SlotRef } from "../core/names.js";
+import { DEFAULT_INSTALL_ROOT, agentHealthUrl, agentUrl, slotNames, type SlotRef } from "../core/names.js";
 import { HostError } from "../host/errors.js";
 import { Broker } from "./broker.js";
 import { provisionSlotOnHost, registerSlotVerbs } from "./provision.js";
@@ -40,19 +40,36 @@ describe("startSlot", () => {
     expect(system.agentRunning.size).toBe(0);
   });
 
-  it("starts the agent only when asked, on the slot's reserved port", async () => {
+  it("starts the agent only when asked, on the slot's reserved port, and asks its health endpoint", async () => {
     const system = await provisioned();
     system.agentInstalled = true;
     const result = await start(system, true);
     expect(result).toMatchObject({ ok: true, detail: expect.stringContaining("agent ArasHouseAgent_12sp9_01 running on port 8801") });
+    expect(result.detail).toContain("agent 200 0.1 s");
     expect(system.agentRunning.has("12sp9-01")).toBe(true);
+    // 12.0's WCF agent serves its WSDL under the slot's alias; 14.x's answers /health.
+    expect(system.warmed).toContain("http://localhost:8801/ah-12sp9-01?wsdl");
+    expect(agentHealthUrl("23", agentUrl({ flavor: "23", slot: 2 }))).toBe("http://localhost:8902/health");
   });
 
-  it("refuses the agent of a slot whose golden has none, naming the ticket that adds it", async () => {
+  it("answers ok: false when the agent runs but its health endpoint does not answer; a credentials challenge is an answer", async () => {
+    const system = await provisioned();
+    system.agentInstalled = true;
+    system.warmAnswer = (url) => (url.includes(":8801/") ? { ms: 30_000, error: "connection refused" } : { status: 200, ms: 10 });
+    const down = await start(system, true);
+    expect(down.ok).toBe(false);
+    expect(down.detail).toMatch(/^started but not warm: 12sp9-01 .*agent connection refused 30\.0 s/);
+    system.warmAnswer = (url) => (url.includes(":8801/") ? { status: 401, ms: 10 } : { status: 200, ms: 10 });
+    expect((await start(system, true)).ok).toBe(true);
+    system.warmAnswer = (url) => (url.includes(":8801/") ? { status: 500, ms: 10 } : { status: 200, ms: 10 });
+    expect((await start(system, true)).ok).toBe(false);
+  });
+
+  it("refuses the agent of a slot whose golden has none, naming the rebuild that adds it", async () => {
     const system = await provisioned();
     const err = await failure(start(system, true));
     expect(err.kind).toBe("Refused");
-    expect(err.message).toBe("slot 12sp9-01 has no agent service: the 12sp9 golden was built without one (ticket 33b)");
+    expect(err.message).toBe("slot 12sp9-01 has no agent service: the 12sp9 golden was built without one (rebuild it: baseline build 12sp9 --replace)");
   });
 
   it("answers ok: false, naming the URL, when a warm-up does not answer", async () => {

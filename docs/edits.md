@@ -47,7 +47,8 @@ element without the attribute is not a match.
 | `slotDir` | `C:\aras_installations\slots\12sp9\01` |
 | `vaultDir` | `C:\aras_installations\vaults\12sp9-01` |
 | `serverUrl` | `http://localhost/ah-12sp9-01/Server/InnovatorServer.aspx` |
-| `build.alias`, `build.database`, `build.dir`, `build.agentPort` | the names the baseline was installed under (ticket 24): `ah-build-12sp9`, `arashouse_build_12sp9`, `C:\aras_installations\golden-build\12sp9`, `8734` (the MSI's default `AS_PORT`). The golden's files still hold them. |
+| `build.alias`, `build.database`, `build.dir` | the names the baseline was installed under (ticket 24): `ah-build-12sp9`, `arashouse_build_12sp9`, `C:\aras_installations\golden-build\12sp9`. The golden's files still hold them. |
+| `build.agentPort` | `8734`, the MSI's default `AS_PORT`, which the goldens built before ticket 33b name; only their lists use it. A build since installs its agent on a port of its own, and the list sets the whole agent address instead (below). |
 
 Secret handles may appear in `value` only: `{{secret:licence}}` (a `licence` Secret: the stored key
 for the flavor's licence line, from `ensureLicence(flavor, "edit-list", ...)`), `{{secret:licence_act_key}}` (a
@@ -85,11 +86,11 @@ missing). It never throws for the file's content. Ticket 32 runs it after a rese
 ## The lists
 
 `12sp9` and `23`: the same eight files and edits (ticket 09's spike record; spikes 05 and 07,
-`spike/20-clone-slot.ps1`):
+`spike/20-clone-slot.ps1`), and each release's agent configuration (ticket 33b, below):
 
 | file | edits |
 |---|---|
-| `InnovatorServerConfig.xml` | `<DB-Connection>` `id`, `database`, `dbo_uid`, `dbo_pwd`, `regular_uid`, `regular_pwd`; `<License lic_key>`; the `temp_folder`, `ServerMethodTempDir` and `debug_log_prefix` operating parameters (the tree path); the agent port in `<AgentService InnovatorToServiceAddress>` (text) |
+| `InnovatorServerConfig.xml` | `<DB-Connection>` `id`, `database`, `dbo_uid`, `dbo_pwd`, `regular_uid`, `regular_pwd`; `<License lic_key>`; the `temp_folder`, `ServerMethodTempDir` and `debug_log_prefix` operating parameters (the tree path); `<AgentService InnovatorToServiceAddress>`, the slot's agent address (below) |
 | `SelfServiceReportConfig.xml` | the `<add connectionString name>` the MSI writes: database, regular login and its password |
 | `Innovator/Client/Innovator.xml`, `Innovator/Server/Innovator.xml` | `<ConfigFilePath value>` |
 | `SelfServiceReporting/SelfServiceReport.xml` | the build directory in its `ConfigFilePath` (text) |
@@ -100,10 +101,27 @@ missing). It never throws for the file's content. Ticket 32 runs it after a rese
 `35`: the same edits less the two SelfServiceReporting files, which the 14.35 installer no longer ships
 (spike 08, [`docs/spike-08-release-35.md`](spike-08-release-35.md)).
 
-Not edited: `ConversionServerConfig.xml` and an agent config (neither is installed with the default
-features); the per-application `OAuth.config` files, `appsettings.json` and `InnovatorServer.config`
-(no slot name in them, spike 07); `<Mail SMTPServer>` (`queue` in the install). The OAuth certificates
-are copied with the tree, so all slots of a flavor share them (design 5.2).
+**The agent (ticket 33b).** A golden built since ticket 33b holds the agent service (`docs/baselines.md`). The slot's
+agent listens on the slot's reserved port (`agentPort`) and calls the slot's own server (`serverUrl`); the server
+config names the same address. The address is `http://localhost:<agentPort>/<alias>` on 12.0, whose WCF host takes its
+path from the MSI's `AS_FOLDER`, and `http://localhost:<agentPort>/` on 14.x (names.ts `agentUrl`). Each value is set
+whole, so the list does not depend on the port or `AS_FOLDER` the build used. Found in the MSIs' own tables (the
+InstallShield XML table for 12.0, the search-and-replace table for 14.x) and the files they ship:
+
+| flavor | file | edits |
+|---|---|---|
+| `12sp9` | `AgentService/Aras.Server.Agent.Service.exe.config` | the WCF service's `<host><baseAddresses><add baseAddress>`; `<appSettings><add key="InnovatorServer" value>` |
+| `23`, `35` | `AgentService/appsettings.json` | `/Kestrel/Endpoints/HTTP/Url`; `/AgentService/InnovatorServerUrl` |
+
+Neither release's agent names its port or the server anywhere else: its `OAuth.config` (the client certificate, shared
+like the other OAuth files), `AgentService.config` (14.x: the OAuth section only), `conversion.config` (processing cycles,
+all commented out, naming no URL) and `replication.config` (disabled, placeholders only) are left as shipped. The
+conversion server is not installed (`INSTALL_CONVERSION_SERVER=0`), so there is no `ConversionServerConfig.xml`.
+
+Not edited: `ConversionServerConfig.xml` (not installed with the default features); the per-application
+`OAuth.config` files, the applications' `appsettings.json` and `InnovatorServer.config` (no slot name in them, spike
+07); `<Mail SMTPServer>` (`queue` in the install). The OAuth certificates are copied with the tree, so all slots of a
+flavor share them (design 5.2).
 
 **Measured, and new against the spike's clone script:** the MSI's script writes the regular login's
 password into `SelfServiceReportConfig.xml` as well, which `spike/20-clone-slot.ps1` did not
@@ -111,7 +129,7 @@ update; the list sets it. Because it sits in a connection string, the slot's SQL
 (ticket 25) must not contain `;`.
 
 **For the baseline builder (ticket 24):** the text edits find the build's names, so the baseline is
-installed under `buildNames(flavor)` (alias, database, directory) with the default agent port. The
+installed under `buildNames(flavor)` (alias, database, directory). The
 golden keeps `lic_key`, `act_key`, `dbo_pwd` and `regular_pwd` blank (the build sets them for its own checks and
 blanks them before the copy, `docs/baselines.md`). The build's login proof found the key alone refused ("License Key
 is invalid"): a slot needs `act_key`, `lic_type` and `company` from the key's source too (spike 30 copied all four),

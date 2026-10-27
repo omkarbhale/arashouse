@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MSI_BUILT_IN_PROPERTIES, baselinePlan, compareDenyList, msiInstallProperties } from "./baseline.js";
+import { MSI_BUILT_IN_PROPERTIES, MSI_CUSTOM_ACTION_PROPERTIES, baselinePlan, compareDenyList, msiInstallProperties } from "./baseline.js";
 import { renderBaselineBuildScript } from "./baseline-script.js";
 import { GuardError, assertOwned } from "./guards.js";
 import { buildScratch, goldenLayout } from "./names.js";
@@ -20,7 +20,10 @@ describe("the baseline plan", () => {
       promotingMarker: "C:\\aras_installations\\golden-build\\12sp9.promoting",
       engineDir: "C:\\aras_installations\\golden-build\\12sp9.engine",
       bundleDir: "C:\\aras_installations\\staging\\baseline-12sp9",
+      agent: { folder: "ah-build-12sp9", service: "ArasInnovatorAgent_ah-build-12sp9", port: 8800, address: "http://localhost:8800/ah-build-12sp9" },
     });
+    expect(buildScratch("23").agent).toEqual({ folder: "ah-build-23", service: "ArasInnovatorAgent_ah-build-23", port: 8900, address: "http://localhost:8900/" });
+    expect(buildScratch("35").agent.port).toBe(9000);
     expect(plan.databaseFiles).toEqual({ data: "C:\\aras_installations\\sqldata\\arashouse_build_12sp9.mdf", log: "C:\\aras_installations\\sqldata\\arashouse_build_12sp9_log.ldf" });
     expect(plan.golden).toEqual(goldenLayout("12sp9"));
     expect(plan.golden.tree).toBe("C:\\aras_installations\\golden\\12sp9\\tree");
@@ -64,14 +67,19 @@ describe("the baseline plan", () => {
     expect(() => assertOwned("path", "C:\\aras_installations\\golden-build\\12sp9", { flavor: "12sp9", slot: 1 })).toThrow(/different slot/);
   });
 
-  it("installs unattended with INSTALLDIR and VAULT_ROOT always set, no database, no agent and no restart", () => {
+  it("installs unattended with INSTALLDIR and VAULT_ROOT always set, no database, its own agent and no restart", () => {
     const props = msiInstallProperties(baselinePlan("23", { msiSha256: SHA }));
     expect(props).toEqual({
       INSTALLDIR: "C:\\aras_installations\\golden-build\\23",
       VAULT_ROOT: "C:\\aras_installations\\golden-build\\23.vault",
       WEBALIAS: "ah-build-23",
       INSTALL_DATABASE: "0",
-      INSTALL_AGENT_SERVICE: "0",
+      INSTALL_AGENT_SERVICE: "1",
+      AS_FOLDER: "ah-build-23",
+      AS_HOST: "localhost",
+      AS_PORT: "8900",
+      INNOVATOR_TO_SERVICE_ADDRESS: "http://localhost:8900/",
+      ARAS_AGENTSERVICE_TO_INNOVATORSERVER_URL: "http://localhost/ah-build-23/Server/InnovatorServer.aspx",
       IS_SQLSERVER_SERVER: "(local)",
       IS_SQLSERVER_DATABASE: "arashouse_build_23",
       IS_SQLSERVER_AUTHENTICATION: "0",
@@ -82,6 +90,15 @@ describe("the baseline plan", () => {
     });
     expect(Object.keys(props).filter((k) => /PASSWORD|LICENSE/.test(k))).toEqual([]);
     expect(MSI_BUILT_IN_PROPERTIES).toEqual(["INSTALLDIR", "VAULT_ROOT", "REBOOT", "MSIRESTARTMANAGERCONTROL"]);
+    expect(MSI_CUSTOM_ACTION_PROPERTIES).toEqual(["INNOVATOR_TO_SERVICE_ADDRESS"]);
+    // 12.0's agent takes its URL path from AS_FOLDER; never the MSI's default, which the captain's installs may use.
+    const p12 = msiInstallProperties(baselinePlan("12sp9", { msiSha256: SHA }));
+    expect(p12).toMatchObject({ AS_FOLDER: "ah-build-12sp9", AS_PORT: "8800", INNOVATOR_TO_SERVICE_ADDRESS: "http://localhost:8800/ah-build-12sp9" });
+    for (const flavor of ["12sp9", "23", "35"] as const) {
+      const p = msiInstallProperties(baselinePlan(flavor, { msiSha256: SHA }));
+      expect(p.AS_FOLDER).not.toMatch(/^ArasInnovatorAgent$/i);
+      expect(["8734", "8735", "8736"]).not.toContain(p.AS_PORT);
+    }
   });
 });
 

@@ -174,6 +174,11 @@ export function windowsBuildSystem(plan: BaselinePlan, options: WindowsBuildSyst
       const v = (await step("server-version")).version;
       return typeof v === "string" && v.length > 0 ? v : null;
     },
+    async startAgent() {
+      const r = await step("agent");
+      if (r.present !== true) return null;
+      return { state: String(r.state ?? ""), startMode: String(r.startMode ?? ""), pathName: String(r.pathName ?? "") };
+    },
     async stopPools() {
       await step("stop");
     },

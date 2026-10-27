@@ -1,19 +1,44 @@
-// A `SlotSystem` in memory, for the provision and destroy tests: golden files from the sample
-// configs (config-samples.fixture.ts), the slot's host objects by name, a call record and one-shot
-// faults. Paths are the Windows paths the verbs derive, compared without case, as Windows does.
+// A `SlotSystem` in memory, for the provision, destroy and reset tests: golden files from the sample
+// configs (config-samples.fixture.ts) and a manifest of them, the slot's host objects by name, which
+// slots are serving, a call record and one-shot faults. Paths are the Windows paths the verbs derive,
+// compared without case, as Windows does (so the fake manifest's paths are lower-case).
 
+import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 import { OOTB_OWNER, type DenyListSnapshot } from "../core/baseline.js";
 import { sampleGolden } from "../core/config-samples.fixture.js";
 import { serializeEditList } from "../core/edits.js";
 import { editList } from "../core/edit-lists.js";
-import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
+import { FLAVORS, FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
+import {
+  compareTree,
+  isRuntimePath,
+  makeManifest,
+  pathsToHash,
+  serializeManifest,
+  type Manifest,
+  type ManifestDiff,
+  type ObservedFile,
+} from "../core/manifest.js";
 import { DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, type SlotRef } from "../core/names.js";
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
-import type { GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, WarmAnswer } from "./provision.js";
+import type { GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
 
 export const FAKE_GOLDEN_HASH = "9".repeat(64);
+
+/** Every file of the fake has this last-write time. */
+const MTIME = "2026-10-28T10:00:00.0000000Z";
+
+/** Golden files beyond the configs: a client script, the server's main DLL, and runtime files the build left. */
+export const GOLDEN_EXTRA_FILES: Readonly<Record<string, string>> = {
+  "Innovator/Client/scripts/main.js": "main",
+  "Innovator/Server/bin/Aras.Server.Core.dll": "dll",
+  "Innovator/Server/temp/build.log": "log",
+  "Innovator/Client/jsBundles/data.json": "{}",
+};
+
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 type Method = Exclude<keyof SlotSystem, "secrets">;
 
@@ -33,6 +58,10 @@ export class FakeSlotSystem implements SlotSystem {
   /** The URLs `warm` was asked for, in order, and what it answers. */
   readonly warmed: string[] = [];
   warmAnswer: (url: string) => WarmAnswer = () => ({ status: 200, ms: 50 });
+  /** Slots whose pools, agent or processes run, by slot id: `createIis` starts one, `quiesce` and `stop` stop it. */
+  readonly serving = new Set<string>();
+  /** Tree-relative paths (lower-case, `\`-separated) the next `resetTree` mirror leaves as they are, as a failed copy would. */
+  mirrorSkips: string[] = [];
   /** What `golden` answers. */
   goldenState: GoldenCheck = { state: "ok", hash: FAKE_GOLDEN_HASH };
   denyList: Record<string, string> = { "IIS pool DefaultAppPool": "p1", "install root C:\\Program Files (x86)\\Aras12\\Innovator": "c1" };
@@ -45,9 +74,22 @@ export class FakeSlotSystem implements SlotSystem {
       const layout = goldenLayout(flavor, root);
       this.put(layout.edits, serializeEditList(editList(flavor)));
       this.put(layout.flavor, JSON.stringify({ schema: 1, flavor, ootbOwner: OOTB_OWNER }));
-      for (const [file, text] of Object.entries(sampleGolden(flavor))) this.put(win32.join(layout.tree, ...file.split("/")), text);
-      this.put(win32.join(layout.tree, "Innovator", "Server", "bin", "Aras.Server.Core.dll"), "dll");
+      for (const [file, text] of Object.entries({ ...sampleGolden(flavor), ...GOLDEN_EXTRA_FILES })) this.put(win32.join(layout.tree, ...file.split("/")), text);
+      this.put(layout.manifest, serializeManifest(this.manifest(flavor)));
     }
+  }
+
+  /** The manifest of the flavor's golden tree as it stands: every file outside the runtime directories. */
+  manifest(flavor: FlavorKey): Manifest {
+    const tree = goldenLayout(flavor, this.root).tree;
+    const entries = this.filesUnder(tree)
+      .map((rel) => ({ rel, path: rel.replace(/\\/g, "/") }))
+      .filter(({ path }) => !isRuntimePath(path, FLAVORS[flavor].runtimeDirs))
+      .map(({ rel, path }) => {
+        const bytes = this.files.get(`${tree.toLowerCase()}\\${rel}`)!;
+        return { path, size: bytes.length, mtime: MTIME, sha256: sha256(bytes) };
+      });
+    return makeManifest(flavor, FLAVORS[flavor].serverBuild, entries);
   }
 
   /** Makes the next call to `method` throw `err`. */
@@ -127,6 +169,7 @@ export class FakeSlotSystem implements SlotSystem {
 
   async createIis(slot: SlotRef): Promise<number> {
     this.record("createIis", slot);
+    this.serving.add(slotId(slot));
     this.objects.add(`IIS application /${slotNames(slot, this.root).alias}`);
     return 7;
   }
@@ -150,6 +193,7 @@ export class FakeSlotSystem implements SlotSystem {
     this.record("start", slot);
     const id = slotId(slot);
     this.running.add(id);
+    this.serving.add(id);
     if (options.agent && this.agentInstalled) this.agentRunning.add(id);
     return { pools: 7, agent: !options.agent ? "not asked" : this.agentInstalled ? "running" : "none", port: agentPort(slot) };
   }
@@ -158,6 +202,7 @@ export class FakeSlotSystem implements SlotSystem {
     this.record("stop", slot);
     const id = slotId(slot);
     this.running.delete(id);
+    this.serving.delete(id);
     const hadAgent = this.agentRunning.delete(id);
     return { pools: 7, agent: this.agentInstalled || hadAgent ? "stopped" : "none" };
   }
@@ -167,6 +212,52 @@ export class FakeSlotSystem implements SlotSystem {
     void timeoutMs;
     this.warmed.push(url);
     return this.warmAnswer(url);
+  }
+
+  async quiesce(slot: SlotRef): Promise<boolean> {
+    this.record("quiesce", slot);
+    if (!this.objects.has(slotNames(slot, this.root).slotDir)) return false;
+    for (const set of [this.serving, this.running, this.agentRunning]) set.delete(slotId(slot));
+    return true;
+  }
+
+  async resetTree(slot: SlotRef): Promise<TreeReset> {
+    this.record("resetTree", slot);
+    const n = slotNames(slot, this.root);
+    if (!this.objects.has(n.slotDir)) return { state: "not-provisioned" };
+    if (this.serving.has(slotId(slot))) return { state: "serving", serving: [`IIS pool ${n.alias}-root (Started)`] };
+    const skips = new Set(this.mirrorSkips);
+    this.mirrorSkips = [];
+    const slotKey = n.slotDir.toLowerCase();
+    const tree = goldenLayout(slot.flavor, this.root).tree.toLowerCase();
+    // robocopy /MIR: what golden lacks goes (the stamp too), what it has is copied.
+    for (const rel of this.filesUnder(n.slotDir)) if (!skips.has(rel) && !this.files.has(`${tree}\\${rel}`)) this.files.delete(`${slotKey}\\${rel}`);
+    for (const rel of this.filesUnder(tree)) if (!skips.has(rel)) this.files.set(`${slotKey}\\${rel}`, this.files.get(`${tree}\\${rel}`)!);
+    let runtimeEntries = 0;
+    for (const rule of FLAVORS[slot.flavor].runtimeDirs.filter((r) => r.files === undefined)) {
+      const dir = win32.join(n.slotDir, ...rule.dir.split("/"));
+      for (const rel of this.filesUnder(dir)) {
+        this.files.delete(`${dir.toLowerCase()}\\${rel}`);
+        runtimeEntries++;
+      }
+    }
+    const vault = this.filesUnder(n.vaultDir);
+    for (const rel of vault) this.files.delete(`${n.vaultDir.toLowerCase()}\\${rel}`);
+    const aspnet = this.objects.delete(`ASP.NET temporary files ${n.alias}`) ? 1 : 0;
+    return { state: "reset", mirrorMs: 300, clearMs: 100, runtimeEntries, vaultEntries: vault.length, aspnetFolders: aspnet };
+  }
+
+  async verifyTree(slot: SlotRef, manifest: Manifest, rendered: readonly string[]): Promise<ManifestDiff> {
+    this.record("verifyTree", slot);
+    const dir = slotNames(slot, this.root).slotDir;
+    const runtimeDirs = FLAVORS[slot.flavor].runtimeDirs;
+    const observed: ObservedFile[] = this.filesUnder(dir)
+      .map((rel) => ({ path: rel.replace(/\\/g, "/"), kind: "file" as const, size: this.files.get(`${dir.toLowerCase()}\\${rel}`)!.length, mtime: MTIME }))
+      .filter((o) => !isRuntimePath(o.path, runtimeDirs));
+    const hashes = new Map(
+      pathsToHash(manifest, observed, "fast", runtimeDirs, rendered).map((p) => [p, sha256(this.files.get(`${dir.toLowerCase()}\\${p.replace(/\//g, "\\")}`)!)] as const),
+    );
+    return compareTree(manifest, observed, hashes, { level: "fast", runtimeDirs, rendered });
   }
 
   async removeAgent(slot: SlotRef): Promise<boolean> {
@@ -186,6 +277,11 @@ export class FakeSlotSystem implements SlotSystem {
   async removeIis(slot: SlotRef): Promise<void> {
     this.record("removeIis", slot);
     this.objects.delete(`IIS application /${slotNames(slot, this.root).alias}`);
+  }
+
+  async isDirectory(path: string): Promise<boolean> {
+    this.record("isDirectory");
+    return this.objects.has(path);
   }
 
   async readFile(path: string): Promise<Uint8Array | null> {

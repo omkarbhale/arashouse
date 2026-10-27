@@ -12,6 +12,7 @@ import {
   isRuntimePath,
   makeManifest,
   parseManifest,
+  pathsToHash,
   serializeManifest,
   summarizeDiff,
 } from "./manifest.js";
@@ -155,6 +156,16 @@ describe("compareTree", () => {
     const odd = makeManifest("35", null, [entry("Client/a.js"), entry("Innovator/Server/temp/old.tmp")]);
     const diff = compareTree(odd, [seen("Client/a.js")], new Map(), opts);
     expect(diff).toMatchObject({ ok: true, checked: 1, skippedRuntime: 1 });
+  });
+
+  it("needs a rendered file present but leaves its size, time and content to the caller, without case", () => {
+    const rendered = ["server/WEB.config"];
+    const observed = [seen("Client/a.js"), seen("Server/web.config", { size: 99, mtime: "2026-10-28T00:00:00.0000000Z" })];
+    expect(pathsToHash(manifest, observed, "fast", RUNTIME_DIRS, rendered)).toEqual([]);
+    expect(pathsToHash(manifest, observed, "fast", RUNTIME_DIRS)).toEqual(["Server/web.config"]);
+    expect(compareTree(manifest, observed, new Map(), { ...opts, rendered })).toMatchObject({ ok: true, checked: 2, hashed: 0 });
+    expect(compareTree(manifest, observed, new Map(), opts).changed).toEqual([{ path: "Server/web.config", reasons: ["size", "mtime"] }]);
+    expect(compareTree(manifest, [seen("Client/a.js")], new Map(), { ...opts, rendered }).missing).toEqual(["Server/web.config"]);
   });
 
   it("fails on a problem even when every path matches", () => {

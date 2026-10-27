@@ -1,6 +1,6 @@
 // The host-driver contract suite against `BrokerHost` on the real host (tickets 25 and 35). It provisions and destroys
 // the slot 12sp9-98, which no pool uses, so it runs only when asked: ARASHOUSE_TEST_BROKER=1, from WSL, with the
-// broker installed and the 12sp9 golden built. Until tickets 30 to 33 add the reset, health and stamp verbs, those
+// broker installed and the 12sp9 golden built. Until tickets 31 to 33 add the database, health and start verbs, those
 // tests fail Unreachable naming their ticket; ticket 35 runs the whole suite green.
 
 import { describe, it } from "vitest";
@@ -11,15 +11,16 @@ import { hostContractSuite } from "./host-contract.js";
 const slot = { flavor: "12sp9", slot: 98 } as const;
 
 if (process.env.ARASHOUSE_TEST_BROKER === "1") {
-  hostContractSuite("BrokerHost on this host", () => {
+  hostContractSuite("BrokerHost on this host", async () => {
     const host = new BrokerHost(interopTransport({ node: process.env.ARASHOUSE_WINDOWS_NODE || undefined }));
+    // The golden's manifest hash, as the broker names it: a tree reset mirrors to that golden only.
+    const hash = (await host.baselineVerify(slot.flavor)).goldenHash ?? "";
     return {
       host,
       root: DEFAULT_INSTALL_ROOT,
       slot,
-      // The hash a reset compares is the golden's manifest hash; the suite only hands it back to the host.
-      golden: { flavor: slot.flavor, hash: "" },
-      backup: { flavor: slot.flavor, file: goldenLayout(slot.flavor).ootbBackup, hash: "" },
+      golden: { flavor: slot.flavor, hash },
+      backup: { flavor: slot.flavor, file: goldenLayout(slot.flavor).ootbBackup, hash },
       teardown: async () => {
         await host.destroySlot(slot).catch(() => undefined);
       },

@@ -40,7 +40,7 @@ them by the rules of `src/core/names.ts`, as `baseline-steps.ps1` does; a test f
 | `golden` | `golden\<key>` verifies against its manifest (`golden` level); its `flavor.json` says `ootbOwner` is the broker (below). A golden being promoted (`golden-build\<key>.promoting`) is `Retryable`; one that does not verify, or lacks `ootbOwner`, is `Refused` |
 | `snapshot` | the deny-list fingerprints (`docs/baselines.md`, "The deny-list self-check"; the same PowerShell, `src/broker/ps-common.ts`) |
 | `folders` | `slots\<key>\<NN>` and `vaults\<key>-<NN>`, refused if either is a junction; `IIS_IUSRS` (every pool identity) modify and `IUSR` read on the slot folder, `IIS_IUSRS` modify on the vault folder, both inheritable |
-| `tree` | `robocopy <golden>\tree <slot> /MIR /XJ /XF .arashouse-slot.json`: the mirror ticket 30's reset uses. robocopy copies no ACL, so every file inherits the grants above, `OAuthServer\App_Data`'s SQLite file included |
+| `tree` | `robocopy <golden>\tree <slot> /MIR /XJ /R:2 /W:1 /MT:16`: the mirror the reset uses (`docs/reset.md`), with no `/XF` (robocopy matches it on the source side, spike 06). robocopy copies no ACL, so every file inherits the grants above, `OAuthServer\App_Data`'s SQLite file included |
 | `iis` | the applications of the golden's `iis.json` under `Default Web Site`: `/ah-<key>-<NN>` and each sub-application, each on its own pool `ah-<key>-<NN>-<role>` with the captured runtime, pipeline mode, bitness, identity and start mode, and an idle timeout of 10 minutes (or what `setup-host.ps1 -SlotIdleTimeoutMinutes` recorded). An existing application or pool is brought to the template |
 | `agent` | the agent service of the golden's `service.json`, if it has one: `ArasHouseAgent_<key>_<NN>`, startup Manual, left stopped, its port (`8800 + 100 x flavor index + NN`) refused if it is 8734 to 8736 or something listens there. No golden has one yet (`INSTALL_AGENT_SERVICE=0`), so the step answers `no agent` |
 | `database` | the slot's two SQL login passwords from the host's secret store (made and stored on the first provision); then, through the name-checked procedures (ticket 22): `create_slot_database`, `kill_connections`, the broker's own `RESTORE ... WITH REPLACE` of the golden's `db\ootb.bak` with its files moved to `sqldata\arashouse_<key>_<NN>.mdf` and `_log.ldf`, `create_slot_login` for `_dbo` and `_reg`, and `ALTER USER innovator` / `innovator_regular` `WITH LOGIN` to them. The CD's SQL scripts are not run |
@@ -62,7 +62,7 @@ Both verbs may take 30 minutes (`VERB_TIMEOUT_MS`).
 ## `destroySlot`
 
 The provision's steps in reverse, each run even when one before it failed: `stop` (the slot's pools and agent,
-waiting for its `w3wp.exe` to end), `agent` (the service of its own name), `database` (`drop_slot_database`, then
+waiting for its processes to end, as the reset's quiesce does), `agent` (the service of its own name), `database` (`drop_slot_database`, then
 `drop_slot_login` for both logins; each ends the sessions it must), `iis` (the applications under `/ah-<key>-<NN>`,
 the pools named from the slot's roles, ASP.NET's temporary files of the alias), `folders` (the slot and vault folders,
 and `slots\<key>` when it is left empty), `secrets` (the two stored passwords). Then it lists what of the slot is left
@@ -138,7 +138,7 @@ worker from WSL, non-elevated, under a scratch `ARASHOUSE_HOME`:
 ## Not here
 
 - The health check (ticket 32): `BrokerHost.healthCheck` is not a verb yet, so on the real host `provision` leaves each
-  slot `dirty`, and the reset (tickets 30 to 33) brings it to `free`. `FakeHost` checks health, so the offline tests
+  slot `dirty`, and the reset (tickets 30 to 33; the tree step is in, `docs/reset.md`) brings it to `free`. `FakeHost` checks health, so the offline tests
   cover the `free` path.
 - Starting the agent (ticket 33, `docs/start-stop.md`) and an agent in the golden with its configuration (ticket 33b); the
   per-lease password (ticket 34).

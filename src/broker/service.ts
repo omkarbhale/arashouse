@@ -11,7 +11,8 @@ import type { Clock } from "../host/clock.js";
 import { guarded } from "../host/owned.js";
 import { FileAudit, type AuditSink } from "./audit.js";
 import { registerBaselineVerbs } from "./baseline-verbs.js";
-import { registerSlotVerbs, type SlotSystem } from "./provision.js";
+import { SlotLocks, registerSlotVerbs, type SlotSystem } from "./provision.js";
+import { registerResetVerbs } from "./reset-tree.js";
 import { windowsSlotSystem } from "./slot-system.js";
 import { Broker } from "./broker.js";
 import { nodeBrokerFs, type BrokerFs } from "./fs.js";
@@ -40,7 +41,7 @@ export interface StartOptions {
   readonly audit?: AuditSink;
   readonly clock?: Clock;
   readonly system?: Partial<Omit<BrokerSystem, "fs">>;
-  /** What `provisionSlot` and `destroySlot` act through; defaults to the host's (slot-system.ts). */
+  /** What the slot verbs (provision, destroy, quiesce, resetTree, writeStamp) act through; defaults to the host's (slot-system.ts). */
   readonly slotSystem?: SlotSystem;
   readonly onError?: (err: unknown) => void;
 }
@@ -71,7 +72,10 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
   });
   registerCoreVerbs(broker, system);
   registerBaselineVerbs(broker, system);
-  registerSlotVerbs(broker, options.slotSystem ?? windowsSlotSystem({ root, fs }));
+  const slotSystem = options.slotSystem ?? windowsSlotSystem({ root, fs });
+  const locks = new SlotLocks();
+  registerSlotVerbs(broker, slotSystem, locks);
+  registerResetVerbs(broker, slotSystem, locks);
   const token = newToken();
   await writeTokenFile(options.tokenPath ?? brokerTokenFile(root), token);
   const server = await servePipe({ path: options.pipePath ?? PIPE_PATH, token, broker, clock: options.clock, onError: options.onError });

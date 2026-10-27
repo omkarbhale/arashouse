@@ -10,18 +10,18 @@
 import { mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ManifestError, summarizeDiff } from "../core/manifest.js";
-import { buildScratch, goldenDir, slotStepsScript, type SlotRef } from "../core/names.js";
+import { buildScratch, goldenDir, slotDir, slotStepsScript, type SlotRef } from "../core/names.js";
 import type { FlavorKey } from "../core/flavors.js";
 import { anonymousGet } from "../host/http.js";
 import { dpapiSecretStore } from "./dpapi-store.js";
 import type { BrokerFs } from "./fs.js";
-import { readManifest, verifyGolden } from "./manifest-fs.js";
-import type { GoldenCheck, SlotLogins, SlotSystem } from "./provision.js";
+import { readManifest, verifyGolden, verifyTree } from "./manifest-fs.js";
+import type { GoldenCheck, SlotLogins, SlotSystem, TreeReset } from "./provision.js";
 import { runPsScript } from "./ps-step.js";
 import { renderSlotStepsScript, type SlotStep } from "./slot-steps.js";
 
 /** How long one step may take: the mirror copies a golden tree, the rest take seconds. */
-const STEP_TIMEOUT_MS: Readonly<Partial<Record<SlotStep, number>>> = { mirror: 20 * 60_000 };
+const STEP_TIMEOUT_MS: Readonly<Partial<Record<SlotStep, number>>> = { mirror: 20 * 60_000, "reset-tree": 20 * 60_000 };
 const DEFAULT_STEP_TIMEOUT_MS = 5 * 60_000;
 
 export interface WindowsSlotSystemOptions {
@@ -118,6 +118,23 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
       return { pools: Number(r.pools), agent: r.agent === "stopped" ? "stopped" : "none" };
     },
     warm: (url, timeoutMs) => anonymousGet(url, { timeoutMs }),
+    async quiesce(slot) {
+      return (await slotStep("quiesce", slot)).provisioned === true;
+    },
+    async resetTree(slot): Promise<TreeReset> {
+      const r = await slotStep("reset-tree", slot);
+      if (r.provisioned !== true) return { state: "not-provisioned" };
+      if (r.quiesced !== true) return { state: "serving", serving: strings(r.serving) };
+      return {
+        state: "reset",
+        mirrorMs: Number(r.mirrorMs),
+        clearMs: Number(r.clearMs),
+        runtimeEntries: Number(r.runtimeEntries),
+        vaultEntries: Number(r.vaultEntries),
+        aspnetFolders: Number(r.aspnetFolders),
+      };
+    },
+    verifyTree: (slot, manifest, rendered) => verifyTree(local(slotDir(slot, options.root)), manifest, { level: "fast", rendered }),
     async removeAgent(slot) {
       return (await slotStep("remove-agent", slot)).removed === true;
     },
@@ -129,6 +146,7 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
     async removeIis(slot) {
       await slotStep("remove-iis", slot);
     },
+    isDirectory: (path) => options.fs.isDirectory(path),
     async readFile(path) {
       try {
         return new Uint8Array(await readFile(local(path)));

@@ -3,14 +3,14 @@
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
 // The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot`,
-// `destroySlot`, `startSlot` and `stopSlot` so far. Every other method fails `Unreachable`, naming the ticket that adds its verb,
-// so a reset waits (the slot stays dirty) rather than being quarantined for a verb the broker does
-// not have yet. `baselineBuild`
-// is never a verb: a baseline is built in an elevated session (ticket 24).
+// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree` and `writeStamp` so far. Every other
+// method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot stays
+// dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild` is
+// never a verb: a baseline is built in an elevated session (ticket 24).
 
 import { randomUUID } from "node:crypto";
 import type { FlavorKey } from "../core/flavors.js";
-import { parseSlotId, type SlotRef } from "../core/names.js";
+import { parseSlotId, slotId, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { ProtocolError, parseResponse, parseSlotStamp, verbTimeout, type BrokerRequest, type WireResult } from "../broker/protocol.js";
 import type { BrokerTransport } from "./broker-transport.js";
@@ -41,11 +41,8 @@ import { assertFlavorOwned, assertSlotOwned, type OwnedContext } from "./owned.j
 
 /** The ticket that adds each verb the broker does not have yet. */
 const PENDING: Partial<Record<HostMethod, string>> = {
-  quiesce: "30",
-  resetTree: "30",
   resetDatabase: "31",
   healthCheck: "32",
-  writeStamp: "30",
   deployCode: "40",
   restoreDatabase: "39",
   backupDatabase: "43",
@@ -203,12 +200,17 @@ export class BrokerHost implements HostDriver {
     return { ok: result.ok, ms, detail: result.detail };
   }
 
-  quiesce(slot: SlotRef): Promise<HostResult> {
-    return this.pending("quiesce", this.slotGuard(slot));
+  async quiesce(slot: SlotRef): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const { result, ms } = await this.call("quiesce", { slot: { flavor: slot.flavor, slot: slot.slot } });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
-  resetTree(slot: SlotRef, _golden: GoldenRef): Promise<HostResult> {
-    return this.pending("resetTree", this.slotGuard(slot));
+  async resetTree(slot: SlotRef, golden: GoldenRef): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    if (golden.flavor !== slot.flavor) throw new HostError("Refused", `the ${golden.flavor} golden is not slot ${slotId(slot)}'s`);
+    const { result, ms } = await this.call("resetTree", { slot: { flavor: slot.flavor, slot: slot.slot } }, { hash: golden.hash });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   resetDatabase(slot: SlotRef, _backup: BackupRef): Promise<HostResult> {
@@ -243,8 +245,10 @@ export class BrokerHost implements HostDriver {
     return this.pending("healthCheck", this.slotGuard(slot));
   }
 
-  writeStamp(slot: SlotRef, _stamp: SlotStamp): Promise<HostResult> {
-    return this.pending("writeStamp", this.slotGuard(slot));
+  async writeStamp(slot: SlotRef, stamp: SlotStamp): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const { result, ms } = await this.call("writeStamp", { slot: { flavor: slot.flavor, slot: slot.slot } }, { stamp });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   setLeaseCredentials(slot: SlotRef, _secretRef: SecretRef): Promise<HostResult> {
@@ -262,7 +266,17 @@ export class BrokerHost implements HostDriver {
     const level = options.level ?? "golden";
     const { result, ms } = await this.call("baselineVerify", { flavor }, { level });
     try {
-      return { ok: result.ok, ms, detail: result.detail, level: parseLevel(result.level), ...(result.diff === undefined ? {} : { diff: parseDiff(result.diff) }) };
+      if (result.goldenHash !== undefined && (typeof result.goldenHash !== "string" || !/^[0-9a-f]{64}$/.test(result.goldenHash))) {
+        throw new ProtocolError("goldenHash is not a manifest hash");
+      }
+      return {
+        ok: result.ok,
+        ms,
+        detail: result.detail,
+        level: parseLevel(result.level),
+        ...(result.diff === undefined ? {} : { diff: parseDiff(result.diff) }),
+        ...(result.goldenHash === undefined ? {} : { goldenHash: result.goldenHash as string }),
+      };
     } catch (err) {
       throw malformed("baselineVerify", (err as Error).message);
     }

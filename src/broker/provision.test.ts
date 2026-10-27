@@ -238,7 +238,7 @@ describe("the provisionSlot and destroySlot verbs", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(await b.handle({ id: "d1", verb: "destroySlot", slot: s1 })).toMatchObject({
       ok: false,
-      error: { kind: "Retryable", message: "slot 12sp9-01 is being provisioned, destroyed, started or stopped already" },
+      error: { kind: "Retryable", message: "slot 12sp9-01 is being provisioned, destroyed, started, stopped or reset already" },
     });
     expect(await b.handle({ id: "p2", verb: "provisionSlot", slot: { flavor: "12sp9", slot: 2 } })).toMatchObject({ ok: true });
     release();

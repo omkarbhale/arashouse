@@ -531,6 +531,7 @@ export class FakeHost implements HostDriver {
           ok: built,
           level,
           detail: built ? `the ${flavor} baseline verifies (${level})` : `the ${flavor} baseline is not built`,
+          ...(built ? { goldenHash: this.golden(flavor).hash } : {}),
         };
       },
     );

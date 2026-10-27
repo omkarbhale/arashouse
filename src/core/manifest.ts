@@ -268,14 +268,30 @@ export interface CompareOptions {
   readonly skippedRuntime?: number;
   /** Problems found before the comparison (wrong tree root, wrong flavor...). */
   readonly problems?: readonly string[];
+  /**
+   * Files a slot renders from golden (its edit list's files, case-insensitive): each must be present, but its size,
+   * time and content are the rendering's, so the caller checks them against the rendering instead of the manifest.
+   */
+  readonly rendered?: readonly string[];
+}
+
+function renderedSet(rendered: readonly string[] | undefined): ReadonlySet<string> {
+  return new Set((rendered ?? []).map(norm));
 }
 
 /** Which manifest paths a level hashes, given what is present on disk. */
-export function pathsToHash(manifest: Manifest, observed: readonly ObservedFile[], level: VerifyLevel, runtimeDirs: readonly RuntimeRule[]): string[] {
+export function pathsToHash(
+  manifest: Manifest,
+  observed: readonly ObservedFile[],
+  level: VerifyLevel,
+  runtimeDirs: readonly RuntimeRule[],
+  rendered?: readonly string[],
+): string[] {
   const present = new Map(observed.map((o) => [o.path, o]));
+  const skip = renderedSet(rendered);
   const paths: string[] = [];
   for (const entry of manifest.files) {
-    if (isRuntimePath(entry.path, runtimeDirs)) continue;
+    if (isRuntimePath(entry.path, runtimeDirs) || skip.has(norm(entry.path))) continue;
     const seen = present.get(entry.path);
     if (!seen || seen.kind !== "file") continue;
     if (level === "full" || isFastHashed(entry.path)) paths.push(entry.path);
@@ -302,6 +318,7 @@ export function compareTree(
   let checked = 0;
   let skippedRuntime = options.skippedRuntime ?? 0;
   let hashed = 0;
+  const rendered = renderedSet(options.rendered);
 
   for (const entry of manifest.files) {
     if (isRuntimePath(entry.path, options.runtimeDirs)) {
@@ -318,7 +335,7 @@ export function compareTree(
     const reasons: ChangeReason[] = [];
     if (seen.kind !== "file") {
       reasons.push("type");
-    } else {
+    } else if (!rendered.has(norm(entry.path))) {
       if (seen.size !== entry.size) reasons.push("size");
       if (seen.mtime !== entry.mtime) reasons.push("mtime");
       if (hashes.has(entry.path)) {

@@ -5,7 +5,8 @@ import { Broker, inProcessTransport } from "../broker/broker.js";
 import { mappedRoot, type MappedRoot } from "../broker/mapped-fs.fixture.js";
 import type { BrokerRequest } from "../broker/protocol.js";
 import { registerBaselineVerbs } from "../broker/baseline-verbs.js";
-import { registerSlotVerbs } from "../broker/provision.js";
+import { SlotLocks, registerSlotVerbs } from "../broker/provision.js";
+import { registerResetVerbs } from "../broker/reset-tree.js";
 import { FakeSlotSystem } from "../broker/slot-system.fixture.js";
 import { registerCoreVerbs, type BrokerSystem } from "../broker/verbs.js";
 import { buildManifest, writeManifestOnce } from "../broker/manifest-fs.js";
@@ -38,9 +39,15 @@ beforeEach(() => {
     sqlLogin: async () => ({ login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 }),
   };
   slots = new FakeSlotSystem(ROOT);
-  broker = registerSlotVerbs(
-    registerBaselineVerbs(registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), system), system),
+  const locks = new SlotLocks();
+  broker = registerResetVerbs(
+    registerSlotVerbs(
+      registerBaselineVerbs(registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), system), system),
+      slots,
+      locks,
+    ),
     slots,
+    locks,
   );
   const inner = inProcessTransport(broker);
   const requests: BrokerRequest[] = [];
@@ -121,27 +128,24 @@ describe("BrokerHost against an in-process broker", () => {
     const calls: Record<
       Exclude<
         keyof HostDriver,
-        "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot" | "startSlot" | "stopSlot"
+        "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot" | "startSlot" | "stopSlot" | "quiesce" | "resetTree" | "writeStamp"
       >,
       () => Promise<unknown>
     > = {
-      quiesce: () => host.quiesce(s1),
-      resetTree: () => host.resetTree(s1, { flavor: "12sp9", hash: "h" }),
       resetDatabase: () => host.resetDatabase(s1, { flavor: "12sp9", file: `${ROOT}\\golden\\12sp9\\db.bak`, hash: "h" }),
       deployCode: () => host.deployCode(s1, `${ROOT}\\staging\\l\\code`),
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       backupDatabase: () => host.backupDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       healthCheck: () => host.healthCheck(s1),
-      writeStamp: () => host.writeStamp(s1, { slotId: "12sp9-01", flavor: "12sp9", goldenHash: null, lastResetAt: null }),
       setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: LEASE_REF }),
     };
-    expect(Object.keys(calls).length + 10).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 13).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
       expect(err.message, method).toMatch(new RegExp(`no ${method} verb yet \\(ticket \\d\\d\\)`));
     }
-    expect((await rejection(host.quiesce({ flavor: "prod" as never, slot: 1 }))).kind).toBe("Refused");
+    expect((await rejection(host.startSlot({ flavor: "prod" as never, slot: 1 }, { agent: false }))).kind).toBe("Refused");
     expect((await rejection(host.baselineBuild("olm" as never))).kind).toBe("Refused");
     expect(transport.requests).toEqual([]);
   });
@@ -193,13 +197,38 @@ describe("BrokerHost against an in-process broker", () => {
     expect(transport.requests).toHaveLength(5);
   });
 
+  it("quiesces, resets the tree to the golden hash and writes a stamp through the broker's verbs, guarded on both sides", async () => {
+    await host.provisionSlot(s1);
+    const hash = slots.manifest("12sp9").manifestHash;
+    expect(await rejection(host.resetTree(s1, { flavor: "12sp9", hash }))).toMatchObject({ kind: "Refused", message: expect.stringContaining("is not quiesced") });
+    expect(await host.quiesce(s1)).toMatchObject({ ok: true, detail: expect.stringMatching(/^quiesced 12sp9-01 in /) });
+    expect(await host.resetTree(s1, { flavor: "12sp9", hash })).toMatchObject({ ok: true, detail: expect.stringMatching(/^reset the tree of 12sp9-01 to golden /) });
+    // The slot verbs act through the in-memory slot system here, so the stamp is read from it.
+    const stampPath = `${ROOT}\\slots\\12sp9\\01\\.arashouse-slot.json`;
+    const stamp = JSON.parse(slots.text(stampPath)!);
+    expect(stamp).toMatchObject({ goldenHash: hash, leaseId: null });
+    expect(await host.writeStamp(s1, { ...stamp, leaseId: "0123abcd" })).toMatchObject({ ok: true });
+    expect(JSON.parse(slots.text(stampPath)!)).toEqual({ ...stamp, leaseId: "0123abcd" });
+    expect(transport.requests.slice(1).map((r) => [r.verb, r.args])).toEqual([
+      ["resetTree", { hash }],
+      ["quiesce", undefined],
+      ["resetTree", { hash }],
+      ["writeStamp", { stamp: { ...stamp, leaseId: "0123abcd" } }],
+    ]);
+    const sent = transport.requests.length;
+    expect((await rejection(host.resetTree(s1, { flavor: "23", hash }))).kind).toBe("Refused");
+    expect((await rejection(host.quiesce({ flavor: "OLM_Local" as never, slot: 1 }))).kind).toBe("Refused");
+    expect((await rejection(host.writeStamp({ flavor: "12sp9", slot: 0 }, stamp))).kind).toBe("Refused");
+    expect(transport.requests).toHaveLength(sent);
+  });
+
   it("verifies a golden through the broker's baselineVerify verb", async () => {
     expect(await host.baselineVerify("12sp9")).toMatchObject({ ok: false, level: "golden", detail: "the 12sp9 baseline is not built" });
     const golden = root.local(`${ROOT}\\golden\\12sp9`);
     await makeSampleTree(join(golden, "tree"));
     await writeManifestOnce(join(golden, "manifest.json"), await buildManifest(join(golden, "tree"), "12sp9", "12.0.0.24090"));
     const ok = await host.baselineVerify("12sp9");
-    expect(ok).toMatchObject({ ok: true, level: "golden" });
+    expect(ok).toMatchObject({ ok: true, level: "golden", goldenHash: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(ok.diff?.counts).toEqual({ missing: 0, changed: 0, extra: 0 });
     const full = await host.baselineVerify("12sp9", { level: "full" });
     expect(full).toMatchObject({ ok: true, level: "full" });

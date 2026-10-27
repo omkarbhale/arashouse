@@ -46,6 +46,8 @@ export const SLOT_STEPS = [
   "database",
   "start",
   "stop",
+  "quiesce",
+  "reset-tree",
   "remove-agent",
   "remove-database",
   "remove-iis",
@@ -84,6 +86,10 @@ export function renderSlotStepsScript(root: string = DEFAULT_INSTALL_ROOT): stri
   const r = assertValidRoot(root);
   checkNameRules(r);
   const list = (items: readonly (string | number)[]) => `@(${items.map((i) => (typeof i === "number" ? String(i) : psQuote(i))).join(", ")})`;
+  // The whole-folder runtime rules: the reset empties them after the mirror (the file rules are restored by the mirror).
+  const runtimeDirs = FLAVOR_KEYS.map(
+    (key) => `    ${psQuote(key)} = ${list(FLAVORS[key].runtimeDirs.filter((rule) => rule.files === undefined).map((rule) => rule.dir.replace(/\//g, "\\")))}`,
+  ).join("\n");
   const backupFiles = FLAVOR_KEYS.map(
     (key) => `    ${psQuote(key)} = @{ data = ${psQuote(FLAVORS[key].backupFiles.data)}; log = ${psQuote(FLAVORS[key].backupFiles.log)} }`,
   ).join("\n");
@@ -104,6 +110,9 @@ $ReservedPorts = ${list(RESERVED_AGENT_PORTS)}
 $StampName = ${psQuote(STAMP_FILE_NAME)}
 $BackupFiles = @{
 ${backupFiles}
+}
+$RuntimeDirs = @{
+${runtimeDirs}
 }
 $ShippedUsers = [ordered]@{ dbo = ${psQuote(SHIPPED_DATABASE_USERS.dbo)}; reg = ${psQuote(SHIPPED_DATABASE_USERS.reg)} }
 $PoolIdentities = @('ApplicationPoolIdentity', 'NetworkService', 'LocalService')
@@ -156,6 +165,115 @@ function Test-Relative([string]$Path) {
     if ([IO.Path]::IsPathRooted($Path) -or $Path.Contains(':') -or $Path.StartsWith('\\')) { return $false }
     return -not (@($Path.Split('\\') | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' }).Count -gt 0)
 }
+
+# ---- serving: the slot's pools, its agent and its processes ----
+function Get-SlotProcesses {
+    # The slot's w3wp.exe (by its pools' names) and anything started from the slot folder.
+    $marker = ('"' + "$Alias-").ToLowerInvariant()
+    return @(Get-CimInstance Win32_Process | Where-Object {
+        (($_.Name -eq 'w3wp.exe') -and $_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains($marker)) -or
+        ($_.ExecutablePath -and (Test-Under $_.ExecutablePath $SlotDir)) -or
+        ($_.CommandLine -and $_.CommandLine.IndexOf($SlotDir + '\\', [StringComparison]::OrdinalIgnoreCase) -ge 0)
+    })
+}
+function Get-Serving {
+    # What of the slot still runs: pools not stopped, its agent, its processes. Names only.
+    $serving = @()
+    $mgr = Get-Iis
+    try {
+        foreach ($name in $Pools) {
+            $pool = $mgr.ApplicationPools[$name]
+            if ($pool -and $pool.State -ne [Microsoft.Web.Administration.ObjectState]::Stopped) { $serving += "IIS pool $name ($($pool.State))" }
+        }
+    } finally { $mgr.Dispose() }
+    $svc = Get-SlotService
+    if ($svc -and $svc.Status -ne 'Stopped') { $serving += "service $Service ($($svc.Status))" }
+    foreach ($p in @(Get-SlotProcesses)) { $serving += "process $($p.Name) $($p.ProcessId)" }
+    return @($serving)
+}
+# Stops the slot's agent (first: it talks to the server) and pools, and waits, bounded, for its processes to end. The pool stop releases
+# every locked file and closes the server's SQL sessions (spike 06). From 14.0 the Innovator, Client, OAuth and Vault applications run
+# out of process (Aras.Server.exe and the like next to w3wp.exe; spike 07) and a pool stop does not wait for them: those still running
+# after 30 s are ended, each being this slot's own. Answers what still runs, the pools stopped and the agent's state.
+function Stop-Slot {
+    $svc = Get-SlotService
+    $agent = 'none'
+    if ($svc) {
+        if ($svc.Status -ne 'Stopped') { Stop-Service -Name $Service -Force }
+        $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60))
+        $agent = 'stopped'
+    }
+    $stopped = 0
+    $mgr = Get-Iis
+    try {
+        foreach ($name in $Pools) {
+            $pool = $mgr.ApplicationPools[$name]
+            if (-not $pool) { continue }
+            if ($pool.State -eq [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Stop() }
+            for ($i = 0; $i -lt 120 -and $pool.State -ne [Microsoft.Web.Administration.ObjectState]::Stopped; $i++) { Start-Sleep -Milliseconds 500 }
+            $stopped++
+        }
+    } finally { $mgr.Dispose() }
+    for ($i = 0; $i -lt 120; $i++) {
+        $left = @(Get-SlotProcesses)
+        if ($left.Count -eq 0) { break }
+        if ($i -eq 60) { foreach ($p in @($left | Where-Object { $_.Name -ne 'w3wp.exe' })) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } }
+        Start-Sleep -Milliseconds 500
+    }
+    return @{ serving = @(Get-Serving); pools = $stopped; agent = $agent }
+}
+
+# ---- the tree ----
+function Invoke-Mirror {
+    # The golden tree over the slot folder (the provision's copy and the reset's mirror): times kept, no junction followed, everything
+    # else removed, the stamp included (a reset writes a new one last). No /XF: robocopy matches it on the source side (spike 06).
+    $tree = Join-Path $Golden 'tree'
+    if (-not (Test-Path -LiteralPath $tree)) { Stop-Step "$tree does not exist (is the $Flavor baseline built?)" }
+    if (-not (Test-Path -LiteralPath $SlotDir)) { Stop-Step "$SlotDir does not exist" }
+    if ((Get-Item -LiteralPath $SlotDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { Stop-Step "$SlotDir is a junction or link" }
+    & robocopy.exe $tree $SlotDir /MIR /XJ /R:2 /W:1 /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null
+    $rc = $LASTEXITCODE
+    if ($rc -ge 8) { Stop-Step "robocopy failed ($rc)" }
+    return $rc
+}
+function Remove-Entry($Item) {
+    # A link or junction is removed itself, never followed. Answers how many entries went.
+    if ($Item.Attributes -band [IO.FileAttributes]::ReadOnly) { $Item.Attributes = $Item.Attributes -band (-bnot [IO.FileAttributes]::ReadOnly) }
+    if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        if ($Item.PSIsContainer) { [IO.Directory]::Delete($Item.FullName, $false) } else { [IO.File]::Delete($Item.FullName) }
+        return 1
+    }
+    $n = 1
+    if ($Item.PSIsContainer) {
+        foreach ($e in @(Get-ChildItem -LiteralPath $Item.FullName -Force)) { $n += Remove-Entry $e }
+        [IO.Directory]::Delete($Item.FullName, $false)
+    } else {
+        [IO.File]::Delete($Item.FullName)
+    }
+    return $n
+}
+function Clear-Folder([string]$Dir) {
+    # Everything inside $Dir, which stays; $Dir must not be a junction or link. Answers how many entries went.
+    if (-not (Test-Path -LiteralPath $Dir)) { return 0 }
+    if ((Get-Item -LiteralPath $Dir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { Stop-Step "$Dir is a junction or link" }
+    $n = 0
+    foreach ($e in @(Get-ChildItem -LiteralPath $Dir -Force)) { $n += Remove-Entry $e }
+    return $n
+}
+function Clear-AspNetTemp {
+    # ASP.NET's temporary files of the alias (compiled pages, shadow copies of its bin), by folder name. Answers how many folders went.
+    $n = 0
+    foreach ($fw in @('Framework', 'Framework64')) {
+        $base = Join-Path $env:windir "Microsoft.NET\\$fw\\v4.0.30319\\Temporary ASP.NET Files"
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq $Alias -or $_.Name -like "$($Alias)_*" })) {
+            Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            $n++
+        }
+    }
+    return $n
+}
+
 function Read-Golden([string]$Name) {
     $file = Join-Path $Golden $Name
     if (-not (Test-Path -LiteralPath $file)) { Stop-Step "$file does not exist (is the $Flavor baseline built?)" }
@@ -216,13 +334,8 @@ switch ($Step) {
         Write-Result @{ slotDir = $SlotDir; vaultDir = $VaultDir }
     }
     'mirror' {
-        # The same mirror the reset uses (ticket 30): times kept, no junction followed, the slot stamp left alone.
-        $tree = Join-Path $Golden 'tree'
-        if (-not (Test-Path -LiteralPath $tree)) { Stop-Step "$tree does not exist (is the $Flavor baseline built?)" }
-        & robocopy.exe $tree $SlotDir /MIR /XJ /R:2 /W:1 /MT:16 /XF $StampName /NFL /NDL /NJH /NJS /NP | Out-Null
-        $rc = $LASTEXITCODE
-        if ($rc -ge 8) { Stop-Step "robocopy failed ($rc)" }
-        Write-Result @{ robocopy = $rc }
+        # The same mirror the reset uses (ticket 30).
+        Write-Result @{ robocopy = (Invoke-Mirror) }
     }
     'iis' {
         # The applications and pools of the golden's iis.json (ticket 24), each application on a pool of the slot's own,
@@ -356,34 +469,46 @@ switch ($Step) {
         Write-Result @{ pools = $started.Count; agent = $agent; port = $AgentPort }
     }
     'stop' {
-        # The slot's agent and pools stopped, and its worker processes gone, so nothing holds a file or a session (ticket 33; the reset's
-        # quiesce, ticket 30). The agent first: it talks to the server.
-        $svc = Get-SlotService
-        $agent = 'none'
-        if ($svc) {
-            if ($svc.Status -ne 'Stopped') { Stop-Service -Name $Service -Force }
-            $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60))
-            $agent = 'stopped'
+        # The slot's agent and pools stopped, and its worker processes gone, so nothing holds a file or a session (ticket 33; before a
+        # destroy).
+        $r = Stop-Slot
+        $left = @($r.serving)
+        if ($left.Count -gt 0) { Stop-Step "the slot still runs after the wait: $($left -join ', ')" }
+        Write-Result @{ stopped = $true; pools = $r.pools; agent = $r.agent }
+    }
+    'quiesce' {
+        # The reset's first step (ticket 30): the same stop, and a failure when anything of the slot still runs after the wait.
+        if (-not (Test-Path -LiteralPath $SlotDir)) {
+            Write-Result @{ provisioned = $false }
+        } else {
+            $left = @((Stop-Slot).serving)
+            if ($left.Count -gt 0) { Stop-Step "the slot still runs after the wait: $($left -join ', ')" }
+            Write-Result @{ provisioned = $true }
         }
-        $stopped = 0
-        $mgr = Get-Iis
-        try {
-            foreach ($name in $Pools) {
-                $pool = $mgr.ApplicationPools[$name]
-                if (-not $pool) { continue }
-                if ($pool.State -eq [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Stop() }
-                for ($i = 0; $i -lt 120 -and $pool.State -ne [Microsoft.Web.Administration.ObjectState]::Stopped; $i++) { Start-Sleep -Milliseconds 500 }
-                $stopped++
+    }
+    'reset-tree' {
+        # The tree half of a reset (ticket 30, docs/reset.md), on a quiesced slot only: the mirror from golden, then the runtime state it
+        # leaves: the whole runtime folders emptied, the vault folder's files, ASP.NET's temporary files of the alias. The broker then
+        # renders the configs, verifies the tree and writes the stamp.
+        if (-not (Test-Path -LiteralPath $SlotDir)) {
+            Write-Result @{ provisioned = $false }
+        } else {
+            $serving = @(Get-Serving)
+            if ($serving.Count -gt 0) {
+                Write-Result @{ provisioned = $true; quiesced = $false; serving = $serving }
+            } else {
+                if (-not (Test-Path -LiteralPath $VaultDir)) { Stop-Step "$VaultDir does not exist" }
+                $watch = [Diagnostics.Stopwatch]::StartNew()
+                $rc = Invoke-Mirror
+                $mirrorMs = $watch.ElapsedMilliseconds
+                $watch.Restart()
+                $runtime = 0
+                foreach ($rel in $RuntimeDirs[$Flavor]) { $runtime += Clear-Folder (Join-Path $SlotDir $rel) }
+                $vault = Clear-Folder $VaultDir
+                $aspnet = Clear-AspNetTemp
+                Write-Result @{ provisioned = $true; quiesced = $true; robocopy = $rc; mirrorMs = $mirrorMs; clearMs = $watch.ElapsedMilliseconds; runtimeEntries = $runtime; vaultEntries = $vault; aspnetFolders = $aspnet }
             }
-        } finally { $mgr.Dispose() }
-        $left = @()
-        for ($i = 0; $i -lt 120; $i++) {
-            $left = @(Get-CimInstance Win32_Process -Filter "Name='w3wp.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains('"' + "$Alias-".ToLowerInvariant()) })
-            if ($left.Count -eq 0) { break }
-            Start-Sleep -Milliseconds 500
         }
-        if ($left.Count -gt 0) { Stop-Step "$($left.Count) worker process(es) of $Alias did not end" }
-        Write-Result @{ stopped = $true; pools = $stopped; agent = $agent }
     }
     'remove-agent' {
         $svc = Get-SlotService
@@ -416,11 +541,7 @@ switch ($Step) {
             foreach ($name in $Pools) { $pool = $mgr.ApplicationPools[$name]; if ($pool) { $mgr.ApplicationPools.Remove($pool) } }
             $mgr.CommitChanges()
         } finally { $mgr.Dispose() }
-        foreach ($fw in @('Framework', 'Framework64')) {
-            $base = Join-Path $env:windir "Microsoft.NET\\$fw\\v4.0.30319\\Temporary ASP.NET Files"
-            if (-not (Test-Path -LiteralPath $base)) { continue }
-            foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq $Alias -or $_.Name -like "$($Alias)_*" })) { Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue }
-        }
+        [void](Clear-AspNetTemp)
         Write-Result @{ removed = $true }
     }
     'secret-put' {

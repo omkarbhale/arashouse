@@ -21,7 +21,11 @@ export function storedSecretKind(name: string): SecretKind {
   throw new Error(`no stored secret is named like "${name}"`);
 }
 
-export function dpapiSecretStore(run: SecretStepRunner): SecretStore {
+/**
+ * The store over `slot-steps.ps1`. `isStored`, when given, answers `has` from the blob file's presence alone, without
+ * a PowerShell process or a decryption (`hostInfo` asks it for the licence lines on every call).
+ */
+export function dpapiSecretStore(run: SecretStepRunner, isStored?: (name: string) => Promise<boolean>): SecretStore {
   const get = async (name: string): Promise<Secret | undefined> => {
     const kind = storedSecretKind(assertSecretName(name));
     const answer = await run("secret-get", { name });
@@ -31,7 +35,7 @@ export function dpapiSecretStore(run: SecretStepRunner): SecretStore {
   };
   return {
     get,
-    has: async (name) => (await get(name)) !== undefined,
+    has: async (name) => (isStored ? isStored(assertSecretName(name)) : (await get(name)) !== undefined),
     async put(name, secret) {
       if (secret.kind !== storedSecretKind(assertSecretName(name))) throw new Error(`the secret stored as ${name} must be a ${storedSecretKind(name)} secret`);
       await run("secret-put", { name, value: secret.reveal() });

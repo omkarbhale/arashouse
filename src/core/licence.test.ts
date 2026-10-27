@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { FLAVOR_KEYS, FLAVORS } from "./flavors.js";
 import {
+  LICENCE_ATTRIBUTES,
   LicenceRequiredError,
   SECRET_REQUIRED_EXIT_CODE,
+  decodeLicence,
+  encodeLicence,
   ensureLicence,
   forgetLicence,
   formatLicenceStatus,
+  licenceElement,
   licenceLines,
   licenceNeeded,
   licencePrompt,
@@ -175,6 +179,67 @@ describe("forgetting and reporting", () => {
     ]);
     expect(formatLicenceStatus({ line: "14", present: true })).toBe("licence line 14: present");
     expect(JSON.stringify(status)).not.toContain(KEY);
+  });
+});
+
+describe("the stored <License> element", () => {
+  // Assembled at run time so no licence-shaped literal sits in the source.
+  const values = {
+    lic_key: KEY,
+    act_key: ["AK", "-", "90X1", "-", "JJ77"].join(""),
+    lic_type: ["Uni", "mited-", "T9"].join(""),
+    company: ["Ex", "ample ", "\"Labs\" & Co"].join(""),
+  };
+
+  it("round-trips the four values through one stored secret", async () => {
+    const store = new MemorySecretStore();
+    await store.put("licence-12", encodeLicence(licenceElement(values)));
+    const back = decodeLicence((await store.get("licence-12"))!);
+    expect(Object.fromEntries(LICENCE_ATTRIBUTES.map((a) => [a, back[a].reveal()]))).toEqual(values);
+    for (const attr of LICENCE_ATTRIBUTES) expect(back[attr].kind).toBe("licence");
+  });
+
+  it("reads a key alone, as ticket 23's prompt stores it, as lic_key with the rest blank", () => {
+    const back = decodeLicence(Secret.of(KEY, "licence"));
+    expect(back.lic_key.reveal()).toBe(KEY);
+    expect([back.act_key, back.lic_type, back.company].map((s) => s.reveal())).toEqual(["", "", ""]);
+  });
+
+  it("registers every value for redaction, and prints none of them", () => {
+    const element = licenceElement(values);
+    const stored = encodeLicence(element);
+    for (const value of Object.values(values)) {
+      expect(redact(`a log line: ${value}`)).not.toContain(value);
+      expect(JSON.stringify({ element, stored })).not.toContain(value);
+      expect(String(stored)).not.toContain(value);
+    }
+  });
+
+  it("refuses an element without lic_key, an unknown attribute or a value that is not text, naming no value", () => {
+    const refusal = (v: Record<string, unknown>) => {
+      try {
+        licenceElement(v);
+      } catch (err) {
+        return (err as Error).message;
+      }
+      throw new Error("not refused");
+    };
+    expect(refusal({ ...values, lic_key: "" })).toMatch(/no lic_key/);
+    expect(refusal({ act_key: values.act_key })).toMatch(/no lic_key/);
+    expect(refusal({ ...values, licence: "x" })).toMatch(/no "licence" attribute/);
+    expect(refusal({ ...values, company: 7 })).toMatch(/company is not a string/);
+    expect(refusal({ ...values, lic_type: `a\nb` })).toMatch(/lic_type is not/);
+    for (const message of [refusal({ ...values, lic_type: `${values.act_key}\n` })]) expect(message).not.toContain(values.act_key);
+  });
+
+  it("refuses a stored object it cannot use without quoting it", () => {
+    expect(() => decodeLicence(Secret.of(`{"lic_key": "${KEY}"`, "licence"))).toThrow(/not readable/);
+    expect(() => decodeLicence(Secret.of(`{"act_key": "${KEY}"}`, "licence"))).toThrow(/no lic_key/);
+    try {
+      decodeLicence(Secret.of(`{"lic_key": "${KEY}",`, "licence"));
+    } catch (err) {
+      expect((err as Error).message).not.toContain(KEY);
+    }
   });
 });
 

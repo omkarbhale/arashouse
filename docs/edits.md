@@ -90,7 +90,7 @@ missing). It never throws for the file's content. Ticket 32 runs it after a rese
 
 | file | edits |
 |---|---|
-| `InnovatorServerConfig.xml` | `<DB-Connection>` `id`, `database`, `dbo_uid`, `dbo_pwd`, `regular_uid`, `regular_pwd`; `<License lic_key>`; the `temp_folder`, `ServerMethodTempDir` and `debug_log_prefix` operating parameters (the tree path); `<AgentService InnovatorToServiceAddress>`, the slot's agent address (below) |
+| `InnovatorServerConfig.xml` | `<DB-Connection>` `id`, `database`, `dbo_uid`, `dbo_pwd`, `regular_uid`, `regular_pwd`; `<License>` `lic_key`, `act_key`, `lic_type` and `company` (the line's stored licence, `docs/secrets.md`); the `temp_folder`, `ServerMethodTempDir` and `debug_log_prefix` operating parameters (the tree path); `<AgentService InnovatorToServiceAddress>`, the slot's agent address (below) |
 | `SelfServiceReportConfig.xml` | the `<add connectionString name>` the MSI writes: database, regular login and its password |
 | `Innovator/Client/Innovator.xml`, `Innovator/Server/Innovator.xml` | `<ConfigFilePath value>` |
 | `SelfServiceReporting/SelfServiceReport.xml` | the build directory in its `ConfigFilePath` (text) |
@@ -133,4 +133,6 @@ installed under `buildNames(flavor)` (alias, database, directory). The
 golden keeps `lic_key`, `act_key`, `dbo_pwd` and `regular_pwd` blank (the build sets them for its own checks and
 blanks them before the copy, `docs/baselines.md`). The build's login proof found the key alone refused ("License Key
 is invalid"): a slot needs `act_key`, `lic_type` and `company` from the key's source too (spike 30 copied all four),
-so the handle `licence_act_key` exists for ticket 25's list to add.
+so the list sets all four from one stored licence through the handles `licence`, `licence_act_key`, `licence_type`
+and `licence_company` (ticket 34b). A golden built before that holds an `edits.json` with `lic_key` alone and renders
+only the key: rebuild it (`arashouse baseline build <key> --replace`).

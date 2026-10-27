@@ -55,10 +55,10 @@ The MD5 is registered as a secret too, since it logs in as well as the password 
 ## Not done here, and why
 
 - **The host proof** (log in as `root` with the lease's password, not with the shipped one; after `return` and the
-  reset, not with the old one) is ticket 35's. No slot can log in yet: a login needs the whole `<License>` element in
-  the slot's config, which nothing stores or renders (ticket 34b, `docs/provision.md`). Until then ticket 32's health
-  check reports its login as not checked and makes no random `root` password (`docs/health.md`), so on the real host
-  this verb answers "has no stored root password" (`Retryable`).
+  reset, not with the old one) is ticket 35's. A slot logs in once its line's whole `<License>` element is stored
+  (ticket 34b, `docs/secrets.md`); until then ticket 32's health check reports its login as not checked and makes no
+  random `root` password (`docs/health.md`), so on the real host this verb answers "has no stored root password"
+  (`Retryable`).
 - **Releases 23 and 35.** The edit route was proven on `12sp9` (spike 06). The OAuth grant is the one the baseline
   build passed on all three flavors; the `ApplyItem` edit on the 14.x servers is first run in tickets 36 and 52.
 - **A separate `admin` password.** `admin` gets the same value as `root`; nothing asks for another.

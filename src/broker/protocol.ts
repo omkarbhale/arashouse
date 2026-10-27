@@ -25,8 +25,16 @@ export const CONNECT_TIMEOUT_MS = 3_000;
 /** How long a verb may run unless it sets its own bound. */
 export const DEFAULT_VERB_TIMEOUT_MS = 30_000;
 
+/**
+ * The verbs that are not host-driver methods: no WSL caller sends them. `storeLicence` is sent by the captain's
+ * elevated `scripts/store-licence.ps1` on Windows (ticket 34b, docs/secrets.md).
+ */
+export const HOST_SIDE_VERBS = ["storeLicence"] as const;
+/** Every verb the broker can serve: the host-driver methods and the host-side verbs. */
+export type BrokerVerb = HostMethod | (typeof HOST_SIDE_VERBS)[number];
+
 /** Bounds for the verbs that are slower or faster than the default; the broker and `BrokerHost` share them. */
-export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
+export const VERB_TIMEOUT_MS: Readonly<Partial<Record<BrokerVerb, number>>> = {
   ping: 5_000,
   hostInfo: 20_000,
   readStamp: 10_000,
@@ -54,7 +62,7 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
 };
 
 /** How long `verb` may run on the broker. */
-export function verbTimeout(verb: HostMethod): number {
+export function verbTimeout(verb: BrokerVerb): number {
   return VERB_TIMEOUT_MS[verb] ?? DEFAULT_VERB_TIMEOUT_MS;
 }
 
@@ -67,7 +75,7 @@ const REQUEST_KEYS = new Set(["id", "verb", "slot", "flavor", "args"]);
 /** One call to the broker. `slot` and `flavor` are mutually exclusive; `args` is verb-specific and never logged. */
 export interface BrokerRequest {
   readonly id: string;
-  readonly verb: HostMethod;
+  readonly verb: BrokerVerb;
   readonly slot?: SlotRef;
   readonly flavor?: FlavorKey;
   readonly args?: Readonly<Record<string, unknown>>;
@@ -109,6 +117,10 @@ export function isHostMethod(value: unknown): value is HostMethod {
   return typeof value === "string" && (HOST_METHODS as readonly string[]).includes(value);
 }
 
+export function isBrokerVerb(value: unknown): value is BrokerVerb {
+  return isHostMethod(value) || (typeof value === "string" && (HOST_SIDE_VERBS as readonly string[]).includes(value));
+}
+
 /** The request's id when it has a well-formed one, else "" (for answering a malformed request). */
 export function requestIdOf(value: unknown): string {
   return isRecord(value) && isRequestId(value.id) ? value.id : "";
@@ -125,8 +137,8 @@ export function parseRequest(value: unknown): BrokerRequest {
     if (!REQUEST_KEYS.has(key)) throw new ProtocolError(`a request has no "${key.slice(0, 32)}" field`);
   }
   if (!isRequestId(value.id)) throw new ProtocolError("a request id is 1 to 64 letters, digits or '-'");
-  if (!isHostMethod(value.verb)) throw new ProtocolError("the verb is not one of the broker's verbs");
-  const request: { id: string; verb: HostMethod; slot?: SlotRef; flavor?: FlavorKey; args?: Record<string, unknown> } = {
+  if (!isBrokerVerb(value.verb)) throw new ProtocolError("the verb is not one of the broker's verbs");
+  const request: { id: string; verb: BrokerVerb; slot?: SlotRef; flavor?: FlavorKey; args?: Record<string, unknown> } = {
     id: value.id,
     verb: value.verb,
   };

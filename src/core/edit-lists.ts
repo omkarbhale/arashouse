@@ -21,8 +21,12 @@ const serverConfig: readonly Edit[] = [
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/DB-Connection/@dbo_pwd", value: "{{secret:db_dbo_password}}" },
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/DB-Connection/@regular_uid", value: "{{login.reg}}" },
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/DB-Connection/@regular_pwd", value: "{{secret:db_reg_password}}" },
-  // The golden holds no key (ticket 24 blanks it); a key is needed to log in (ticket 09).
+  // The golden holds no key (ticket 24 blanks it); a key is needed to log in (ticket 09), and with it the rest of the
+  // <License> element it came with ("License Key is invalid" without them, ticket 24), all from one stored licence.
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@lic_key", value: "{{secret:licence}}" },
+  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@act_key", value: "{{secret:licence_act_key}}" },
+  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@lic_type", value: "{{secret:licence_type}}" },
+  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@company", value: "{{secret:licence_company}}" },
   {
     file: SERVER_CONFIG,
     kind: "xml",

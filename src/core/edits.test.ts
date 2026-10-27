@@ -23,12 +23,18 @@ import { Secret } from "./secret.js";
 
 // Values are assembled at run time so no secret-shaped literal sits in the source.
 const LICENCE = ["LK", "-", "51E7", "-", "A0", "&", "Q9", "<", "Z"].join("");
+const ACT = ["AK", "-", "77D1", "-", "Q0", "W3"].join("");
+const LIC_TYPE = ["Sub", "scription", "-", "T4"].join("");
+const COMPANY = ["Ex", "ample", " Holdings", " & Co"].join("");
 const DBO = ["db", "o", "-", "Pw7", "Xq2", "Lm"].join("");
 const REG = ["re", "g", "-", "Hn4", "Tz8", "Vc"].join("");
-const SECRET_STRINGS = [LICENCE, DBO, REG];
+const SECRET_STRINGS = [LICENCE, ACT, LIC_TYPE, COMPANY, DBO, REG];
 
 const secrets: EditSecrets = {
   licence: Secret.of(LICENCE, "licence"),
+  licence_act_key: Secret.of(ACT, "licence"),
+  licence_type: Secret.of(LIC_TYPE, "licence"),
+  licence_company: Secret.of(COMPANY, "licence"),
   db_dbo_password: Secret.of(DBO, "sql-login"),
   db_reg_password: Secret.of(REG, "sql-login"),
 };
@@ -94,8 +100,10 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
     expect(server).toContain(
       `<DB-Connection id="${names.database}" database="${names.database}" server="(local)" regular_uid="${names.logins.reg}" regular_pwd="${REG}" dbo_uid="${names.logins.dbo}" dbo_pwd="${DBO}"/>`,
     );
-    // The licence value holds '&' and '<', which the attribute carries escaped.
-    expect(server).toContain(`lic_key="${LICENCE.replace("&", "&amp;").replace("<", "&lt;")}" act_key=""`);
+    // The whole <License> element; the key and the company hold '&' or '<', which the attribute carries escaped.
+    expect(server).toContain(
+      `<License lic_type="${LIC_TYPE}" lic_key="${LICENCE.replace("&", "&amp;").replace("<", "&lt;")}" act_key="${ACT}" company="${COMPANY.replace("&", "&amp;")}"/>`,
+    );
     expect(server).toContain(`<operating_parameter key="temp_folder" value="${names.slotDir}\\Innovator\\Server\\temp\\" />`);
     expect(server).toContain(`<operating_parameter key="debug_log_prefix" value="${names.slotDir}\\Innovator\\Server\\logs\\" />`);
     expect(server).toContain(`<AgentService InnovatorToServiceAddress="${agentUrl(ref)}"/>`);
@@ -130,15 +138,15 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
       holdsNoSecret(formatEditOutcomes(outcomes));
     }
     const { outcomes } = renderFile("InnovatorServerConfig.xml", enc(golden["InnovatorServerConfig.xml"] ?? ""), edits, vars, secrets);
-    expect(outcomes.find((o) => o.path.endsWith("@lic_key"))?.value).toBe("[redacted]");
+    for (const attr of ["lic_key", "act_key", "lic_type", "company"]) expect(outcomes.find((o) => o.path.endsWith(`/License/@${attr}`))?.value).toBe("[redacted]");
     expect(outcomes.find((o) => o.path.endsWith("@database"))?.value).toBe(names.database);
     expect(formatEditOutcomes(outcomes)).toContain(
       `applied InnovatorServerConfig.xml /Innovator/DB-Connection/@dbo_pwd (1) = [redacted]`,
     );
   });
 
-  it("needs the licence and both SQL login passwords", () => {
-    expect(secretsNeeded(edits).sort()).toEqual(["db_dbo_password", "db_reg_password", "licence"]);
+  it("needs the whole licence element and both SQL login passwords", () => {
+    expect(secretsNeeded(edits).sort()).toEqual(["db_dbo_password", "db_reg_password", "licence", "licence_act_key", "licence_company", "licence_type"]);
   });
 
   it("round-trips through edits.json", () => {
@@ -273,6 +281,15 @@ describe("verify", () => {
   const golden = sampleGolden("12sp9")["InnovatorServerConfig.xml"] ?? "";
   const rendered = renderFile("InnovatorServerConfig.xml", enc(golden), edits, vars, secrets).bytes;
 
+  it("finds a licence attribute that no longer holds the stored value, without either value", () => {
+    const tampered = enc(dec(rendered).replace(`act_key="${ACT}"`, 'act_key=""'));
+    const result = verifyFile("InnovatorServerConfig.xml", tampered, edits, vars, secrets);
+    expect(result.outcomes.filter((o) => o.status !== "ok")).toEqual([
+      expect.objectContaining({ path: "/Innovator/License/@act_key", status: "differs" }),
+    ]);
+    holdsNoSecret(result);
+  });
+
   it("names the edit that no longer holds, without its value", () => {
     const tampered = enc(dec(rendered).replace(`dbo_pwd="${DBO}"`, 'dbo_pwd="changed-by-hand"'));
     const result = verifyFile("InnovatorServerConfig.xml", tampered, edits, vars, secrets);
@@ -290,7 +307,10 @@ describe("verify", () => {
     expect(noSecrets.outcomes.filter((o) => o.status === "error").map((o) => o.path).sort()).toEqual([
       "/Innovator/DB-Connection/@dbo_pwd",
       "/Innovator/DB-Connection/@regular_pwd",
+      "/Innovator/License/@act_key",
+      "/Innovator/License/@company",
       "/Innovator/License/@lic_key",
+      "/Innovator/License/@lic_type",
     ]);
     const broken = verifyFile("InnovatorServerConfig.xml", enc("<Innovator>"), edits, vars, secrets);
     expect(broken.ok).toBe(false);

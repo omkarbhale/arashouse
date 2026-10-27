@@ -19,9 +19,40 @@ One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `s
 3. otherwise asks once at a hidden prompt (`Aras licence key for line 14 (not needed if you do not use 14.x): `), stores the answer, and never asks again; steps that need the same key at the same moment share one prompt;
 4. with no TTY, or an empty answer, throws `LicenceRequiredError` (exit code 8) and never guesses.
 
-`forgetLicence(line, store)` is for an `arashouse licence forget <line>` command, which does not exist yet. `licenceStatus` backs `doctor`'s `licence line 14: present` once `doctor` is given the host's store (tickets 20 and 21): the key's presence is reported as a boolean only.
+`forgetLicence(line, store)` is for an `arashouse licence forget <line>` command, which does not exist yet. `licenceStatus` backs `doctor`'s `licence line 14: present`: the broker's `hostInfo` reports each line's licence as present or absent (whether its blob exists; a boolean only, never a value), and `doctor` prints that.
 
 `licence.required` is `to-login` for every flavor, and `35` is on line `14`, as [the spike record](spike-record.md) found (section 2, and spike 08): a key is needed to log in, not to install, and the 14.0 key serves 14.35. So there are two lines, `12` and `14`. The baseline build (ticket 24) takes the key only for its login check, at a hidden prompt or from the captain's own DPAPI file, and keeps it nowhere (`docs/baselines.md`).
+
+## The licence a slot logs in with
+
+A login needs the whole `<License>` element, not the key alone ("License Key is invalid", `docs/baselines.md` run 5).
+So the stored secret `licence-<line>` (`licence-12` for `12sp9`, `licence-14` for `23` and `35`) holds the four values
+together, `lic_key`, `act_key`, `lic_type` and `company`, as one JSON object in one machine-scope DPAPI blob
+(`encodeLicence` and `decodeLicence` in `src/core/licence.ts`). A stored value that is not a JSON object is a key alone,
+as `ensureLicence`'s prompt stores it, and reads as `lic_key` with the rest blank. Every value becomes a `licence` Secret
+as it is read, so `redact` replaces each of them in every log line and error. A provision and every reset render all
+four into the slot's `InnovatorServerConfig.xml` (`docs/edits.md`); with nothing stored they render blank, and the
+result says the slot cannot log in yet.
+
+**Storing it.** The captain-approved source is an existing install's `InnovatorServerConfig.xml`, read read-only, as
+`spike/30-licence-reuse.ps1` and the baseline builds' login checks did. `scripts/store-licence.ps1` does it, run
+elevated (the captain, or firstmate's elevated gate):
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File store-licence.ps1 -Line 12 -SourceConfig '<Program Files>\<install>\Innovator\InnovatorServerConfig.xml' -Apply
+```
+
+`-SourceConfig` must be an `InnovatorServerConfig.xml` directly under `<install>\Innovator\` in an `Aras*` folder under
+Program Files; `-Line` is `12` or `14`. Without `-Apply` it prints the plan and reads nothing; with it, unless elevated,
+it refuses before reading. It reads the `<License>` element and nothing else, and sends the four values to the broker's
+`storeLicence` verb on the stdin of the broker's own client (`<root>\broker\app\broker\client.js`), never in an
+argument. The broker (`src/broker/licence-verbs.ts`) checks them (a non-empty `lic_key`; a refusal names a field, never a
+value), stores them in its DPAPI store, replacing an earlier licence of the line, and answers with the line only; the
+audit log records the verb and the outcome, as for every verb, and never a request's `args`. The script prints only
+`stored the licence for line 12`, or an error that names no value; it writes no file and changes nothing of the install.
+Exit codes: 0 stored, 1 the broker refused or failed, 2 a wrong parameter or precondition (nothing sent), 6 the broker
+could not be reached. `storeLicence` is not a host-driver method, since no WSL caller has a licence to send; the hidden
+prompt of `ensureLicence` stays the fallback for a line with no such source.
 
 ## Not here
 

@@ -1,6 +1,7 @@
 import { win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_INSTALL_ROOT, buildScratch, slotLoginSecretName, slotNames, stampFile, type SlotRef } from "../core/names.js";
+import { encodeLicence, licenceElement, licenceSecretName } from "../core/licence.js";
 import { HostError } from "../host/errors.js";
 import { Broker } from "./broker.js";
 import { SlotLocks, provisionSlotOnHost, registerSlotVerbs } from "./provision.js";
@@ -105,6 +106,20 @@ describe("resetTree", () => {
           `configs: 9 files, \\d+ edits; no licence key is stored for line 12, so the slot cannot log in yet; \\d+ files verified; golden [\\d.]+, mirror [\\d.]+, configs [\\d.]+, verify [\\d.]+, stamp [\\d.]+\\)$`,
       ),
     );
+  });
+
+  it("renders the line's stored <License> element again over a config the lease changed", async () => {
+    const system = await provisioned();
+    const values = { lic_key: "LICENCE-KEY-PLACEHOLDER-0003", act_key: "ACT-KEY-PLACEHOLDER-0003", lic_type: "Type-Placeholder", company: "Company-Placeholder" };
+    await system.secrets.put(licenceSecretName("12"), encodeLicence(licenceElement(values)));
+    dirty(system);
+    await quiesceOnHost(system, s1);
+    const result = await reset(system);
+    expect(system.text(inSlot("InnovatorServerConfig.xml"))).toContain(
+      `<License lic_type="Type-Placeholder" lic_key="LICENCE-KEY-PLACEHOLDER-0003" act_key="ACT-KEY-PLACEHOLDER-0003" company="Company-Placeholder"/>`,
+    );
+    expect(result.detail).not.toContain("cannot log in");
+    for (const value of Object.values(values)) expect(JSON.stringify(result)).not.toContain(value);
   });
 
   it("is idempotent: a second reset of a clean slot gives the same tree", async () => {

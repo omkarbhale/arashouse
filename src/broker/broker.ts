@@ -11,7 +11,6 @@ import { GuardError } from "../core/guards.js";
 import { DEFAULT_INSTALL_ROOT, type SlotNames, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { systemClock, type Clock } from "../host/clock.js";
-import type { HostMethod } from "../host/driver.js";
 import { HostError } from "../host/errors.js";
 import { assertFlavorOwned, assertSlotOwned, type OwnedContext } from "../host/owned.js";
 import type { AuditEntry, AuditOutcome, AuditSink } from "./audit.js";
@@ -23,6 +22,7 @@ import {
   targetOf,
   verbTimeout,
   type BrokerRequest,
+  type BrokerVerb,
   type BrokerResponse,
   type WireResult,
 } from "./protocol.js";
@@ -71,7 +71,7 @@ function failureOf(err: unknown): { kind: HostError["kind"]; message: string } {
 }
 
 export class Broker {
-  private readonly verbs = new Map<HostMethod, VerbSpec>();
+  private readonly verbs = new Map<BrokerVerb, VerbSpec>();
   private readonly root: string;
   private readonly owned: OwnedContext;
   private readonly clock: Clock;
@@ -83,14 +83,14 @@ export class Broker {
   }
 
   /** Adds a verb. A verb is registered once; a second registration is a programming error. */
-  register(verb: HostMethod, spec: VerbSpec): this {
+  register(verb: BrokerVerb, spec: VerbSpec): this {
     if (this.verbs.has(verb)) throw new Error(`the broker already has a "${verb}" verb`);
     this.verbs.set(verb, spec);
     return this;
   }
 
   /** The registered verbs, in registration order. */
-  registered(): HostMethod[] {
+  registered(): BrokerVerb[] {
     return [...this.verbs.keys()];
   }
 

@@ -1,6 +1,6 @@
 import { win32 } from "node:path";
 import { describe, expect, it } from "vitest";
-import { licenceSecretName } from "../core/licence.js";
+import { encodeLicence, licenceElement, licenceSecretName } from "../core/licence.js";
 import { DEFAULT_INSTALL_ROOT, slotLoginSecretName, slotNames, stampFile, type SlotRef } from "../core/names.js";
 import { Secret } from "../core/secret.js";
 import { HostError } from "../host/errors.js";
@@ -93,6 +93,24 @@ describe("provisionSlot", () => {
     const result = await provision(system);
     expect(system.text(win32.join(names.slotDir, "InnovatorServerConfig.xml"))).toContain(`lic_key="LICENCE-KEY-PLACEHOLDER-0001"`);
     expect(result.detail).not.toMatch(/licence/);
+  });
+
+  it("renders the whole stored <License> element, and no value of it reaches the result", async () => {
+    const system = new FakeSlotSystem();
+    const values = { lic_key: "LICENCE-KEY-PLACEHOLDER-0002", act_key: "ACT-KEY-PLACEHOLDER-0002", lic_type: "Type-Placeholder", company: "Company & Placeholder" };
+    await system.secrets.put(licenceSecretName("12"), encodeLicence(licenceElement(values)));
+    const result = await provision(system);
+    expect(system.text(win32.join(names.slotDir, "InnovatorServerConfig.xml"))).toContain(
+      `<License lic_type="Type-Placeholder" lic_key="LICENCE-KEY-PLACEHOLDER-0002" act_key="ACT-KEY-PLACEHOLDER-0002" company="Company &amp; Placeholder"/>`,
+    );
+    for (const value of Object.values(values)) expect(JSON.stringify(result)).not.toContain(value);
+  });
+
+  it("renders the <License> element blank, and says the slot cannot log in, without a stored licence", async () => {
+    const system = new FakeSlotSystem();
+    const result = await provision(system);
+    expect(system.text(win32.join(names.slotDir, "InnovatorServerConfig.xml"))).toContain(`<License lic_type="" lic_key="" act_key="" company=""/>`);
+    expect(result.detail).toContain("no licence key is stored for line 12, so the slot cannot log in yet");
   });
 
   it("refuses a slot that has a stamp, and changes nothing", async () => {

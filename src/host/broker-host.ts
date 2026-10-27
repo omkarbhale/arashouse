@@ -2,9 +2,10 @@
 // WSL side first, then sends one request to the broker (ticket 20) through a `BrokerTransport` and
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
-// The broker has `ping`, `hostInfo`, `readStamp` and `listSlots` so far. Every other method fails
-// `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot stays dirty) rather
-// than being quarantined for a verb the broker does not have yet.
+// The broker has `ping`, `hostInfo`, `readStamp`, `listSlots` and `baselineVerify` so far. Every
+// other method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot
+// stays dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild`
+// is never a verb: a baseline is built in an elevated session (ticket 24).
 
 import { randomUUID } from "node:crypto";
 import type { FlavorKey } from "../core/flavors.js";
@@ -34,6 +35,7 @@ import type {
   StartOptions,
 } from "./driver.js";
 import { HostError } from "./errors.js";
+import { VERIFY_LEVELS, type ManifestDiff, type VerifyLevel } from "../core/manifest.js";
 import { assertFlavorOwned, assertSlotOwned, type OwnedContext } from "./owned.js";
 
 /** The ticket that adds each verb the broker does not have yet. */
@@ -51,8 +53,6 @@ const PENDING: Partial<Record<HostMethod, string>> = {
   restoreDatabase: "39",
   backupDatabase: "43",
   setLeaseCredentials: "34",
-  baselineBuild: "24",
-  baselineVerify: "28",
 };
 
 export interface BrokerHostOptions {
@@ -92,6 +92,19 @@ function parseHostInfo(value: unknown): HostInfo {
   return sqlLogin === undefined ? info : { ...info, sqlLogin };
 }
 
+function parseLevel(value: unknown): VerifyLevel {
+  if (typeof value !== "string" || !(VERIFY_LEVELS as readonly string[]).includes(value)) throw new ProtocolError("level is not a verify level");
+  return value as VerifyLevel;
+}
+
+/** A manifest diff as the broker sends it: counts and paths only. */
+function parseDiff(value: unknown): ManifestDiff {
+  if (!isRecord(value) || typeof value.ok !== "boolean" || !isRecord(value.counts) || !Array.isArray(value.problems)) {
+    throw new ProtocolError("diff has the wrong fields");
+  }
+  return value as unknown as ManifestDiff;
+}
+
 export class BrokerHost implements HostDriver {
   private readonly clock: Clock;
   private readonly owned: OwnedContext;
@@ -105,8 +118,12 @@ export class BrokerHost implements HostDriver {
   }
 
   /** One round trip; returns the result and the time it took. */
-  private async call(verb: HostMethod, target: { slot?: SlotRef; flavor?: FlavorKey } = {}): Promise<{ result: WireResult; ms: number }> {
-    const request: BrokerRequest = { id: randomUUID(), verb, ...target };
+  private async call(
+    verb: HostMethod,
+    target: { slot?: SlotRef; flavor?: FlavorKey } = {},
+    args?: Readonly<Record<string, unknown>>,
+  ): Promise<{ result: WireResult; ms: number }> {
+    const request: BrokerRequest = { id: randomUUID(), verb, ...target, ...(args ? { args } : {}) };
     const started = this.clock.now();
     const raw = await this.transport.call(request, verbTimeout(verb));
     const ms = Math.max(0, this.clock.now() - started);
@@ -229,11 +246,20 @@ export class BrokerHost implements HostDriver {
     return this.pending("setLeaseCredentials", this.slotGuard(slot));
   }
 
-  baselineBuild(flavor: FlavorKey): Promise<BaselineBuildResult> {
-    return this.pending("baselineBuild", () => assertFlavorOwned(flavor, this.owned));
+  /** Never through the broker: its SQL login may not create the build database (ticket 22). The build runs elevated (docs/baselines.md). */
+  async baselineBuild(flavor: FlavorKey): Promise<BaselineBuildResult> {
+    assertFlavorOwned(flavor, this.owned);
+    throw new HostError("Refused", `a baseline is built in an elevated session, not by the broker: run \`arashouse baseline build ${flavor}\` and the script it writes`);
   }
 
-  baselineVerify(flavor: FlavorKey, _options?: BaselineVerifyOptions): Promise<BaselineVerifyResult> {
-    return this.pending("baselineVerify", () => assertFlavorOwned(flavor, this.owned));
+  async baselineVerify(flavor: FlavorKey, options: BaselineVerifyOptions = {}): Promise<BaselineVerifyResult> {
+    assertFlavorOwned(flavor, this.owned);
+    const level = options.level ?? "golden";
+    const { result, ms } = await this.call("baselineVerify", { flavor }, { level });
+    try {
+      return { ok: result.ok, ms, detail: result.detail, level: parseLevel(result.level), ...(result.diff === undefined ? {} : { diff: parseDiff(result.diff) }) };
+    } catch (err) {
+      throw malformed("baselineVerify", (err as Error).message);
+    }
   }
 }

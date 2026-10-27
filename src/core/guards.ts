@@ -5,6 +5,7 @@
 import { isFlavorKey } from "./flavors.js";
 import {
   APP_POOL_ROLES,
+  BUILD_SCRATCH_SUFFIXES,
   DEFAULT_INSTALL_ROOT,
   agentServiceName,
   appPoolName,
@@ -301,6 +302,16 @@ function assertOwnedPath(raw: unknown, slot: SlotRef | undefined, options: Owned
       if (rel.length < 2 || !STAGING_FOLDER.test(rel[1] ?? "")) {
         throw fail("not-allowlisted", "is not inside a staging folder (staging\\<lease_id>)");
       }
+      break;
+    }
+    case "golden-build": {
+      // The baseline build's install directory `golden-build\<key>` and its scratch folders `<key>.<suffix>` (ticket 24).
+      const [name = "", suffix] = (rel[1] ?? "").split(/\.(?=[^.]+$)/);
+      const scratch = suffix === undefined || (BUILD_SCRATCH_SUFFIXES as readonly string[]).includes(suffix);
+      if (rel.length < 2 || !isFlavorKey(name) || !scratch) {
+        throw fail("not-allowlisted", "is not inside a baseline build folder (golden-build\\<key>)");
+      }
+      if (slot) throw notMine();
       break;
     }
     case "sqldata":

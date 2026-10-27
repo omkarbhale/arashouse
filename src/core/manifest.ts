@@ -160,7 +160,7 @@ export function isRuntimePath(path: string, rules: readonly RuntimeRule[]): bool
  */
 export function isFastHashed(path: string): boolean {
   const lower = norm(path);
-  return lower.endsWith(".config") || (lower.startsWith("server/bin/") && lower.endsWith(".dll"));
+  return lower.endsWith(".config") || (lower.startsWith("innovator/server/bin/") && lower.endsWith(".dll"));
 }
 
 // ---- hashing and (de)serialising --------------------------------------------------------------

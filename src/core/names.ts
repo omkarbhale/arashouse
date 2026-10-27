@@ -152,6 +152,83 @@ export function buildNames(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROO
   };
 }
 
+/**
+ * Everything else the baseline build (ticket 24) names besides `buildNames`: the throw-away instance's
+ * SQL logins and IIS pools, and its scratch folders, which sit next to the install directory under
+ * `golden-build\` (the install directory's own name is fixed: golden's config files name it).
+ */
+export interface BuildScratch {
+  /** `arashouse_build_<key>_dbo` and `_reg`. */
+  readonly logins: Readonly<Record<LoginRole, string>>;
+  /** `ah-build-<key>-`: each IIS application of the build alias gets the pool `<prefix><role>`. */
+  readonly poolPrefix: string;
+  /** `<root>\golden-build\<key>.msi`: the copy of the MSI with its own ProductCode. */
+  readonly msiDir: string;
+  /** `<root>\golden-build\<key>.vault`: the MSI's `VAULT_ROOT`, so it never defaults to `C:\Aras\Vault`. */
+  readonly vaultRoot: string;
+  /** `<root>\golden-build\<key>.golden`: the new golden, assembled here and moved into `golden\<key>` last. */
+  readonly candidateDir: string;
+  /** `<root>\golden-build\<key>.old`: a replaced golden, set aside while the new one moves in. */
+  readonly retiredDir: string;
+  /** `<root>\staging\baseline-<key>`: the bundle `arashouse baseline build` writes (the script, the build, the media). */
+  readonly bundleDir: string;
+}
+
+/** The suffixes of the scratch folders next to `golden-build\<key>`; the guards admit only these. */
+export const BUILD_SCRATCH_SUFFIXES = ["msi", "vault", "golden", "old"] as const;
+
+export function buildScratch(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROOT): BuildScratch {
+  const build = buildNames(flavor, root);
+  return {
+    logins: { dbo: `${build.database}_dbo`, reg: `${build.database}_reg` },
+    poolPrefix: `${build.alias}-`,
+    msiDir: `${build.dir}.msi`,
+    vaultRoot: `${build.dir}.vault`,
+    candidateDir: `${build.dir}.golden`,
+    retiredDir: `${build.dir}.old`,
+    bundleDir: win32.join(root, "staging", `baseline-${flavorOf(flavor)}`),
+  };
+}
+
+/** What a flavor's golden folder holds (ticket 24 writes it; ticket 28 verifies `tree\` against `manifest.json`). */
+export interface GoldenLayout {
+  /** `<root>\golden\<key>` */
+  readonly dir: string;
+  /** The code tree slots are mirrored from. */
+  readonly tree: string;
+  /** The shipped `Core*.bak` and `CoreAndSolutions*.bak`, and `ootb.bak` of the freshly built database. */
+  readonly db: string;
+  readonly ootbBackup: string;
+  readonly manifest: string;
+  /** The flavor's config edit list (ticket 19). */
+  readonly edits: string;
+  /** The build alias's IIS applications and pools, for ticket 25's slot templates. */
+  readonly iis: string;
+  /** The agent service's definition, or that there is none. */
+  readonly service: string;
+  /** Version, MSI SHA-256, build time, host prerequisites. */
+  readonly flavor: string;
+}
+
+export function goldenLayout(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROOT): GoldenLayout {
+  return goldenLayoutAt(goldenDir(flavor, root));
+}
+
+/** The same layout under another folder: the candidate the build assembles before it moves into place. */
+export function goldenLayoutAt(dir: string): GoldenLayout {
+  return {
+    dir,
+    tree: win32.join(dir, "tree"),
+    db: win32.join(dir, "db"),
+    ootbBackup: win32.join(dir, "db", "ootb.bak"),
+    manifest: win32.join(dir, "manifest.json"),
+    edits: win32.join(dir, "edits.json"),
+    iis: win32.join(dir, "iis.json"),
+    service: win32.join(dir, "service.json"),
+    flavor: win32.join(dir, "flavor.json"),
+  };
+}
+
 /** `<root>\staging\<lease_id>` */
 export function stagingDir(leaseId: string, root: string = DEFAULT_INSTALL_ROOT): string {
   if (!LEASE_ID.test(leaseId)) throw new Error("lease id must be 1 to 64 letters, digits, '_' or '-'");

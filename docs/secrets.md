@@ -1,6 +1,6 @@
 # Secrets
 
-One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `secret-store.ts`, `licence.ts`, plus the no-echo TTY read in `src/cli/tty.ts` and the broker's client token in `src/broker/token.ts`. Five kinds exist: the SQL `sa` password (`sql-sa`; unused, since `sa` is rejected on this host and ticket 22 connects with Windows authentication, `docs/setup-sql.md`), licence keys (`licence`), per-lease Aras passwords (`lease-password`, ticket 34), a slot's SQL login passwords (`sql-login`, which the config edit list writes into the slot's config; `docs/edits.md`) and the broker's client token (`broker-token`, `docs/broker.md`).
+One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `secret-store.ts`, `licence.ts`, plus the no-echo TTY read in `src/cli/tty.ts` and the broker's client token in `src/broker/token.ts`. Six kinds exist: the SQL `sa` password (`sql-sa`; unused, since `sa` is rejected on this host and ticket 22 connects with Windows authentication, `docs/setup-sql.md`), licence keys (`licence`), per-lease Aras passwords (`lease-password`, ticket 34), a slot's SQL login passwords (`sql-login`, which the config edit list writes into the slot's config; `docs/edits.md`) the broker's client token (`broker-token`, `docs/broker.md`) and the shipped backup's Aras administrator password, which the baseline build logs in with (`aras-login`, `docs/baselines.md`).
 
 ## Rules
 
@@ -21,7 +21,7 @@ One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `s
 
 `forgetLicence(line, store)` is for an `arashouse licence forget <line>` command, which does not exist yet. `licenceStatus` backs `doctor`'s `licence line 14: present` once `doctor` is given the host's store (tickets 20 and 21): the key's presence is reported as a boolean only.
 
-`licence.required` is provisional (`to-install` for every flavor) until the code catches up with [the spike record](spike-record.md), which answers whether install, login or neither needs a key and whether one key serves `23` and `35`; the registry is data, so the answer changes one line per flavor.
+`licence.required` is `to-login` for every flavor, and `35` is on line `14`, as [the spike record](spike-record.md) found (section 2, and spike 08): a key is needed to log in, not to install, and the 14.0 key serves 14.35. So there are two lines, `12` and `14`. The baseline build (ticket 24) takes the key only for its login check, at a hidden prompt or from the captain's own DPAPI file, and keeps it nowhere (`docs/baselines.md`).
 
 ## Not here
 

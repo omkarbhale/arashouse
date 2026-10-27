@@ -50,7 +50,8 @@ element without the attribute is not a match.
 | `build.alias`, `build.database`, `build.dir`, `build.agentPort` | the names the baseline was installed under (ticket 24): `ah-build-12sp9`, `arashouse_build_12sp9`, `C:\aras_installations\golden-build\12sp9`, `8734` (the MSI's default `AS_PORT`). The golden's files still hold them. |
 
 Secret handles may appear in `value` only: `{{secret:licence}}` (a `licence` Secret: the stored key
-for the flavor's licence line, from `ensureLicence(flavor, "edit-list", ...)`), `{{secret:db_dbo_password}}`
+for the flavor's licence line, from `ensureLicence(flavor, "edit-list", ...)`), `{{secret:licence_act_key}}` (a
+`licence` Secret: the `act_key` that goes with the key), `{{secret:db_dbo_password}}`
 and `{{secret:db_reg_password}}` (`sql-login` Secrets: the slot's SQL login passwords, ticket 25).
 `secretsNeeded(list)` names the handles a list uses. An unknown name or handle is refused when the
 list is parsed.
@@ -109,7 +110,9 @@ password into `SelfServiceReportConfig.xml` as well, which `spike/20-clone-slot.
 update; the list sets it. Because it sits in a connection string, the slot's SQL login passwords
 (ticket 25) must not contain `;`.
 
-**For the baseline builder (ticket 24):** the text edits find the build's names, so the baseline must
-be installed under `buildNames(flavor)` (alias, database, directory) with the default agent port. The
-golden keeps `lic_key` blank; whether a slot also needs `act_key`, `lic_type` and `company` from the
-key's source is open (spike 30 copied all four); if it does, a handle joins `licence`.
+**For the baseline builder (ticket 24):** the text edits find the build's names, so the baseline is
+installed under `buildNames(flavor)` (alias, database, directory) with the default agent port. The
+golden keeps `lic_key`, `act_key`, `dbo_pwd` and `regular_pwd` blank (the build sets them for its own checks and
+blanks them before the copy, `docs/baselines.md`). The build's login proof found the key alone refused ("License Key
+is invalid"): a slot needs `act_key`, `lic_type` and `company` from the key's source too (spike 30 copied all four),
+so the handle `licence_act_key` exists for ticket 25's list to add.

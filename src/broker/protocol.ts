@@ -31,6 +31,8 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
   hostInfo: 20_000,
   readStamp: 10_000,
   listSlots: 20_000,
+  // `full` hashes every file of a golden tree: about 560 to 750 MB, at the 2 MB/s measured with real-time scanning (design 8.3).
+  baselineVerify: 30 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

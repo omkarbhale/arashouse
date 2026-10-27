@@ -39,7 +39,7 @@ describe("licence handling in the flavor registry", () => {
       expect(FLAVORS[key].licence.line).not.toBe("");
       expect(["to-install", "to-login", "never"]).toContain(FLAVORS[key].licence.required);
     }
-    expect(licenceLines()).toEqual(["12", "14", "35"]);
+    expect(licenceLines()).toEqual(["12", "14"]);
   });
 
   it("decides per step whether a key is needed", () => {
@@ -67,12 +67,12 @@ describe("ensureLicence", () => {
   it("asks exactly once, stores the answer machine-scope and never asks again", async () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter([KEY]);
-    const first = await ensureLicence("23", "install", { store, prompter: impl });
+    const first = await ensureLicence("23", "login", { store, prompter: impl });
     expect(first?.reveal()).toBe(KEY);
     expect(asked).toEqual([licencePrompt("14")]);
     expect(await store.has("licence-14")).toBe(true);
 
-    const again = await ensureLicence("23", "install", { store, prompter: impl });
+    const again = await ensureLicence("23", "login", { store, prompter: impl });
     expect(again?.reveal()).toBe(KEY);
     expect(asked).toHaveLength(1);
   });
@@ -81,7 +81,7 @@ describe("ensureLicence", () => {
     const store = new MemorySecretStore();
     await store.put("licence-12", Secret.of(KEY, "licence"));
     const { impl, asked } = prompter([]);
-    expect((await ensureLicence("12sp9", "install", { store, prompter: impl }))?.reveal()).toBe(KEY);
+    expect((await ensureLicence("12sp9", "login", { store, prompter: impl }))?.reveal()).toBe(KEY);
     expect((await ensureLicence("12sp9", "edit-list", { store, prompter: impl }))?.reveal()).toBe(KEY);
     expect(asked).toEqual([]);
   });
@@ -90,7 +90,7 @@ describe("ensureLicence", () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter([KEY]);
     const results = await Promise.all([
-      ensureLicence("12sp9", "install", { store, prompter: impl }),
+      ensureLicence("12sp9", "login", { store, prompter: impl }),
       ensureLicence("12sp9", "edit-list", { store, prompter: impl }),
     ]);
     expect(results.map((r) => r?.reveal())).toEqual([KEY, KEY]);
@@ -100,15 +100,15 @@ describe("ensureLicence", () => {
   it("asks once per line, naming the line", async () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter([KEY, KEY + "x"]);
-    await ensureLicence("12sp9", "install", { store, prompter: impl });
-    await ensureLicence("23", "install", { store, prompter: impl });
+    await ensureLicence("12sp9", "login", { store, prompter: impl });
+    await ensureLicence("23", "login", { store, prompter: impl });
     expect(asked).toEqual([licencePrompt("12"), licencePrompt("14")]);
   });
 
   it("does not ask when the step needs no key", async () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter([]);
-    expect(await ensureLicence("12sp9", "login", { store, prompter: impl })).toBeUndefined();
+    expect(await ensureLicence("12sp9", "install", { store, prompter: impl })).toBeUndefined();
     expect(asked).toEqual([]);
     expect(await store.has("licence-12")).toBe(false);
   });
@@ -116,7 +116,7 @@ describe("ensureLicence", () => {
   it("exits 8 without a TTY, never guesses and never asks", async () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter([KEY], false);
-    const err = await ensureLicence("23", "install", { store, prompter: impl }).catch((e: unknown) => e);
+    const err = await ensureLicence("23", "login", { store, prompter: impl }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(LicenceRequiredError);
     expect((err as LicenceRequiredError).exitCode).toBe(8);
     expect(SECRET_REQUIRED_EXIT_CODE).toBe(8);
@@ -129,23 +129,23 @@ describe("ensureLicence", () => {
     const store = new MemorySecretStore();
     await store.put("licence-14", Secret.of(KEY, "licence"));
     const { impl } = prompter([], false);
-    expect((await ensureLicence("23", "install", { store, prompter: impl }))?.reveal()).toBe(KEY);
+    expect((await ensureLicence("23", "login", { store, prompter: impl }))?.reveal()).toBe(KEY);
   });
 
   it("exits 8 on an empty answer and stores nothing, so the next run asks again", async () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter(["", KEY]);
-    const err = await ensureLicence("23", "install", { store, prompter: impl }).catch((e: unknown) => e);
+    const err = await ensureLicence("23", "login", { store, prompter: impl }).catch((e: unknown) => e);
     expect((err as LicenceRequiredError).exitCode).toBe(8);
     expect(await store.has("licence-14")).toBe(false);
-    expect((await ensureLicence("23", "install", { store, prompter: impl }))?.reveal()).toBe(KEY);
+    expect((await ensureLicence("23", "login", { store, prompter: impl }))?.reveal()).toBe(KEY);
     expect(asked).toHaveLength(2);
   });
 
   it("never puts the key in an error message, the prompt or a redacted log line", async () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter([KEY]);
-    await ensureLicence("23", "install", { store, prompter: impl });
+    await ensureLicence("23", "login", { store, prompter: impl });
     expect(asked.join("")).not.toContain(KEY);
     expect(redact(`got ${KEY}`)).not.toContain(KEY);
     const err = new LicenceRequiredError("14", "no-tty");
@@ -157,10 +157,10 @@ describe("forgetting and reporting", () => {
   it("forget removes the stored key, after which the tool asks again", async () => {
     const store = new MemorySecretStore();
     const { impl, asked } = prompter([KEY, KEY]);
-    await ensureLicence("23", "install", { store, prompter: impl });
+    await ensureLicence("23", "login", { store, prompter: impl });
     expect(await forgetLicence("14", store)).toBe(true);
     expect(await forgetLicence("14", store)).toBe(false);
-    await ensureLicence("23", "install", { store, prompter: impl });
+    await ensureLicence("23", "login", { store, prompter: impl });
     expect(asked).toHaveLength(2);
     await expect(forgetLicence("nope", store)).rejects.toThrow(/unknown licence line/);
   });
@@ -172,7 +172,6 @@ describe("forgetting and reporting", () => {
     expect(status).toEqual([
       { line: "12", present: false },
       { line: "14", present: true },
-      { line: "35", present: false },
     ]);
     expect(formatLicenceStatus({ line: "14", present: true })).toBe("licence line 14: present");
     expect(JSON.stringify(status)).not.toContain(KEY);

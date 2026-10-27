@@ -35,7 +35,8 @@ WSL side first, so a refused name is never sent.
 | `startSlot`, `stopSlot` | slot | | 33 |
 | `setLeaseCredentials` | slot | | 34 |
 | `restoreDatabase`, `deployCode`, `backupDatabase` | slot | | 39, 40, 43 |
-| `baselineBuild`, `baselineVerify` | flavor | | 24, 28 |
+| `baselineVerify` | flavor | checks `golden\<key>` against its manifest at `args.level` (`golden`, the default; `fast`; `full`): `ok`, `level` and the diff (counts and paths only); "not built" when there is no manifest | 28, 24 |
+| `baselineBuild` | flavor | never served: the build runs in the captain's elevated session, since the broker's SQL login may not create its database (`docs/baselines.md`); `BrokerHost` refuses it without asking | 24 |
 
 The broker answers a verb it does not have `Refused`. Until a verb's ticket lands, `BrokerHost` fails that
 method `Unreachable` naming the ticket, without asking the broker, so a reset leaves the slot dirty instead
@@ -55,7 +56,7 @@ of quarantining it. A ticket that adds a verb registers it in `src/broker/` the 
   sent: `BrokerHost` measures the round trip on its own clock.
 - Limits: a request line of 64 KiB, a response line of 1 MiB; the broker drops a connection that has not
   sent its line within 5 s; each verb has a time bound (`VERB_TIMEOUT_MS`: `ping` 5 s, `readStamp` 10 s,
-  `hostInfo` and `listSlots` 20 s, otherwise 30 s) past which it is answered `Retryable`. The client waits
+  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), otherwise 30 s) past which it is answered `Retryable`. The client waits
   the bound plus 5 s, and `BrokerHost` the bound plus 10 s, killing the client after that.
 
 | failure | kind |

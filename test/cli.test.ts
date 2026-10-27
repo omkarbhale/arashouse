@@ -401,12 +401,87 @@ describe("the reset (ticket 14)", () => {
   });
 });
 
+describe("operator commands (ticket 16)", () => {
+  it("destroy is a dry run without --yes, and refuses a leased slot without --include-leased", async () => {
+    await seed({ "23": 2 });
+    const grant = await lease("23");
+    const dry = await cli(["destroy", "23-02"]);
+    expect(dry.code).toBe(0);
+    expect(dry.stdout).toMatch(/^would destroy 23-02: its record \(free\); application ah-23-02, /);
+    expect(dry.stdout).toContain("dry run: nothing was changed; run again with --yes to do it");
+    expect(JSON.parse((await cli(["status", "--json"])).stdout).slots).toHaveLength(2);
+
+    const leased = await cli(["destroy", "23-01", "--yes"]);
+    expect(leased.code).toBe(EXIT_CODES.refused);
+    expect(leased.stderr).toContain("23-01 is leased (to task-a); destroy refuses a leased slot unless --include-leased");
+    expect((await cli(["destroy", "23-02", "--yes"])).code).toBe(0);
+    expect(JSON.parse((await cli(["status", "--json"])).stdout).slots.map((s: { slot: string }) => s.slot)).toEqual(["23-01"]);
+    expect((await cli(["destroy", "23-01", "--yes", "--include-leased"])).code).toBe(0);
+    expect(existsSync(join(home, "leases", grant.lease_id))).toBe(false);
+  });
+
+  it("force-return takes the lease as status shows it, exits 4 on another, and needs --yes", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    const shown = JSON.parse((await cli(["status", "--json"])).stdout).slots[0].lease as string;
+    expect((await cli(["force-return", "23-01", "--lease-id", "0123abcd", "--yes"])).code).toBe(EXIT_CODES.leaseMismatch);
+    expect((await cli(["force-return", "23-01", "--yes"])).code).toBe(EXIT_CODES.usage);
+    const dry = await cli(["force-return", "23-01", "--lease-id", shown]);
+    expect(dry.code).toBe(0);
+    expect(dry.stdout).toContain("would force-return 23-01");
+    expect(JSON.parse((await cli(["status", "--json"])).stdout).slots[0].status).toBe("leased");
+    const done = await cli(["force-return", "23-01", "--lease-id", shown, "--yes"]);
+    expect(done.code).toBe(0);
+    expect(JSON.parse((await cli(["status", "--json"])).stdout).slots[0].status).toBe("dirty");
+    expect(existsSync(join(home, "leases", grant.lease_id))).toBe(false);
+  });
+
+  it("disable and enable move a slot out of rotation and back through a reset", async () => {
+    await seed({ "23": 1 });
+    expect((await cli(["disable", "23-01"])).stdout).toContain("disabled 23-01 (it was free)");
+    expect((await cli(["get", "23", "--holder", "x"])).code).toBe(EXIT_CODES.noSlot);
+    const pruned = await cli(["prune"]);
+    expect(pruned.stdout).toContain("would destroy 23-01 (disabled)");
+    expect((await cli(["enable", "23-01"])).stdout).toContain("enabled 23-01: it is reset before it is handed out");
+    expect(JSON.parse((await cli(["status", "--json"])).stdout).slots[0].status).toBe("dirty");
+  });
+
+  it("doctor passes on a clean pool, fails a corrupt state file, and fails with no broker", async () => {
+    await seed({ "23": 1 });
+    const ok = await cli(["doctor"]);
+    expect(ok.code, ok.stdout).toBe(0);
+    expect(ok.stdout).toContain("ok    slot 23-01: free and clean");
+    expect((await cli(["doctor"], { ARASHOUSE_HOST: "" })).stdout).toContain("fail  broker: did not answer");
+    await writeFile(join(home, "state.json"), "{");
+    const corrupt = await cli(["doctor"]);
+    expect(corrupt.code).toBe(1);
+    expect(corrupt.stdout).toMatch(/fail {2}state: the state file .* is unusable/);
+  });
+
+  it("refuses every deny-listed name with exit 7, and takes usage errors with exit 2", async () => {
+    await seed({ "23": 1 });
+    for (const args of [
+      ["destroy", "OLM_Local", "--yes"],
+      ["repair", "InnovatorServer23"],
+      ["disable", "prod"],
+      ["enable", "olm"],
+      ["force-return", "12sp9", "--lease-id", "0123abcd", "--yes"],
+    ]) {
+      expect((await cli(args)).code, args.join(" ")).toBe(EXIT_CODES.refused);
+    }
+    for (const args of [["destroy"], ["repair", "23"], ["prune", "23-01"], ["doctor", "--fixx"], ["disable", "23-01", "23-02"]]) {
+      expect((await cli(args)).code, args.join(" ")).toBe(EXIT_CODES.usage);
+    }
+  });
+});
+
 describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
-    for (const command of ["get", "return", "status", "flavors", "run", "help", "version"]) expect(overview.stdout).toContain(`  ${command}`);
-    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker"]) {
+    const commands = ["get", "return", "status", "flavors", "run", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
+    for (const command of commands) expect(overview.stdout).toContain(`  ${command}`);
+    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable"]) {
       const r = await cli([command, "--help"]);
       expect(r.code, command).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));

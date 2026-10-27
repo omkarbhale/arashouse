@@ -1,13 +1,15 @@
 // Which host driver the CLI talks to. `ARASHOUSE_HOST=fake` selects the fake host (the CLI tests use
 // it); otherwise the broker on Windows, whose client does not exist yet (tickets 20 and 21), so every
 // host call fails as unreachable with a hint. Commands that need no host (`status`, `return`, `run`)
-// work either way; a reset needs it (with the broker missing, a slot stays dirty until it is there).
+// work either way; a reset and the operator commands need it (with the broker missing, a slot stays
+// dirty until it is there).
 
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import { UsageError, type LeaseHost } from "../core/lease.js";
-import type { GoldenSet, ResetHost } from "../core/reset.js";
+import type { OperatorHost } from "../core/operator.js";
+import type { GoldenSet } from "../core/reset.js";
+import { StateCorruptError } from "../core/state.js";
 import type { StateStore } from "../core/store.js";
-import type { HostDriver } from "../host/driver.js";
 import { HostError } from "../host/errors.js";
 import { FakeHost, type Fault } from "../host/fake.js";
 import { HOST_ADDR_ENV, hostAddress, slotUrl } from "../host/url.js";
@@ -18,7 +20,7 @@ export const HOST_ENV = "ARASHOUSE_HOST";
 export const FAKE_FAULTS_ENV = "ARASHOUSE_FAKE_FAULTS";
 
 /** The host calls the CLI makes. */
-export type CliHost = LeaseHost & ResetHost & Pick<HostDriver, "baselineVerify">;
+export type CliHost = LeaseHost & OperatorHost;
 
 export interface SelectedHost {
   readonly kind: "fake" | "broker";
@@ -38,12 +40,18 @@ export function hostKind(env: NodeJS.ProcessEnv): "fake" | "broker" {
 
 /**
  * The fake host, rebuilt in every process from the state file: each slot the state holds is
- * provisioned clean, every flavor's baseline is built, and the faults in `ARASHOUSE_FAKE_FAULTS` are
- * injected. Its URLs use `ARASHOUSE_HOST_ADDR`, else `127.0.0.1`, and are never probed.
+ * provisioned clean (none when the file is unusable), every flavor's baseline is built, and the
+ * faults in `ARASHOUSE_FAKE_FAULTS` are injected. Its URLs use `ARASHOUSE_HOST_ADDR`, else
+ * `127.0.0.1`, and are never probed.
  */
 async function fakeHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {
   const host = new FakeHost({ baselines: FLAVOR_KEYS });
-  for (const slot of Object.values((await store.read()).slots)) await host.provisionSlot({ flavor: slot.flavor, slot: slot.number });
+  // An unusable state file provisions nothing, so `doctor` can still report it.
+  const slots = await store.read().then((state) => Object.values(state.slots), (err: unknown) => {
+    if (err instanceof StateCorruptError) return [];
+    throw err;
+  });
+  for (const slot of slots) await host.provisionSlot({ flavor: slot.flavor, slot: slot.number });
   const faults = env[FAKE_FAULTS_ENV];
   if (faults !== undefined && faults !== "") {
     let parsed: unknown;
@@ -82,6 +90,11 @@ const brokerHost: CliHost = {
   resetDatabase: unavailable,
   resetTree: unavailable,
   startSlot: unavailable,
+  stopSlot: unavailable,
+  ping: unavailable,
+  listSlots: unavailable,
+  provisionSlot: unavailable,
+  destroySlot: unavailable,
 };
 
 export async function selectHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {

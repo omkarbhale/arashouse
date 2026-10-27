@@ -44,7 +44,7 @@ credentials) also goes to `dirty`, and a worker is started for it.
 ## The sequence
 
 Each step is a host-driver call (ticket 12). The same sequence runs in the worker, in `get`'s lazy
-path, and later in `repair` (ticket 16).
+path, and in `repair` (`docs/cli.md`).
 
 | step | host call | notes |
 |---|---|---|
@@ -74,8 +74,8 @@ host no more.
 | A step throws `Unreachable` twice | Gives the slot back as `dirty` (the slot is not at fault) and stops; a later worker or `get` tries again, and this reset does not count toward the attempt cap. A lazy reset in `get` exits 6. |
 | The slot's reset is started a 4th time after 3 workers died mid-reset (`MAX_RESET_ATTEMPTS`) | Quarantines it: `reset started 4 times without finishing`. |
 
-A quarantined slot is never handed out. `arashouse repair <slot>` (ticket 16) re-provisions it from
-golden. Reasons are redacted and at most 480 characters.
+A quarantined slot is never handed out. `arashouse repair <slot>` resets it from golden through the
+same sequence; `repair --rebuild` first recreates its application and database shell (`docs/cli.md`). Reasons are redacted and at most 480 characters.
 
 ## Crash safety
 

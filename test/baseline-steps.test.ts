@@ -33,6 +33,9 @@ describe("baseline-steps.ps1 (static)", () => {
       }
     }
     for (const m of steps.matchAll(/(CREATE|DROP) LOGIN [^\n]*/g)) expect(m[0]).toMatch(/Format-Ident \$(pair\[0\]|login\b)/);
+    // ootb.bak is taken with the broker as the database's owner, so a slot restored from it is the broker's inside too (ticket 25).
+    expect([...steps.matchAll(/ALTER AUTHORIZATION [^\n]*/g)].map((m) => m[0])).toEqual(['ALTER AUTHORIZATION ON DATABASE::" + (Format-Ident $Database) + " TO " + (Format-Ident $BrokerLogin)) | Out-Null']);
+    expect(steps).toContain("$BrokerLogin = 'NT SERVICE\\ArasHouseBroker'");
     expect(steps).toContain("foreach ($pair in @(@($LoginDbo, $dbo), @($LoginReg, $reg)))");
     expect(steps).toContain("foreach ($login in @($LoginDbo, $LoginReg))");
   });

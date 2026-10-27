@@ -9,6 +9,7 @@
 import { win32 } from "node:path";
 import { FLAVORS, getFlavor, type FlavorKey, type HostPrerequisite } from "./flavors.js";
 import {
+  BROKER_SERVICE_NAME,
   DEFAULT_INSTALL_ROOT,
   buildNames,
   buildScratch,
@@ -218,9 +219,20 @@ export interface FlavorRecord {
   readonly backups: readonly { readonly file: string; readonly bytes: number; readonly sha256: string }[];
   /** The manifest hash of `tree\`: the golden hash slot stamps carry. */
   readonly manifestHash: string;
+  /**
+   * The owner of the database `db\ootb.bak` was taken from: the broker's login (`OOTB_OWNER`), so a slot restored from it
+   * is the broker's inside as well (ticket 25). Absent in a golden built before that: provisioning refuses it.
+   */
+  readonly ootbOwner?: string;
 }
 
-export function flavorRecord(plan: BaselinePlan, facts: Omit<FlavorRecord, "schema" | "flavor" | "release" | "msiSha256" | "msiProductVersion" | "hostPrerequisites">): FlavorRecord {
+/** The SQL login `ootb.bak`'s database belongs to: the broker's (ticket 22), which restores and maps every slot. */
+export const OOTB_OWNER = `NT SERVICE\\${BROKER_SERVICE_NAME}`;
+
+export function flavorRecord(
+  plan: BaselinePlan,
+  facts: Omit<FlavorRecord, "schema" | "flavor" | "release" | "msiSha256" | "msiProductVersion" | "hostPrerequisites" | "ootbOwner">,
+): FlavorRecord {
   const f = FLAVORS[plan.flavor];
   return {
     schema: 1,
@@ -235,6 +247,7 @@ export function flavorRecord(plan: BaselinePlan, facts: Omit<FlavorRecord, "sche
     tree: facts.tree,
     backups: facts.backups,
     manifestHash: facts.manifestHash,
+    ootbOwner: OOTB_OWNER,
   };
 }
 

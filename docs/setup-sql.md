@@ -80,7 +80,11 @@ gone the set of signed code cannot grow. Spike 06 had not proved either route; t
 
 **A reset needs none of it.** The broker's login owns each slot database it creates, and an owner restores its
 own database `WITH REPLACE` with no server role and stays its owner (spike 06). So ticket 31's reset is a plain
-restore by the broker; it calls `kill_connections` only when another session blocks it (`3101`).
+restore by the broker; it calls `kill_connections` only when another session blocks it (`3101`). That holds only
+when the backup's own `dbo` is the broker too: `sys.databases` keeps the broker as the owner, but the `dbo` inside
+comes from the backup, and with any other there the broker cannot open, map or drop the database it restored
+(measured 2026-10-28, ticket 25). The baseline build therefore hands its database to the broker before it takes
+`ootb.bak` (`docs/baselines.md`, `docs/provision.md`).
 
 ## The procedures
 

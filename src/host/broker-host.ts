@@ -2,9 +2,10 @@
 // WSL side first, then sends one request to the broker (ticket 20) through a `BrokerTransport` and
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
-// The broker has `ping`, `hostInfo`, `readStamp`, `listSlots` and `baselineVerify` so far. Every
-// other method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot
-// stays dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild`
+// The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot` and
+// `destroySlot` so far. Every other method fails `Unreachable`, naming the ticket that adds its verb,
+// so a reset waits (the slot stays dirty) rather than being quarantined for a verb the broker does
+// not have yet. `baselineBuild`
 // is never a verb: a baseline is built in an elevated session (ticket 24).
 
 import { randomUUID } from "node:crypto";
@@ -40,8 +41,6 @@ import { assertFlavorOwned, assertSlotOwned, type OwnedContext } from "./owned.j
 
 /** The ticket that adds each verb the broker does not have yet. */
 const PENDING: Partial<Record<HostMethod, string>> = {
-  provisionSlot: "25",
-  destroySlot: "25",
   quiesce: "30",
   resetTree: "30",
   resetDatabase: "31",
@@ -194,12 +193,16 @@ export class BrokerHost implements HostDriver {
     return { ok: result.ok, ms, detail: result.detail, slots };
   }
 
-  provisionSlot(slot: SlotRef): Promise<HostResult> {
-    return this.pending("provisionSlot", this.slotGuard(slot));
+  async provisionSlot(slot: SlotRef): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const { result, ms } = await this.call("provisionSlot", { slot: { flavor: slot.flavor, slot: slot.slot } });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
-  destroySlot(slot: SlotRef): Promise<HostResult> {
-    return this.pending("destroySlot", this.slotGuard(slot));
+  async destroySlot(slot: SlotRef): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const { result, ms } = await this.call("destroySlot", { slot: { flavor: slot.flavor, slot: slot.slot } });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   quiesce(slot: SlotRef): Promise<HostResult> {

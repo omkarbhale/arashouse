@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeClock } from "../host/clock.js";
 import type { HostMethod } from "../host/driver.js";
+import { HostError } from "../host/errors.js";
 import { FakeHost, fakeGoldenHash } from "../host/fake.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
@@ -20,6 +21,7 @@ import {
   enableSlot,
   forceReturn,
   prune,
+  provisionPool,
   repairSlot,
 } from "./operator.js";
 import { parseSlotId } from "./names.js";
@@ -420,6 +422,119 @@ describe("repair", () => {
     const p = await pool({ "23": 1 });
     expect(await exitOf(() => repairSlot(p.deps, { slot: "23-01" }))).toBe(EXIT_CODES.refused);
     expect(await exitOf(() => repairSlot(p.deps, { slot: "23-02" }))).toBe(EXIT_CODES.usage);
+  });
+});
+
+describe("provision", () => {
+  const provisioned = (p: Pool, seq: number) => p.host.calls.filter((c) => c.seq > seq && c.method === "provisionSlot").map((c) => c.target);
+
+  it("provisions the missing slots in order and frees each once its health check passes", async () => {
+    const p = await pool({});
+    const r = await provisionPool(p.deps, { flavor: "23", count: 2 });
+    expect(r.exitCode).toBe(0);
+    expect(provisioned(p, 0)).toEqual(["23-01", "23-02"]);
+    expect(r.lines).toEqual(["provisioned 23-01 (provisioned 23-01); free", "provisioned 23-02 (provisioned 23-02); free"]);
+    for (const id of ["23-01", "23-02"]) expect(await p.status(id)).toMatchObject({ status: "free", golden_hash: fakeGoldenHash("23") });
+    const moves = (await p.store.events()).filter((e) => e.slot === "23-02").map((e) => e.to);
+    expect(moves).toEqual(["provisioning", "free"]);
+  });
+
+  it("defaults to slots_per_flavor, and leaves a slot already in the pool alone", async () => {
+    const p = await pool({ "23": 1 }, { config: { slots_per_flavor: { "12sp9": 3, "23": 2, "35": 2 } } });
+    await p.store.update((tx) => tx.transition("23-01", { to: "disabled" }));
+    const seq = p.host.calls.length;
+    const r = await provisionPool(p.deps, { flavor: "23" });
+    expect(r.lines).toEqual(["23-01 is in the pool already (disabled)", "provisioned 23-02 (provisioned 23-02); free"]);
+    expect(provisioned(p, seq)).toEqual(["23-02"]);
+  });
+
+  it("finishes a slot an earlier run left provisioning, and does not provision one the host already has", async () => {
+    const p = await pool({});
+    await p.store.update((tx) => {
+      tx.addSlot({ flavor: "35", slot: 1 });
+      tx.addSlot({ flavor: "35", slot: 2 });
+    });
+    await p.host.provisionSlot({ flavor: "35", slot: 1 });
+    const seq = p.host.calls.length;
+    const r = await provisionPool(p.deps, { flavor: "35", count: 2 });
+    expect(r.lines[0]).toBe("provisioned 35-01 (it was on the host already); free");
+    expect(provisioned(p, seq)).toEqual(["35-02"]);
+    expect((await p.status("35-02"))?.status).toBe("free");
+  });
+
+  it("removes the record of a slot whose provision failed (the host rolled it back), and stops there", async () => {
+    const p = await pool({});
+    p.host.injectFault({ method: "provisionSlot", kind: "fail", nth: 2, error: "Retryable" });
+    let message = "";
+    const code = await exitOf(() =>
+      provisionPool(p.deps, { flavor: "12sp9", count: 3 }).catch((err: Error) => {
+        message = err.message;
+        throw err;
+      }),
+    );
+    expect(code).toBe(EXIT_CODES.hostUnreachable);
+    expect(message.split("\n")[0]).toBe("provisioned 12sp9-01 (provisioned 12sp9-01); free");
+    expect(message).toMatch(/12sp9-02 was rolled back and its record removed$/);
+    expect(await p.status("12sp9-02")).toBeUndefined();
+    expect(await p.status("12sp9-03")).toBeUndefined();
+    expect(provisioned(p, 0)).toEqual(["12sp9-01", "12sp9-02"]);
+  });
+
+  it("quarantines a failed slot that the host still lists, and leaves one provisioning when the host did not answer", async () => {
+    const p = await pool({});
+    const host: OperatorHost = Object.assign(Object.create(p.host) as FakeHost, {
+      provisionSlot: async (slot: { flavor: FlavorKey; slot: number }) => {
+        await p.host.provisionSlot(slot);
+        throw new HostError("Quarantine", "the rollback left IIS application /ah-23-01");
+      },
+    });
+    expect(await exitOf(() => provisionPool({ ...p.deps, host }, { flavor: "23", count: 1 }))).toBe(EXIT_CODES.hostUnreachable);
+    expect(await p.status("23-01")).toMatchObject({ status: "quarantined", quarantine_reason: expect.stringMatching(/^provision failed: the rollback left/) });
+
+    p.host.injectFault({ method: "provisionSlot", kind: "fail", error: "Unreachable" });
+    expect(await exitOf(() => provisionPool(p.deps, { flavor: "35", count: 1 }))).toBe(EXIT_CODES.hostUnreachable);
+    expect((await p.status("35-01"))?.status).toBe("provisioning");
+    expect((await provisionPool(p.deps, { flavor: "35", count: 1 })).lines).toEqual(["provisioned 35-01 (provisioned 35-01); free"]);
+  });
+
+  it("quarantines a slot whose health check fails, and leaves one dirty (with a reset worker) when the check cannot run", async () => {
+    const p = await pool({});
+    const failing: OperatorHost = Object.assign(Object.create(p.host) as FakeHost, {
+      healthCheck: async () => ({ ok: false, ms: 1, detail: "unhealthy", checks: [{ name: "tree", ok: false, detail: "3 files differ" }] }),
+    });
+    await provisionPool({ ...p.deps, host: failing }, { flavor: "23", count: 1 });
+    expect(await p.status("23-01")).toMatchObject({ status: "quarantined", quarantine_reason: "the health check after its provision failed: tree: 3 files differ" });
+
+    p.host.injectFault({ method: "healthCheck", kind: "fail", error: "Unreachable" });
+    const r = await provisionPool(p.deps, { flavor: "35", count: 1 });
+    expect(r.lines[0]).toMatch(/^provisioned 35-01 \(provisioned 35-01\); dirty: the health check could not run \(.*\); a reset makes it free$/);
+    expect((await p.status("35-01"))?.status).toBe("dirty");
+    expect(p.started).toEqual(["35-01"]);
+  });
+
+  it("refuses a deny-listed flavor, an unknown flavor or count, and a host short of disk, before anything changes", async () => {
+    const p = await pool({});
+    expect(await exitOf(() => provisionPool(p.deps, { flavor: "OLM_Local" }))).toBe(EXIT_CODES.refused);
+    expect(await exitOf(() => provisionPool(p.deps, { flavor: "14sp18" }))).toBe(EXIT_CODES.usage);
+    expect(await exitOf(() => provisionPool(p.deps, { flavor: "23", count: 0 }))).toBe(EXIT_CODES.usage);
+    expect(await exitOf(() => provisionPool(p.deps, { flavor: "23", count: 100 }))).toBe(EXIT_CODES.usage);
+    p.host.setHostInfo({ freeDiskGb: 1 });
+    expect(await exitOf(() => provisionPool(p.deps, { flavor: "23", count: 1 }))).toBe(EXIT_CODES.refused);
+    expect((await p.store.read()).slots).toEqual({});
+    expect(mutatingCallsSince(p, 0)).toEqual([]);
+  });
+
+  it("holds the provision lock for the whole run, and releases it on a failure", async () => {
+    const p = await pool({});
+    const held: string[] = [];
+    const provisionLock = async () => {
+      held.push("acquire");
+      return { release: async () => void held.push("release") };
+    };
+    await provisionPool({ ...p.deps, provisionLock }, { flavor: "23", count: 1 });
+    p.host.injectFault({ method: "provisionSlot", kind: "fail" });
+    await exitOf(() => provisionPool({ ...p.deps, provisionLock }, { flavor: "23", count: 2 }));
+    expect(held).toEqual(["acquire", "release", "acquire", "release"]);
   });
 });
 

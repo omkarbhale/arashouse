@@ -11,6 +11,8 @@ import type { Clock } from "../host/clock.js";
 import { guarded } from "../host/owned.js";
 import { FileAudit, type AuditSink } from "./audit.js";
 import { registerBaselineVerbs } from "./baseline-verbs.js";
+import { registerSlotVerbs, type SlotSystem } from "./provision.js";
+import { windowsSlotSystem } from "./slot-system.js";
 import { Broker } from "./broker.js";
 import { nodeBrokerFs, type BrokerFs } from "./fs.js";
 import { servePipe } from "./pipe.js";
@@ -38,6 +40,8 @@ export interface StartOptions {
   readonly audit?: AuditSink;
   readonly clock?: Clock;
   readonly system?: Partial<Omit<BrokerSystem, "fs">>;
+  /** What `provisionSlot` and `destroySlot` act through; defaults to the host's (slot-system.ts). */
+  readonly slotSystem?: SlotSystem;
   readonly onError?: (err: unknown) => void;
 }
 
@@ -57,20 +61,17 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
     freeRamBytes: options.system?.freeRamBytes ?? freemem,
     sqlLogin: options.system?.sqlLogin ?? powershellSqlProbe(),
   };
-  const broker = registerBaselineVerbs(
-    registerCoreVerbs(
-      new Broker({
-        root,
-        isReparsePoint: fs.isReparsePoint,
-        realPath: fs.realPath,
-        audit: options.audit ?? new FileAudit(root),
-        clock: options.clock,
-        onAuditError: options.onError,
-      }),
-      system,
-    ),
-    system,
-  );
+  const broker = new Broker({
+    root,
+    isReparsePoint: fs.isReparsePoint,
+    realPath: fs.realPath,
+    audit: options.audit ?? new FileAudit(root),
+    clock: options.clock,
+    onAuditError: options.onError,
+  });
+  registerCoreVerbs(broker, system);
+  registerBaselineVerbs(broker, system);
+  registerSlotVerbs(broker, options.slotSystem ?? windowsSlotSystem({ root, fs }));
   const token = newToken();
   await writeTokenFile(options.tokenPath ?? brokerTokenFile(root), token);
   const server = await servePipe({ path: options.pipePath ?? PIPE_PATH, token, broker, clock: options.clock, onError: options.onError });

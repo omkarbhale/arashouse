@@ -24,6 +24,7 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 | `arashouse setup-sql [--out <dir>]` | Writes the one-time SQL Server setup script, which a `sysadmin` login runs (`docs/setup-sql.md`). |
 | `arashouse baseline build <flavor> [--replace] [--engine-check <dir>]` | Checks the media and writes the script that builds the flavor's golden, which the captain runs elevated; `--replace` marks the flavor's free slots dirty first; `--engine-check` bundles a built import-export-libs-js checkout, so the build also exports one item with the flavor's engine (`docs/baselines.md`). |
 | `arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]` | Checks the pool against the host; see [Operator commands](#operator-commands). |
+| `arashouse provision <flavor> [<count>]` | Makes the flavor's slots `01` to `<count>` from its golden on the host (`docs/provision.md`). |
 | `arashouse repair <slot> [--rebuild]` | Resets a quarantined slot from golden; the way out of `quarantined`. |
 | `arashouse destroy <slot> [--yes] [--include-leased]` | Removes a slot from the host and the pool. |
 | `arashouse prune [--yes]` | Destroys the `disabled` and orphaned slots. |
@@ -152,6 +153,21 @@ stamp names a lease). `--rebuild-state` rebuilds the state from the slot stamps 
 `src/core/recovery.ts`): a slot whose stamp names a lease comes back `leased` to `unknown (recovered)`,
 every other slot `dirty`. Without `--yes` it says what the rebuilt state would hold; with it the old
 file is set aside as `state.json.corrupt-<time>`.
+
+### `provision <flavor> [<count>]`
+
+Makes sure the pool holds the flavor's slots `01` to `<count>` (default: `slots_per_flavor` in the
+config, `docs/governor.md`), in order, behind the disk gate (`min_free_disk_gb`, exit 7). Each slot
+not in the pool gets a `provisioning` record and is made on the host from the flavor's golden
+(`provisionSlot`: folders, IIS application and pools, agent, database and logins, rendered configs,
+stamp; `docs/provision.md`). A slot already in the pool is left alone (`23-01 is in the pool already
+(free)`), and one an earlier run left `provisioning` is finished. After its provision the slot's health
+check decides: `free` when it passes, `quarantined` when it fails, `dirty` (with a reset worker) when it
+cannot run. A slot whose provision fails was rolled back by the host: its record is removed (or the
+slot quarantined if the host still lists it) and the run stops there with that error; when the host did
+not answer, the record stays `provisioning` and running `provision` again finishes it. Only one
+`provision` runs at a time (`provision.lock` next to the state file). A flavor key comes first: `12sp9`
+is a flavor here, though the deny-list also holds it as a database name.
 
 ### `repair <slot> [--rebuild]`
 

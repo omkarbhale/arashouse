@@ -17,9 +17,20 @@ export const MAX_SLOT = 99;
 /** First port of the reserved agent block; 8734-8736 are taken on the host. */
 export const AGENT_PORT_BASE = 8800;
 
-/** The Aras application pools a slot runs, named by role. */
-export const APP_POOL_ROLES = ["server", "oauth", "vault", "conversion"] as const;
+/**
+ * The roles of a slot's application pools, one pool per IIS application: the role is the
+ * application's sub-path under the alias, lower case (`root` for the alias itself), as the baseline
+ * build records it in `iis.json` (ticket 24). Measured: `12sp9` has all seven, `23` no
+ * `notificationserver`, `35` neither that nor `selfservicereporting`.
+ */
+export const APP_POOL_ROLES = ["root", "client", "server", "notificationserver", "oauthserver", "selfservicereporting", "vault"] as const;
 export type AppPoolRole = (typeof APP_POOL_ROLES)[number];
+
+/**
+ * A provisioned slot's pools shut their worker down after this many idle minutes, so an idle slot costs next to nothing
+ * (the design: "a short pool idle timeout"), unless `setup-host.ps1 -SlotIdleTimeoutMinutes` recorded another (docs/setup.md).
+ */
+export const SLOT_POOL_IDLE_MINUTES = 10;
 
 export type LoginRole = "dbo" | "reg";
 
@@ -305,6 +316,11 @@ export function brokerServiceLog(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(logsDir(root), "broker-service.log");
 }
 
+/** `<root>\broker\slot-steps.ps1`: the broker's Windows operations on a slot (ticket 25); the broker writes it from its own code. */
+export function slotStepsScript(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(brokerDir(root), "slot-steps.ps1");
+}
+
 /** `<root>\broker\setup-host.json`: the last `setup-host.ps1` result, which `arashouse doctor` reads (ticket 21). */
 export function setupRecordFile(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(brokerDir(root), "setup-host.json");
@@ -320,6 +336,12 @@ export function isSecretName(name: unknown): name is string {
 /** `<root>\secrets`: machine-scope DPAPI blobs, ACL'd to SYSTEM and the broker account (ticket 21). */
 export function secretsDir(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(root, "secrets");
+}
+
+/** `slot-<key>-<NN>-dbo` or `-reg`: the stored password of a slot's SQL login (ticket 25). */
+export function slotLoginSecretName(ref: SlotRef, role: LoginRole): string {
+  if (role !== "dbo" && role !== "reg") throw new Error(`unknown login role "${String(role)}"`);
+  return `slot-${dashTag(ref)}-${role}`;
 }
 
 /** `<root>\secrets\<name>.bin` */

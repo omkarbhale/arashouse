@@ -33,6 +33,9 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
   listSlots: 20_000,
   // `full` hashes every file of a golden tree: about 560 to 750 MB, at the 2 MB/s measured with real-time scanning (design 8.3).
   baselineVerify: 30 * 60_000,
+  // A provision mirrors a golden tree (about 560 MB) and restores a database; a destroy deletes the tree. Minutes at most.
+  provisionSlot: 30 * 60_000,
+  destroySlot: 30 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

@@ -115,12 +115,35 @@ logical names of the `CoreAndSolutions*.bak` it was restored from.
   that is not a slot's (ticket 22).
 - The deny-list is fingerprinted before and after every provision and destroy.
 
+## Measured on the host (2026-10-28)
+
+Through firstmate's elevated gate: `setup-host.ps1 -Apply -UpdateBroker` installed a broker built from this ticket
+(exit 0), and `baseline-build.ps1 -Apply -Replace` rebuilt the `12sp9` golden with the broker-owned `ootb.bak` (exit 0,
+814 s, 35 deny-list objects unchanged; manifest hash `8668e889d5e4`, `ootb.bak` 77.1 MB, no login check). Then, as the
+worker from WSL, non-elevated, under a scratch `ARASHOUSE_HOME`:
+
+- `arashouse baseline verify 12sp9`: passes (23,760 files).
+- `arashouse provision 12sp9 1`: **22.8 s** on the broker (golden 1.5, snapshot 2.0, folders 0.5, tree 12.2, iis 0.9,
+  agent 0.5 (none), database 3.2, configs 0.4 (8 files, 19 edits), stamp 0.0, deny-list 1.6), 23.6 s from WSL. The
+  slot went `dirty` with "the health check could not run (the broker has no healthCheck verb yet (ticket 32))", as
+  planned. The slot served at once: `/ah-12sp9-01/Server/DBList.aspx` answered 200 listing only
+  `arashouse_12sp9_01` (so its rendered config reaches its own database with its own login), OAuth discovery and
+  `/Client/` 200. In SQL Server: the database's owner and its `dbo` are `NT SERVICE\ArasHouseBroker`, `innovator`
+  maps to `arashouse_12sp9_01_dbo` and `innovator_regular` to `_reg`. The stamp carries the golden hash.
+- `arashouse destroy 12sp9-01 --yes`: 17.5 s; the broker's own check found nothing of the slot left and the deny-list
+  unchanged. Read back as the worker: no `slots\12sp9` folder, no database or login named `arashouse_12sp9_*`, no
+  `ArasHouseAgent_*` service, no ASP.NET temporary folder `ah-12sp9-01*`. (The `arashouse_pp_*` logins and `ah-pp-*`
+  folders on the host are not the pool's and were there before.)
+
 ## Not here
 
 - The health check (ticket 32): `BrokerHost.healthCheck` is not a verb yet, so on the real host `provision` leaves each
   slot `dirty`, and the reset (tickets 30 to 33) brings it to `free`. `FakeHost` checks health, so the offline tests
   cover the `free` path.
 - Starting the agent and its configuration (ticket 33); the per-lease password (ticket 34).
-- The contract suite on the real host: `test/host-contract.broker.test.ts` runs it against `BrokerHost` with
-  `ARASHOUSE_TEST_BROKER=1`; its provision, list, destroy and refusal tests pass now, the reset and stamp tests when
-  tickets 30 to 33 add their verbs (ticket 35).
+- The whole contract suite on the real host (ticket 35). `test/host-contract.broker.test.ts` runs it against
+  `BrokerHost` with `ARASHOUSE_TEST_BROKER=1` on slot `12sp9-98`. Run on 2026-10-28: `ping`/`hostInfo`, "provisions a
+  slot, lists it and destroys it" (40 s) and the refusal of `OLM_Local` and unregistered slots pass; the two tests that
+  need a fault or dirt hook return early on the real host; the other five fail `Unreachable` on verbs the broker does
+  not have yet (`quiesce` and `writeStamp`, ticket 30; `healthCheck`, ticket 32; `startSlot`, ticket 33; the staged-path
+  verbs, tickets 39, 40 and 43). Its teardown left no slot behind.

@@ -13,10 +13,10 @@ describe("flavor registry", () => {
     expect(FLAVORS["35"]).toMatchObject({ libsJsEngine: "14.35", mediaFolder: "media/35", defaultSlots: 2 });
   });
 
-  it("carries the known server builds and leaves 35's open until the baseline builder reads it", () => {
+  it("carries the server build each flavor's installer was measured to install", () => {
     expect(FLAVORS["12sp9"].serverBuild).toBe("12.0.0.24090");
     expect(FLAVORS["23"].serverBuild).toBe("14.0.9.36073");
-    expect(FLAVORS["35"].serverBuild).toBeNull();
+    expect(FLAVORS["35"].serverBuild).toBe("14.35.0.43890");
   });
 
   it("names the licence line, the MSI and the shipped backups", () => {

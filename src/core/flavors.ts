@@ -103,8 +103,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
   "35": {
     key: "35",
     release: "Release 35 (14.35)",
-    // Ticket 08 and the baseline builder (ticket 24) fill this in.
-    serverBuild: null,
+    // Read from the installed Aras.Server.Core.dll and the MSI's File table (ticket 08).
+    serverBuild: "14.35.0.43890",
     libsJsEngine: "14.35",
     mediaFolder: "media/35",
     // Provisional until ticket 09 reports whether login, install or neither needs a key.

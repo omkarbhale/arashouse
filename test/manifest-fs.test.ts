@@ -16,10 +16,13 @@ afterEach(async () => {
   await cleanup();
 });
 
-/** A built manifest and its tree, flavor `35` (its server build is open, so the build check stays out of the way). */
+/** Flavor `35`'s server build: the sample manifests carry it so the build check passes. */
+const BUILD_35 = FLAVORS["35"].serverBuild;
+
+/** A built manifest and its tree, flavor `35`. */
 async function sample() {
   const tree = await makeSampleTree(join(dir, "tree"));
-  const manifest = await buildManifest(tree, "35");
+  const manifest = await buildManifest(tree, "35", BUILD_35);
   return { tree, manifest };
 }
 
@@ -47,33 +50,33 @@ describe("buildManifest", () => {
 
   it("is deterministic: two builds of the same tree, and of an identical tree, give the same hash", async () => {
     const { tree, manifest } = await sample();
-    const again = await buildManifest(tree, "35");
+    const again = await buildManifest(tree, "35", BUILD_35);
     expect(again.manifestHash).toBe(manifest.manifestHash);
     expect(serializeManifest(again)).toBe(serializeManifest(manifest));
     const twin = await makeSampleTree(join(dir, "twin"));
-    expect((await buildManifest(twin, "35")).manifestHash).toBe(manifest.manifestHash);
+    expect((await buildManifest(twin, "35", BUILD_35)).manifestHash).toBe(manifest.manifestHash);
   });
 
   it("changes the hash when a byte, a size or a timestamp changes", async () => {
     const { tree, manifest } = await sample();
     await writeSampleFile(tree, "Client/scripts/app.js", "console.log('CLIENT');\n");
-    const changed = await buildManifest(tree, "35");
+    const changed = await buildManifest(tree, "35", BUILD_35);
     expect(changed.manifestHash).not.toBe(manifest.manifestHash);
     await writeSampleFile(tree, "Client/scripts/app.js", SAMPLE_FILES["Client/scripts/app.js"] as string, new Date("2026-10-23T00:00:00Z"));
-    expect((await buildManifest(tree, "35")).manifestHash).not.toBe(manifest.manifestHash);
+    expect((await buildManifest(tree, "35", BUILD_35)).manifestHash).not.toBe(manifest.manifestHash);
   });
 
   it("does not hash a runtime directory's content into the manifest", async () => {
     const { tree, manifest } = await sample();
     await writeSampleFile(tree, "Server/temp/more.tmp", "x");
     await writeSampleFile(tree, "Server/logs/newer.log", "y");
-    expect((await buildManifest(tree, "35")).manifestHash).toBe(manifest.manifestHash);
+    expect((await buildManifest(tree, "35", BUILD_35)).manifestHash).toBe(manifest.manifestHash);
   });
 
   it("refuses a tree with a link in it, and an empty tree", async () => {
     const { tree } = await sample();
     await symlink(join(tree, "Client"), join(tree, "Linked"));
-    await expect(buildManifest(tree, "35")).rejects.toMatchObject({ code: "unsupported-entry" });
+    await expect(buildManifest(tree, "35", BUILD_35)).rejects.toMatchObject({ code: "unsupported-entry" });
     const empty = join(dir, "empty");
     await mkdir(empty);
     await expect(buildManifest(empty, "35")).rejects.toMatchObject({ code: "empty" });
@@ -216,7 +219,7 @@ describe("the baseline checks", () => {
   it("verifies a golden folder against its own manifest.json", async () => {
     const golden = join(dir, "golden", "35");
     const tree = await makeSampleTree(join(golden, "tree"));
-    await writeManifestOnce(join(golden, "manifest.json"), await buildManifest(tree, "35"));
+    await writeManifestOnce(join(golden, "manifest.json"), await buildManifest(tree, "35", BUILD_35));
     expect((await verifyGolden(golden, "35", { level: "golden" })).ok).toBe(true);
     await writeSampleFile(tree, "Server/web.config", "<tampered/>");
     const diff = await verifyGolden(golden, "35", { level: "golden" });
@@ -286,7 +289,7 @@ describe("the fast verify budget", () => {
       const { files } = await scanTree(tree, FLAVORS["35"].runtimeDirs);
       const manifest = makeManifest(
         "35",
-        null,
+        BUILD_35,
         await Promise.all(
           files.map(async (o) => ({
             path: o.path,

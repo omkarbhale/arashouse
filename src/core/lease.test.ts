@@ -218,11 +218,11 @@ describe("get", () => {
     expect(a.password.reveal()).not.toBe(b.password.reveal());
   });
 
-  it("reports a flavor whose build is not yet known as null", async () => {
-    expect(FLAVORS["35"].serverBuild).toBeNull();
+  it("reports the registry's server build and engine for the flavor", async () => {
     const p = await pool({ "35": 1 });
     const json = renderGetJson(await getLease(p.deps, { flavor: "35", holder: "t" }));
-    expect(json.aras).toBeNull();
+    expect(json.aras).toBe(FLAVORS["35"].serverBuild);
+    expect(json.aras).toBe("14.35.0.43890");
     expect(json.engine).toBe("14.35");
     expect((await validator("get.schema.json"))(json)).toBe(true);
   });

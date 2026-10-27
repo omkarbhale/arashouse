@@ -1,12 +1,12 @@
-# Spike record: slice 0 exit (tickets 05, 06, 07; 08 to follow as an addendum)
+# Spike record: slice 0 exit (tickets 05, 06, 07; 08 recorded separately)
 
 Written 2026-10-27 for ticket 09. It condenses the three spike records in this folder into the answers the later tickets build on:
 [spike 05](spike-05-12sp9-baseline-and-clone.md) (12 SP9 install, clone, licence), [spike 06](spike-06-reset-mechanics.md) (reset mechanics
 and times) and [spike 07](spike-07-release-23.md) (Release 23). Those records carry the raw numbers; this one carries the decisions. Only the
 transport check (section 5) was measured for this record. No secret, licence value or password is in this file.
 
-Flavor `35` (Release 35, 14.35) is ticket 08. Its CD image is in the main checkout's `media/35/`, so it is not blocked on media and not
-deferred; its answers are added below as an addendum when ticket 08 lands. Nothing in this record waits for it.
+Flavor `35` (Release 35, 14.35) is ticket 08, recorded in [spike 08](spike-08-release-35.md): a native slot is built the same way as a
+Release 23 slot, and the 14.0 key serves it. Nothing in this record waits for it.
 
 ## 1. Per flavor: install, layout, prerequisites
 
@@ -71,8 +71,8 @@ copied with the tree, so the slots of a flavor share them.
 | Does one key serve two slots? | **Yes**, also after recycles and a full stop/start | **Yes**, the same |
 | Other keys | n/a | **The 12.x key is refused** (`License Key is invalid.`). **A 14.0 SP18 key is accepted** by both 14.0.9 slots. |
 
-**Key map:** `12sp9` → line `12`; `23` → line `14`; `35` → line `14` if ticket 08 finds the 14.0 key accepted by 14.35, otherwise its own
-line `35`. So the tool asks for **two keys** (12 and 14), or three if 35 has its own. A key is needed for **login**, not for install.
+**Key map:** `12sp9` → line `12`; `23` → line `14`; `35` → line `14` (ticket 08 found the 14.0 key accepted by 14.35). So the tool asks
+for **two keys** (12 and 14). A key is needed for **login**, not for install.
 
 **The captain's "single key" belief held in part.** One key serves every slot of its release line on this machine (tested with two slots per
 line), but one key does not cover 12 and 14: a key belongs to a release line, not to a service pack and not to all of Aras. Not tested:
@@ -170,12 +170,12 @@ cannot write to `\\wsl.localhost\` paths (spike 07), so the client returns data 
 ## 6. The captain's questions
 
 Answered:
-- **Q3 (licence keys)**: two lines, 12 and 14 (35 pending ticket 08); a key is needed to log in, not to install; one key per line serves
+- **Q3 (licence keys)**: two lines, 12 and 14 (`35` is on line 14, spike 08); a key is needed to log in, not to install; one key per line serves
   every slot of that line. Section 2.
 - **Q5 (is the 12.0.0 MSI 12 SP9?)**: yes, the installed server reads `12.0.0.24090`.
 - **Q1 ("23")**: Release 23 is 14.0.9.36073, confirmed from the MSI and the installed tree (the captain's own `Aras\Innovator` install,
   the first evidence, no longer exists).
-- **Q7 (Release 35 media)**: superseded: the CD image is in `media/35/`; ticket 08 is running.
+- **Q7 (Release 35 media)**: superseded: the CD image is in `media/35/`; ticket 08 installed it (spike 08).
 - **Q2 (does the broker keep `sa`?)**: moot as asked: `sa` does not work on this instance, and Windows authentication as the elevated
   captain does. Nothing to keep; setup-sql runs in the captain's elevated session.
 
@@ -206,7 +206,7 @@ On the wayfinder map (firstmate side), 2026-10-27:
 ## Code follow-ups this record implies (not done here)
 
 - `src/core/flavors.ts:79-80,94-95`: `licence.required` is `"to-install"` and marked provisional; the spike says `"to-login"` for `12sp9`
-  and `23`. Line `35` stays provisional until ticket 08.
+  and `23`. Line `35` is `"35"` in the registry; spike 08 found the 14.0 key accepted by 14.35, so it should read `"14"`.
 - `src/core/flavors.ts:33-38`: `RUNTIME_DIRS` lists `Server/temp`, `Server/dll`, `Server/logs`, matched as prefixes from the tree root
   (`src/core/manifest.ts:135-155`), but the installed tree has the server under `Innovator\Server\`, so the rules match nothing. They should
   read `Innovator/Server/temp` and so on (ticket 28 or 30 fixes it). `Innovator\Client\jsBundles\data.json` is also runtime-written (spike 06).

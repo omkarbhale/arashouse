@@ -94,8 +94,8 @@ as Release 23's (two `sp_change_users_login 'Auto_Fix'` calls on the machine-wid
 
 ### Changes for later tickets
 
-- **09 (exit record) and 23 (secrets).** The licence verdict for `35`: the 14.x key serves it. The registry still gives `35` its own licence
-  line `"35"`; ticket 09 can make it `"14"`, so the tool asks for two keys (12.x and 14.x), not three. Not changed here.
+- **The licence line (a code follow-up of the [spike record](spike-record.md)).** The 14.x key serves `35`. The registry still gives `35`
+  its own licence line `"35"`; it should read `"14"`, so the tool asks for two keys (12.x and 14.x), not three. Not changed here.
 - **19 (edit list).** The 14.35 list is six files: Release 23's eight minus `SelfServiceReportConfig.xml` and
   `SelfServiceReporting\SelfServiceReport.xml`.
 - **24 and 27 (baseline builder, baseline 35).** No patch in the baseline; the expected build is `14.35.0.43890`; `INSTALL_DATABASE=0` works.

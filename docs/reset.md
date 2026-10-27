@@ -51,7 +51,7 @@ path, and in `repair` (`docs/cli.md`).
 |---|---|---|
 | `golden` | (none) | Resolves the flavor's golden tree and backup (tickets 28, 30, 31). Both must be the slot's flavor and carry the same hash. On the real host: `baselineVerify` at the `golden` level, its `goldenHash`, and `golden\<key>\db\ootb.bak`; a golden that does not verify gives the slot back as `dirty`. |
 | `quiesce` | `quiesce` | Stops the agent and the application pools and waits for the slot's processes (spike 06: the pool stop releases every lock and closes Aras's SQL sessions). Below. |
-| `database` | `resetDatabase` | Restores the golden backup and fixes it up (ticket 31). |
+| `database` | `resetDatabase` | Restores the golden `db\ootb.bak` over the slot database as its owner, maps its users again and writes the marker (ticket 31, `docs/reset-database.md`). |
 | `tree` | `resetTree` | Mirrors the golden tree, clears the runtime state, renders the configs, verifies, and writes a fresh stamp (ticket 30). Below. |
 | `start` | `startSlot` | Starts the slot's pools and warms them, without the agent (`docs/start-stop.md`; `get --agent` starts it). |
 | `health` | `healthCheck`, `readStamp` | The health check must pass, and the stamp must carry the golden hash, no lease and a reset time (ticket 32). |

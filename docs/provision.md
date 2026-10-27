@@ -56,7 +56,7 @@ restarted, the call timed out) is finished by the next one, which reuses the sto
 **Rollback.** A failure from `folders` on runs the destroy steps below, re-checks the deny-list, and answers the
 step's error with what the rollback left, if anything. A plain error is `Retryable`; a `HostError` keeps its kind.
 
-**One at a time.** The broker runs one `provisionSlot` or `destroySlot` per slot at a time; a second is `Retryable`.
+**One at a time.** The broker runs one `provisionSlot`, `destroySlot`, `startSlot`, `stopSlot` or `resetDatabase` per slot at a time; a second is `Retryable`.
 Both verbs may take 30 minutes (`VERB_TIMEOUT_MS`).
 
 ## `destroySlot`
@@ -86,7 +86,7 @@ broker's login on 2026-10-28 (`EXECUTE AS LOGIN` from a `sysadmin` session, on t
 
 So the baseline build now takes `ootb.bak` that way and records `"ootbOwner": "NT SERVICE\\ArasHouseBroker"` in
 `flavor.json`, and `provisionSlot` refuses a golden without it (rebuild it with `arashouse baseline build <key>
---replace`). The reset's restore (ticket 31) depends on the same.
+--replace`). The reset's restore (ticket 31, `docs/reset-database.md`) depends on the same.
 
 The restore moves the backup's files by their logical names, and `RESTORE FILELISTONLY` needs `CREATE DATABASE`, which
 the broker has not (refused with 3013). The names are therefore in the flavor registry (`backupFiles` in

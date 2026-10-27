@@ -7,7 +7,7 @@ import type { BrokerRequest } from "../broker/protocol.js";
 import { registerBaselineVerbs } from "../broker/baseline-verbs.js";
 import { SlotLocks, registerSlotVerbs } from "../broker/provision.js";
 import { registerResetVerbs } from "../broker/reset-tree.js";
-import { FakeSlotSystem } from "../broker/slot-system.fixture.js";
+import { FAKE_GOLDEN_HASH, FakeSlotSystem } from "../broker/slot-system.fixture.js";
 import { registerCoreVerbs, type BrokerSystem } from "../broker/verbs.js";
 import { buildManifest, writeManifestOnce } from "../broker/manifest-fs.js";
 import { makeSampleTree } from "../../test/sample-tree.js";
@@ -128,18 +128,17 @@ describe("BrokerHost against an in-process broker", () => {
     const calls: Record<
       Exclude<
         keyof HostDriver,
-        "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot" | "startSlot" | "stopSlot" | "quiesce" | "resetTree" | "writeStamp"
+        "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot" | "startSlot" | "stopSlot" | "resetDatabase" | "quiesce" | "resetTree" | "writeStamp"
       >,
       () => Promise<unknown>
     > = {
-      resetDatabase: () => host.resetDatabase(s1, { flavor: "12sp9", file: `${ROOT}\\golden\\12sp9\\db.bak`, hash: "h" }),
       deployCode: () => host.deployCode(s1, `${ROOT}\\staging\\l\\code`),
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       backupDatabase: () => host.backupDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       healthCheck: () => host.healthCheck(s1),
       setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: LEASE_REF }),
     };
-    expect(Object.keys(calls).length + 13).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 14).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -219,6 +218,30 @@ describe("BrokerHost against an in-process broker", () => {
     expect((await rejection(host.resetTree(s1, { flavor: "23", hash }))).kind).toBe("Refused");
     expect((await rejection(host.quiesce({ flavor: "OLM_Local" as never, slot: 1 }))).kind).toBe("Refused");
     expect((await rejection(host.writeStamp({ flavor: "12sp9", slot: 0 }, stamp))).kind).toBe("Refused");
+    expect(transport.requests).toHaveLength(sent);
+  });
+
+  it("resets a slot's database through the broker's resetDatabase verb, guarded on both sides", async () => {
+    await host.provisionSlot(s1);
+    const ootb = `${ROOT}\\golden\\12sp9\\db\\ootb.bak`;
+    const done = await host.resetDatabase(s1, { flavor: "12sp9", file: ootb, hash: FAKE_GOLDEN_HASH });
+    expect(done).toMatchObject({ ok: true, detail: expect.stringMatching(/^database of 12sp9-01 restored from golden 999999999999 /) });
+    expect(slots.databaseMarkers.get("arashouse_12sp9_01")?.goldenHash).toBe(FAKE_GOLDEN_HASH);
+    expect(transport.requests.at(-1)).toMatchObject({ verb: "resetDatabase", slot: s1, args: { file: ootb, hash: FAKE_GOLDEN_HASH } });
+    // The broker answers for the golden's other files; a path outside it, or another flavor's backup, never leaves WSL.
+    expect(await rejection(host.resetDatabase(s1, { flavor: "12sp9", file: `${ROOT}\\golden\\12sp9\\db\\Core120.bak`, hash: FAKE_GOLDEN_HASH }))).toMatchObject({
+      kind: "Refused",
+      message: expect.stringMatching(/^a reset restores .*ootb\.bak only/),
+    });
+    const sent = transport.requests.length;
+    for (const backup of [
+      { flavor: "12sp9", file: `${ROOT}\\staging\\lease-1\\db.bak`, hash: FAKE_GOLDEN_HASH },
+      { flavor: "12sp9", file: "C:\\Program Files\\Aras\\olm.bak", hash: FAKE_GOLDEN_HASH },
+      { flavor: "23", file: `${ROOT}\\golden\\23\\db\\ootb.bak`, hash: FAKE_GOLDEN_HASH },
+    ] as const) {
+      expect((await rejection(host.resetDatabase(s1, backup))).kind, backup.file).toBe("Refused");
+    }
+    expect((await rejection(host.resetDatabase({ flavor: "OLM_Local" as never, slot: 1 }, { flavor: "12sp9", file: ootb, hash: FAKE_GOLDEN_HASH }))).kind).toBe("Refused");
     expect(transport.requests).toHaveLength(sent);
   });
 

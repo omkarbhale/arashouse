@@ -8,7 +8,7 @@ service runs only for a lease that asked for it.
 
 `src/broker/start-stop.ts` on the broker, through the same `SlotSystem` as provisioning (`docs/provision.md`) and
 one `slot-steps.ps1 -Step start` or `-Step stop` process. Both refuse a slot that is not provisioned (no stamp) and run
-one at a time per slot with `provisionSlot` and `destroySlot` (a second is `Retryable`).
+one at a time per slot with `provisionSlot`, `destroySlot` and `resetDatabase` (a second is `Retryable`).
 
 | verb | what it does |
 |---|---|

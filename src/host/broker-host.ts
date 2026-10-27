@@ -3,7 +3,7 @@
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
 // The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot`,
-// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree` and `writeStamp` so far. Every other
+// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp` and `resetDatabase` so far. Every other
 // method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot stays
 // dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild` is
 // never a verb: a baseline is built in an elevated session (ticket 24).
@@ -37,11 +37,10 @@ import type {
 } from "./driver.js";
 import { HostError } from "./errors.js";
 import { VERIFY_LEVELS, type ManifestDiff, type VerifyLevel } from "../core/manifest.js";
-import { assertFlavorOwned, assertSlotOwned, type OwnedContext } from "./owned.js";
+import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, type OwnedContext } from "./owned.js";
 
 /** The ticket that adds each verb the broker does not have yet. */
 const PENDING: Partial<Record<HostMethod, string>> = {
-  resetDatabase: "31",
   healthCheck: "32",
   deployCode: "40",
   restoreDatabase: "39",
@@ -213,8 +212,12 @@ export class BrokerHost implements HostDriver {
     return { ok: result.ok, ms, detail: result.detail };
   }
 
-  resetDatabase(slot: SlotRef, _backup: BackupRef): Promise<HostResult> {
-    return this.pending("resetDatabase", this.slotGuard(slot));
+  async resetDatabase(slot: SlotRef, backup: BackupRef): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    if (backup.flavor !== slot.flavor) throw new HostError("Refused", `the backup is of flavor ${backup.flavor}, not ${slot.flavor}`);
+    const file = assertGoldenPath(slot, backup.file, this.owned);
+    const { result, ms } = await this.call("resetDatabase", { slot: { flavor: slot.flavor, slot: slot.slot } }, { file, hash: backup.hash });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   async startSlot(slot: SlotRef, options: StartOptions): Promise<HostResult> {

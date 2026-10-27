@@ -20,10 +20,11 @@ import {
   type ManifestDiff,
   type ObservedFile,
 } from "../core/manifest.js";
-import { DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, type SlotRef } from "../core/names.js";
+import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, type SlotRef } from "../core/names.js";
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
 import type { GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
+import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 
 export const FAKE_GOLDEN_HASH = "9".repeat(64);
 
@@ -62,6 +63,12 @@ export class FakeSlotSystem implements SlotSystem {
   readonly serving = new Set<string>();
   /** Tree-relative paths (lower-case, `\`-separated) the next `resetTree` mirror leaves as they are, as a failed copy would. */
   mirrorSkips: string[] = [];
+  /** The marker the last reset wrote, by database name. */
+  readonly databaseMarkers = new Map<string, DatabaseMarker>();
+  /** The version rows a restored database holds. */
+  databaseVersion: Record<string, string> = { VersionMajor: "12", VersionMinor: "0", VersionServicePack: "SP9", VersionBuild: "24090" };
+  /** Overrides parts of what `resetDatabase` answers. */
+  resetAnswer: Partial<Extract<DatabaseReset, { state: "restored" }>> = {};
   /** What `golden` answers. */
   goldenState: GoldenCheck = { state: "ok", hash: FAKE_GOLDEN_HASH };
   denyList: Record<string, string> = { "IIS pool DefaultAppPool": "p1", "install root C:\\Program Files (x86)\\Aras12\\Innovator": "c1" };
@@ -196,6 +203,14 @@ export class FakeSlotSystem implements SlotSystem {
     this.serving.add(id);
     if (options.agent && this.agentInstalled) this.agentRunning.add(id);
     return { pools: 7, agent: !options.agent ? "not asked" : this.agentInstalled ? "running" : "none", port: agentPort(slot) };
+  }
+
+  async resetDatabase(slot: SlotRef, marker: DatabaseMarker): Promise<DatabaseReset> {
+    this.record("resetDatabase", slot);
+    if (!this.objects.has(`database ${databaseName(slot)}`)) return { state: "missing" };
+    this.databaseMarkers.set(databaseName(slot), marker);
+    const written = { [DATABASE_MARKER.goldenHash]: marker.goldenHash, [DATABASE_MARKER.resetAt]: marker.resetAt };
+    return { state: "restored", restoreMs: 1400, killed: 0, access: "MULTI_USER", marker: written, version: { ...this.databaseVersion }, ...this.resetAnswer };
   }
 
   async stop(slot: SlotRef): Promise<StopInfo> {

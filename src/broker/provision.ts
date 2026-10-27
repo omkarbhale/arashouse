@@ -24,6 +24,7 @@ import { newLoginPassword } from "./baseline-build.js";
 import { parseStartArgs, startSlotOnHost, stopSlotOnHost, type StartArgs } from "./start-stop.js";
 import type { Broker, VerbContext } from "./broker.js";
 import type { WireResult } from "./protocol.js";
+import { resetDatabaseArgs, resetDatabaseOnHost, type DatabaseMarker, type DatabaseReset, type ResetDatabaseArgs } from "./reset-database.js";
 
 /** The provision's steps, in order; `destroySlot` undoes them in reverse. */
 export const PROVISION_STEPS = ["golden", "snapshot", "folders", "tree", "iis", "agent", "database", "configs", "stamp", "deny-list"] as const;
@@ -112,6 +113,8 @@ export interface SlotSystem {
   resetTree(slot: SlotRef): Promise<TreeReset>;
   /** The slot's tree against the golden manifest at the `fast` level, the rendered config files left to the caller. */
   verifyTree(slot: SlotRef, manifest: Manifest, rendered: readonly string[]): Promise<ManifestDiff>;
+  /** The golden's `ootb.bak` restored over the existing slot database, its users mapped again and `marker` written (ticket 31). */
+  resetDatabase(slot: SlotRef, marker: DatabaseMarker): Promise<DatabaseReset>;
   /** True when there was a service to remove. */
   removeAgent(slot: SlotRef): Promise<boolean>;
   /** Drops the database and the two logins; answers 1 (dropped) or 0 (absent) for each name. */
@@ -245,7 +248,7 @@ export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: str
  * slot database, and can then use, map and drop the database only when the dbo inside the backup is the broker too:
  * `flavor.json`'s `ootbOwner` says the build handed its database to the broker before the backup.
  */
-async function ootbUnusable(system: SlotSystem, flavor: FlavorKey, root: string): Promise<string | undefined> {
+export async function ootbUnusable(system: SlotSystem, flavor: FlavorKey, root: string): Promise<string | undefined> {
   const file = goldenLayout(flavor, root).flavor;
   const bytes = await system.readFile(file);
   if (bytes === null) return `${file} does not exist`;
@@ -387,7 +390,7 @@ export class SlotLocks {
   }
 }
 
-/** Registers `provisionSlot`, `destroySlot`, `startSlot` and `stopSlot` on `broker`, under `locks` (shared with the reset verbs, reset-tree.ts). */
+/** Registers `provisionSlot`, `destroySlot`, `startSlot`, `stopSlot` and `resetDatabase` on `broker`, under `locks` (shared with the reset verbs, reset-tree.ts). */
 export function registerSlotVerbs(broker: Broker, system: SlotSystem, locks: SlotLocks = new SlotLocks()): Broker {
   const exclusive = (ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>) => locks.run(ctx, fn);
   return broker
@@ -407,5 +410,11 @@ export function registerSlotVerbs(broker: Broker, system: SlotSystem, locks: Slo
     .register("stopSlot", {
       target: "slot",
       run: (ctx) => exclusive(ctx, (slot) => stopSlotOnHost(system, slot, ctx.root)),
+    })
+    .register("resetDatabase", {
+      target: "slot",
+      args: resetDatabaseArgs,
+      run: (ctx) =>
+        exclusive(ctx, (slot) => resetDatabaseOnHost(system, slot, ctx.root, ctx.args as ResetDatabaseArgs, (flavor) => ootbUnusable(system, flavor, ctx.root))),
     });
 }

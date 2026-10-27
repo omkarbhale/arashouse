@@ -33,7 +33,8 @@ WSL side first, so a refused name is never sent.
 | `quiesce`, `resetTree`, `writeStamp` | slot | | 30 |
 | `resetDatabase` | slot | | 31 |
 | `healthCheck` | slot | | 32 |
-| `startSlot`, `stopSlot` | slot | | 33 |
+| `startSlot` | slot | starts the slot's pools, its agent service only with `args.agent` (`Refused` when the slot has none), then warms three URLs; `ok: false` when one does not answer (`docs/start-stop.md`) | 33 |
+| `stopSlot` | slot | stops the slot's agent, then its pools, and waits for its worker processes to end; the reset's quiesce (`docs/start-stop.md`) | 33 |
 | `setLeaseCredentials` | slot | | 34 |
 | `restoreDatabase`, `deployCode`, `backupDatabase` | slot | | 39, 40, 43 |
 | `baselineVerify` | flavor | checks `golden\<key>` against its manifest at `args.level` (`golden`, the default; `fast`; `full`): `ok`, `level` and the diff (counts and paths only); "not built" when there is no manifest | 28, 24 |

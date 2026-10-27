@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { ManifestError, summarizeDiff } from "../core/manifest.js";
 import { buildScratch, goldenDir, slotStepsScript, type SlotRef } from "../core/names.js";
 import type { FlavorKey } from "../core/flavors.js";
+import { anonymousGet } from "../host/http.js";
 import { dpapiSecretStore } from "./dpapi-store.js";
 import type { BrokerFs } from "./fs.js";
 import { readManifest, verifyGolden } from "./manifest-fs.js";
@@ -107,9 +108,16 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
     async restoreDatabase(slot, logins: SlotLogins) {
       await slotStep("database", slot, { secrets: { dbo: logins.dbo.reveal(), reg: logins.reg.reveal() } });
     },
-    async stop(slot) {
-      await slotStep("stop", slot);
+    async start(slot, { agent }) {
+      const r = await slotStep("start", slot, { agent });
+      const state = r.agent === "running" || r.agent === "none" ? r.agent : "not asked";
+      return { pools: Number(r.pools), agent: state, port: Number(r.port) };
     },
+    async stop(slot) {
+      const r = await slotStep("stop", slot);
+      return { pools: Number(r.pools), agent: r.agent === "stopped" ? "stopped" : "none" };
+    },
+    warm: (url, timeoutMs) => anonymousGet(url, { timeoutMs }),
     async removeAgent(slot) {
       return (await slotStep("remove-agent", slot)).removed === true;
     },

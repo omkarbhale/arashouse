@@ -20,9 +20,10 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain(`if (@(${SECRET_STEPS.map((s) => `'${s}'`).join(", ")}) -ccontains $Step)`);
   });
 
-  it("takes nothing from the request but the flavor, the slot number, the two login passwords and a secret's name and value", () => {
+  it("takes nothing from the request but the flavor, the slot number, the agent switch, the two login passwords and a secret's name and value", () => {
     const used = [...steps.matchAll(/\$request\.([A-Za-z.]+)/g)].map((m) => m[1]);
-    expect([...new Set(used)].sort()).toEqual(["flavor", "name", "secrets.dbo", "secrets.reg", "slot", "value"]);
+    expect([...new Set(used)].sort()).toEqual(["agent", "flavor", "name", "secrets.dbo", "secrets.reg", "slot", "value"]);
+    expect(steps).toContain("if ($request.agent -eq $true) {");
     expect(steps).toContain("if ($FlavorKeys -cnotcontains $Flavor) { Stop-Step 'the request names no registered flavor' }");
     expect(steps).toContain("if (-not (($raw -is [int]) -or ($raw -is [long])) -or $raw -lt 1 -or $raw -gt 99) { Stop-Step 'the request names no slot number from 1 to 99' }");
     expect(steps).toContain("if ($SecretName -cnotmatch '^[a-z0-9][a-z0-9-]{0,63}$') { Stop-Step 'the request names no usable secret' }");
@@ -60,6 +61,22 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain("foreach ($name in $Pools) { $pool = $mgr.ApplicationPools[$name]; if ($pool) { $mgr.ApplicationPools.Remove($pool) } }");
     expect(steps).toContain("& sc.exe delete $Service | Out-Null");
     expect(steps).toContain('$Pools = @($PoolRoles | ForEach-Object { "$Alias-$_" })');
+  });
+
+  it("starts, stops and deletes only the slot's own agent service, checked again: never ArasInnovatorAgent_*", () => {
+    expect(steps).toContain("if ($Service -cnotmatch '^ArasHouseAgent_[a-z0-9_]+$') { Stop-Step \"the service name $Service is not an arashouse agent name\" }");
+    expect(steps).toContain("$DeniedServicePrefixes = @('ArasInnovatorAgent_')");
+    expect(steps).toContain('foreach ($p in $DeniedServicePrefixes) { if ($Service.StartsWith($p, [StringComparison]::OrdinalIgnoreCase)) { Stop-Step "the service name $Service is deny-listed" } }');
+    expect(steps).toContain('if (-not $bin.StartsWith("$SlotDir\\", [StringComparison]::OrdinalIgnoreCase)) { Stop-Step "the service $Service does not run a binary inside $SlotDir" }');
+    // Every service it starts, stops or deletes is $Service, and each step that does so reads it through Get-SlotService first.
+    for (const m of steps.matchAll(/(Start-Service|Stop-Service|sc\.exe delete) [^\n]*/g)) expect(m[0]).toMatch(/^(Start-Service -Name \$Service|Stop-Service -Name \$Service -Force|sc\.exe delete \$Service )/);
+    for (const step of ["start", "stop", "remove-agent"]) {
+      const body = steps.slice(steps.indexOf(`    '${step}' {`));
+      const before = body.slice(0, body.search(/Start-Service|Stop-Service|sc\.exe delete/));
+      expect(before, step).toContain("$svc = Get-SlotService");
+    }
+    // The pools it starts or stops are the slot's own, named from its alias: start, stop and remove-iis loop over $Pools only.
+    expect(steps.match(/\$mgr\.ApplicationPools\[\$name\]/g)?.length).toBe(steps.match(/foreach \(\$name in \$Pools\)/g)?.length);
   });
 
   it("writes nothing under Program Files, and makes the pools' grants inheritable on the slot's own folders only", () => {

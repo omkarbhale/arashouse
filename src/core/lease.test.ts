@@ -476,6 +476,40 @@ describe("get and the dirty check", () => {
   });
 });
 
+describe("get --agent", () => {
+  it("leaves the agent stopped on a plain get: it never starts the slot", async () => {
+    const p = await pool({ "23": 1 });
+    await getLease(p.deps, { flavor: "23", holder: "t" });
+    expect(p.host.callLog).not.toContain("startSlot");
+  });
+
+  it("starts the slot with its agent once the lease is complete", async () => {
+    const p = await pool({ "23": 1 });
+    const grant = await getLease(p.deps, { flavor: "23", holder: "t", agent: true });
+    expect(grant.slot).toBe("23-01");
+    const log = p.host.callLog;
+    expect(log.slice(log.indexOf("setLeaseCredentials"))).toEqual(["setLeaseCredentials", "startSlot"]);
+    expect(p.host.calls.at(-1)).toMatchObject({ method: "startSlot", target: "23-01", args: { agent: true } });
+  });
+
+  it("refuses with exit 7 when the slot has no agent, and gives the slot up for reset", async () => {
+    const p = await pool({ "23": 1 });
+    p.host.injectFault({ method: "startSlot", kind: "fail", error: "Refused", message: "slot 23-01 has no agent service: the 23 golden was built without one (ticket 33b)" });
+    const err = await failure(getLease(p.deps, { flavor: "23", holder: "t", agent: true }));
+    expect(exitCodeFor(err)).toBe(7);
+    expect((err as Error).message).toContain("has no agent service");
+    expect(await p.status("23-01")).toBe("dirty");
+    expect(p.secrets.size).toBe(0);
+  });
+
+  it("gives the slot up for reset, with exit 6, when the start is not ok", async () => {
+    const p = await pool({ "23": 1 });
+    p.host.injectFault({ method: "startSlot", kind: "fail", error: "Retryable", message: "started but not warm" });
+    expect(exitCodeFor(await failure(getLease(p.deps, { flavor: "23", holder: "t", agent: true })))).toBe(6);
+    expect(await p.status("23-01")).toBe("dirty");
+  });
+});
+
 describe("return", () => {
   it("marks the slot dirty and exits without calling the host or waiting for a reset", async () => {
     const p = await pool({ "23": 1 });

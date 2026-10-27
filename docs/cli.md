@@ -11,7 +11,7 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 
 | command | what it does |
 |---|---|
-| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--json]` | Leases a clean slot of the flavor. |
+| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json]` | Leases a clean slot of the flavor; `--agent` starts its agent service too. |
 | `arashouse return <lease_id> [--wait[=<seconds>]]` | Gives the lease back; its slot is discarded. |
 | `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]]` | The same, by slot name; the lease id is required (ABA protection). |
 | `arashouse status [--json]` | Every slot, its holder and lease age, totals per flavor, `max_active` in use. |
@@ -43,6 +43,11 @@ two slots. `--wait <seconds>` waits up to that long for a slot; without it a fla
 exits 3 at once. With no free slot but a dirty one, `get --wait` resets it itself (about 10 s, and it
 finishes the reset even past the deadline); without `--wait` it starts a reset worker for it and
 exits 3 (`docs/reset.md`).
+
+`--agent` also starts the slot's agent service (`ArasHouseAgent_<key>_<NN>`, on the slot's reserved port), which
+conversion tasks and scheduled methods need; without it the agent stays stopped. The reset stops it again. No golden
+has an agent yet (ticket 33b), so `get --agent` is refused (exit 7) and the slot it took goes back to be reset
+(`docs/start-stop.md`).
 
 With `--json`, stdout is the lease contract and nothing else (`docs/schemas/get.schema.json`); any
 human text goes to stderr. It is the one output that shows the lease's password, once. There is no

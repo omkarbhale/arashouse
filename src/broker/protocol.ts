@@ -36,6 +36,9 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
   // A provision mirrors a golden tree (about 560 MB) and restores a database; a destroy deletes the tree. Minutes at most.
   provisionSlot: 30 * 60_000,
   destroySlot: 30 * 60_000,
+  // A start waits for each pool and the agent, then warms three URLs (up to 2 minutes each, in parallel); a stop waits for them to end.
+  startSlot: 10 * 60_000,
+  stopSlot: 5 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

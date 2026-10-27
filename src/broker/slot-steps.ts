@@ -44,6 +44,7 @@ export const SLOT_STEPS = [
   "iis",
   "agent",
   "database",
+  "start",
   "stop",
   "remove-agent",
   "remove-database",
@@ -161,6 +162,18 @@ function Read-Golden([string]$Name) {
     $record = [IO.File]::ReadAllText($file) | ConvertFrom-Json
     if ($record.schema -ne 1) { Stop-Step "$file is not a schema 1 record" }
     return $record
+}
+
+# The slot's agent service, guarded again before any service is started, stopped or deleted: the name derived above, matching the
+# allowlist and no deny-listed prefix (never ArasInnovatorAgent_*), and a service of that name must run a binary inside the slot folder.
+function Get-SlotService {
+    if ($Service -cnotmatch '^ArasHouseAgent_[a-z0-9_]+$') { Stop-Step "the service name $Service is not an arashouse agent name" }
+    foreach ($p in $DeniedServicePrefixes) { if ($Service.StartsWith($p, [StringComparison]::OrdinalIgnoreCase)) { Stop-Step "the service name $Service is deny-listed" } }
+    $svc = Get-CimInstance Win32_Service -Filter "Name='$Service'"
+    if (-not $svc) { return $null }
+    $bin = ([string]$svc.PathName).Trim().Trim('"')
+    if (-not $bin.StartsWith("$SlotDir\\", [StringComparison]::OrdinalIgnoreCase)) { Stop-Step "the service $Service does not run a binary inside $SlotDir" }
+    return Get-Service -Name $Service
 }
 
 # ---- what of the slot exists (names only) ----
@@ -303,8 +316,56 @@ switch ($Step) {
         } finally { $c.Dispose() }
         Write-Result @{ database = $Database }
     }
+    'start' {
+        # The slot online again (ticket 33): its pools started (the stop and the reset's quiesce leave them stopped, and a stopped pool
+        # does not start on a request), and the agent only when the request asks for it. The warm-up is the broker's (Node), after this.
+        if (-not (Test-Path -LiteralPath (Join-Path $SlotDir $StampName))) { Stop-Step "slot $Flavor-$NN is not provisioned" }
+        $started = @()
+        $mgr = Get-Iis
+        try {
+            foreach ($name in $Pools) {
+                $pool = $mgr.ApplicationPools[$name]
+                if (-not $pool) { continue }
+                if ($pool.State -ne [Microsoft.Web.Administration.ObjectState]::Started) {
+                    for ($i = 0; $i -lt 120 -and $pool.State -eq [Microsoft.Web.Administration.ObjectState]::Stopping; $i++) { Start-Sleep -Milliseconds 500 }
+                    [void]$pool.Start()
+                }
+                for ($i = 0; $i -lt 120 -and $pool.State -ne [Microsoft.Web.Administration.ObjectState]::Started; $i++) { Start-Sleep -Milliseconds 500 }
+                if ($pool.State -ne [Microsoft.Web.Administration.ObjectState]::Started) { Stop-Step "the pool $name did not start ($($pool.State))" }
+                $started += $name
+            }
+        } finally { $mgr.Dispose() }
+        if ($started.Count -eq 0) { Stop-Step "slot $Flavor-$NN has no IIS pools" }
+        $agent = 'not asked'
+        if ($request.agent -eq $true) {
+            $svc = Get-SlotService
+            if (-not $svc) {
+                $agent = 'none'
+            } else {
+                if ($svc.Status -ne 'Running') { Start-Service -Name $Service }
+                $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(60))
+                $listening = $false
+                for ($i = 0; $i -lt 60; $i++) {
+                    if (@(Get-NetTCPConnection -State Listen -LocalPort $AgentPort -ErrorAction SilentlyContinue).Count -gt 0) { $listening = $true; break }
+                    Start-Sleep -Milliseconds 500
+                }
+                if (-not $listening) { Stop-Step "the agent $Service runs but nothing listens on its port $AgentPort" }
+                $agent = 'running'
+            }
+        }
+        Write-Result @{ pools = $started.Count; agent = $agent; port = $AgentPort }
+    }
     'stop' {
-        # The slot's pools and agent stopped, and its worker processes gone, so nothing holds a file or a session.
+        # The slot's agent and pools stopped, and its worker processes gone, so nothing holds a file or a session (ticket 33; the reset's
+        # quiesce, ticket 30). The agent first: it talks to the server.
+        $svc = Get-SlotService
+        $agent = 'none'
+        if ($svc) {
+            if ($svc.Status -ne 'Stopped') { Stop-Service -Name $Service -Force }
+            $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60))
+            $agent = 'stopped'
+        }
+        $stopped = 0
         $mgr = Get-Iis
         try {
             foreach ($name in $Pools) {
@@ -312,19 +373,20 @@ switch ($Step) {
                 if (-not $pool) { continue }
                 if ($pool.State -eq [Microsoft.Web.Administration.ObjectState]::Started) { [void]$pool.Stop() }
                 for ($i = 0; $i -lt 120 -and $pool.State -ne [Microsoft.Web.Administration.ObjectState]::Stopped; $i++) { Start-Sleep -Milliseconds 500 }
+                $stopped++
             }
         } finally { $mgr.Dispose() }
+        $left = @()
         for ($i = 0; $i -lt 120; $i++) {
             $left = @(Get-CimInstance Win32_Process -Filter "Name='w3wp.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.ToLowerInvariant().Contains('"' + "$Alias-".ToLowerInvariant()) })
             if ($left.Count -eq 0) { break }
             Start-Sleep -Milliseconds 500
         }
-        $svc = Get-Service -Name $Service -ErrorAction SilentlyContinue
-        if ($svc -and $svc.Status -ne 'Stopped') { Stop-Service -Name $Service -Force }
-        Write-Result @{ stopped = $true }
+        if ($left.Count -gt 0) { Stop-Step "$($left.Count) worker process(es) of $Alias did not end" }
+        Write-Result @{ stopped = $true; pools = $stopped; agent = $agent }
     }
     'remove-agent' {
-        $svc = Get-Service -Name $Service -ErrorAction SilentlyContinue
+        $svc = Get-SlotService
         if ($svc) {
             if ($svc.Status -ne 'Stopped') { Stop-Service -Name $Service -Force }
             & sc.exe delete $Service | Out-Null

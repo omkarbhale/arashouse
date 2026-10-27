@@ -206,12 +206,16 @@ export interface GetJson {
   readonly user: string;
   readonly lease_id: string;
   readonly holder: string;
-  readonly password: string;
+  /** Absent when the password went to a descriptor instead (`get --password-fd`). */
+  readonly password?: string;
 }
 
-/** The one place the password becomes text: the JSON `get --json` prints, once. */
-export function renderGetJson(grant: LeaseGrant): GetJson {
-  return {
+/**
+ * The one place the password becomes text: the JSON `get --json` prints, once. `{ password: false }` leaves it out,
+ * when `get --password-fd` has written it to a descriptor instead.
+ */
+export function renderGetJson(grant: LeaseGrant, options: { readonly password?: boolean } = {}): GetJson {
+  const json = {
     slot: grant.slot,
     flavor: grant.flavor,
     aras: grant.aras,
@@ -221,8 +225,8 @@ export function renderGetJson(grant: LeaseGrant): GetJson {
     user: grant.user,
     lease_id: grant.lease_id,
     holder: grant.holder,
-    password: grant.password.reveal(),
   };
+  return options.password === false ? json : { ...json, password: grant.password.reveal() };
 }
 
 function checkHolder(holder: unknown): string {
@@ -440,7 +444,8 @@ async function attemptGet(
   try {
     await deps.secrets.put(secretName, password);
     await host.writeStamp(ref, { ...stamp, leaseId: lease.lease_id });
-    await host.setLeaseCredentials(ref, { secretRef: secretName });
+    const credentials = await host.setLeaseCredentials(ref, { secretRef: secretName });
+    if (!credentials.ok) throw new HostError("Retryable", `the lease's password could not be set: ${credentials.detail}`);
     if (agent) {
       const started = await host.startSlot(ref, { agent: true });
       if (!started.ok) throw new HostError("Retryable", `the slot did not start with its agent: ${started.detail}`);

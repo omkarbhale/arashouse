@@ -3,7 +3,7 @@
 // SQL Server, robocopy or icacls (baseline-steps.ts). It runs in the captain's elevated session.
 //
 // Secrets: the build's SQL login passwords go only on the `database` step's stdin; the admin password
-// only into the OAuth request body, as its MD5 (as the Aras clients send it), and on the engine check's
+// only into the OAuth request body, as its MD5 (aras-http.ts), and on the engine check's
 // stdin (`aras-pkg --password-stdin`). Neither is in an argument list, an environment, a log or the report.
 
 import { spawn } from "node:child_process";
@@ -16,6 +16,7 @@ import { setupRecordFile } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import type { Secret } from "../core/secret.js";
 import { anonymousGet } from "../host/http.js";
+import { arasHttp } from "./aras-http.js";
 import type { BuildLogins, BuildSystem, CopyResult, EngineExport } from "./baseline-build.js";
 import type { PsStep } from "./baseline-steps.js";
 import { runPsScript } from "./ps-step.js";
@@ -64,34 +65,6 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** An OAuth password grant against the build's own OAuth server; true when it answers a token. */
-async function passwordGrant(alias: string, database: string, user: string, password: Secret): Promise<{ ok: boolean; detail: string }> {
-  const md5 = createHash("md5").update(password.reveal(), "utf8").digest("hex");
-  const body = new URLSearchParams({ grant_type: "password", scope: "Innovator", client_id: "IOMApp", username: user, password: md5, database });
-  try {
-    const res = await fetch(`http://localhost/${alias}/OAuthServer/connect/token`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body,
-      redirect: "manual",
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let json: { access_token?: unknown; error?: unknown; error_description?: unknown } = {};
-    try {
-      json = JSON.parse(text) as typeof json;
-    } catch {
-      // Not JSON: reported by status below.
-    }
-    if (res.ok && typeof json.access_token === "string" && json.access_token.length > 0) return { ok: true, detail: "token issued" };
-    // The server's refusal names the cause (a missing licence, a wrong password), never the password.
-    const why = typeof json.error === "string" ? `${json.error}${typeof json.error_description === "string" ? `: ${json.error_description}` : ""}` : `HTTP ${res.status}`;
-    return { ok: false, detail: redact(why).slice(0, 300) };
-  } catch (err) {
-    return { ok: false, detail: err instanceof Error && err.name === "TimeoutError" ? `no answer in ${HTTP_TIMEOUT_MS / 1000} s` : "connection failed" };
-  }
-}
-
 /**
  * `aras-pkg export` of one item under this Node (Windows `node.exe`, where `localhost` is IIS: the server's OAuth
  * discovery names `http://localhost/...`, spike 07). The password goes on stdin; stdout is the `--json` summary.
@@ -137,6 +110,7 @@ export function engineExport(cli: string, plan: BaselinePlan, user: string, pass
 }
 
 export function windowsBuildSystem(plan: BaselinePlan, options: WindowsBuildSystemOptions): BuildSystem {
+  const aras = arasHttp({ timeoutMs: HTTP_TIMEOUT_MS });
   const step = (name: PsStep, extra: object = {}) => runPsStep(options.stepsScript, name, { flavor: plan.flavor, ...extra }, options.onLog);
   return {
     now: () => Date.now(),
@@ -191,7 +165,7 @@ export function windowsBuildSystem(plan: BaselinePlan, options: WindowsBuildSyst
     },
     get: (url, readBody) => anonymousGet(url, { timeoutMs: HTTP_TIMEOUT_MS, readBody }),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    login: (p, user, password) => passwordGrant(p.names.alias, p.names.database, user, password),
+    login: (p, user, password) => aras.login(p.names.alias, p.names.database, user, password),
     async engineExport(p, user, password) {
       if (!options.engineCli) throw new Error("the bundle carries no engine CLI (write it with --engine-check)");
       return engineExport(options.engineCli, p, user, password);

@@ -1,11 +1,12 @@
 // The CLI surface (ticket 15), tested by spawning the built binary against the fake host
 // (`ARASHOUSE_HOST=fake`). Each test gets its own ARASHOUSE_HOME, seeded with free slots.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -121,6 +122,62 @@ describe("get --json", () => {
     const leaseId = /lease id: +([0-9a-f]{32})/.exec(r.stdout)![1]!;
     const stored = await readFile(join(home, "leases", leaseId), "utf8");
     expect(r.stdout + r.stderr).not.toContain(stored);
+  });
+});
+
+describe("get --password-fd", () => {
+  /** The binary with a pipe on descriptor 3; answers what it printed and what it wrote there. */
+  function cliFd3(args: readonly string[]): Promise<Result & { fd3: string }> {
+    return new Promise((resolve) => {
+      const env = { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ARASHOUSE_RESET_WORKER: "off" };
+      const child = spawn(process.execPath, [BIN, ...args], { env, stdio: ["ignore", "pipe", "pipe", "pipe"] });
+      const out = { stdout: "", stderr: "", fd3: "" };
+      child.stdout!.setEncoding("utf8").on("data", (d: string) => (out.stdout += d));
+      child.stderr!.setEncoding("utf8").on("data", (d: string) => (out.stderr += d));
+      (child.stdio[3] as Readable).setEncoding("utf8").on("data", (d: string) => (out.fd3 += d));
+      child.on("close", (code) => {
+        printed.push(out.stdout, out.stderr);
+        resolve({ code: code ?? -1, ...out });
+      });
+    });
+  }
+
+  it("writes the password to the descriptor, and --json leaves it out", async () => {
+    await seed({ "23": 1 });
+    const r = await cliFd3(["get", "23", "--holder", "task-a", "--json", "--password-fd", "3"]);
+    expect(r.code, r.stderr).toBe(0);
+    const grant = JSON.parse(r.stdout) as Record<string, unknown>;
+    expect(grant).not.toHaveProperty("password");
+    const validate = await validator("get.schema.json");
+    expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+    const password = r.fd3.trimEnd();
+    expect(r.fd3).toMatch(/^[A-Za-z0-9_-]{22}\n$/);
+    expect(await readFile(join(home, "leases", grant.lease_id as string), "utf8")).toBe(password);
+    expect(r.stdout + r.stderr).not.toContain(password);
+  });
+
+  it("says where the password went without --json", async () => {
+    await seed({ "23": 1 });
+    const r = await cliFd3(["get", "23", "--holder", "task-a", "--password-fd", "3"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain("password:  written to descriptor 3");
+    expect(r.stdout).not.toContain(r.fd3.trimEnd());
+  });
+
+  it("refuses 0 to 2 and a descriptor that is not open, before it takes a lease", async () => {
+    await seed({ "23": 1 });
+    for (const fd of ["1", "2", "x", "1024"]) {
+      const r = await cli(["get", "23", "--holder", "task-a", "--password-fd", fd]);
+      expect(r.code, fd).toBe(EXIT_CODES.usage);
+      expect(r.stderr).toContain("--password-fd must be a descriptor from 3 to 1023");
+    }
+    // Without a descriptor 3 from the caller, 3 and up are Node's own (its event loop's): never written to.
+    for (const fd of ["3", "9"]) {
+      const closed = await cli(["get", "23", "--holder", "task-a", "--password-fd", fd]);
+      expect(closed.code, fd).toBe(EXIT_CODES.usage);
+      expect(closed.stderr).toContain(`--password-fd ${fd} is not open`);
+    }
+    expect((await new StateStore({ home }).read()).slots["23-01"]?.status).toBe("free");
   });
 });
 

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,7 @@ import {
 } from "./lease.js";
 import { slotId, type SlotRef } from "./names.js";
 import { GuardError } from "./guards.js";
+import { LeaseFileStore } from "./lease-files.js";
 import { MemorySecretStore } from "./secret-store.js";
 import { Secret } from "./secret.js";
 import type { SlotStatus, TransitionRequest } from "./state.js";
@@ -183,11 +185,15 @@ describe("get", () => {
     expect(grant.lease_id).toMatch(/^[0-9a-f]{32}$/);
     const json = renderGetJson(grant);
     expect(json.password).toBe(grant.password.reveal());
-    expect(json.password.length).toBeGreaterThanOrEqual(22);
+    expect(json.password?.length).toBeGreaterThanOrEqual(22);
     const validate = await validator("get.schema.json");
     expect(validate(json), JSON.stringify(validate.errors)).toBe(true);
     expect(validate({ ...json, extra: 1 })).toBe(false);
     expect(validate({ ...json, lease_id: "short" })).toBe(false);
+    // `get --password-fd` leaves the password out of the JSON, which is still the contract.
+    const withoutPassword = renderGetJson(grant, { password: false });
+    expect(withoutPassword).not.toHaveProperty("password");
+    expect(validate(withoutPassword), JSON.stringify(validate.errors)).toBe(true);
   });
 
   it("marks the slot leased with a holder and a fresh lease id, and logs one transition", async () => {
@@ -473,6 +479,47 @@ describe("get and the dirty check", () => {
     p.host.injectFault({ method: "setLeaseCredentials", kind: "fail", error: "Quarantine", message: "login cannot be set", nth: 1 });
     expect((await getLease(p.deps, { flavor: "23", holder: "t" })).slot).toBe("23-02");
     expect((await p.store.read()).slots["23-01"]).toMatchObject({ status: "quarantined", quarantine_reason: "login cannot be set" });
+  });
+});
+
+describe("the lease's password file, with FakeHost (ticket 34)", () => {
+  const fileOf = (leaseId: string) => join(home, "leases", leaseId);
+
+  it("get writes it 0600 with the password and hands the host only its handle; return deletes it", async () => {
+    const p = await pool({ "23": 1 }, { secrets: new LeaseFileStore(home) });
+    const grant = await getLease(p.deps, { flavor: "23", holder: "t" });
+    const file = fileOf(grant.lease_id);
+    expect(await readFile(file, "utf8")).toBe(grant.password.reveal());
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+    expect((await stat(join(home, "leases"))).mode & 0o777).toBe(0o700);
+    expect(p.host.inspect(ref("23", 1))?.credentials).toEqual({ secretRef: leaseSecretName(grant.lease_id) });
+    expect(JSON.stringify(p.host.calls)).not.toContain(grant.password.reveal());
+
+    await returnLease(p.deps, { target: grant.lease_id });
+    expect(existsSync(file)).toBe(false);
+    for (const text of [await readFile(join(home, "state.json"), "utf8"), await readFile(join(home, "events.log"), "utf8"), formatStatus(await leaseStatus(p.deps))]) {
+      expect(text).not.toContain(grant.password.reveal());
+    }
+  });
+
+  it("a get that cannot set the credentials leaves no file behind", async () => {
+    const p = await pool({ "23": 1 }, { secrets: new LeaseFileStore(home) });
+    p.host.injectFault({ method: "setLeaseCredentials", kind: "fail", error: "Retryable", message: "the slot's server did not answer" });
+    await failure(getLease(p.deps, { flavor: "23", holder: "t" }));
+    expect(await readdir(join(home, "leases"))).toEqual([]);
+    expect(await p.status("23-01")).toBe("dirty");
+  });
+
+  it("the reset forgets the slot's credentials, so a later lease of the slot has its own", async () => {
+    const p = await pool({ "23": 1 }, { secrets: new LeaseFileStore(home) });
+    const first = await getLease(p.deps, { flavor: "23", holder: "t" });
+    await returnLease(p.deps, { target: first.lease_id });
+    await p.reset("23-01");
+    expect(p.host.inspect(ref("23", 1))?.credentials).toBeNull();
+    const second = await getLease(p.deps, { flavor: "23", holder: "t" });
+    expect(second.slot).toBe("23-01");
+    expect(second.password.reveal()).not.toBe(first.password.reveal());
+    expect(await readdir(join(home, "leases"))).toEqual([second.lease_id]);
   });
 });
 

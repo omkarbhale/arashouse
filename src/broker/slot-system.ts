@@ -13,6 +13,7 @@ import { ManifestError, summarizeDiff } from "../core/manifest.js";
 import { buildScratch, goldenDir, slotDir, slotStepsScript, type SlotRef } from "../core/names.js";
 import type { FlavorKey } from "../core/flavors.js";
 import { anonymousGet } from "../host/http.js";
+import { arasHttp } from "./aras-http.js";
 import { dpapiSecretStore } from "./dpapi-store.js";
 import type { BrokerFs } from "./fs.js";
 import { readManifest, verifyGolden, verifyTree } from "./manifest-fs.js";
@@ -177,5 +178,6 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
       }
     },
     secrets: dpapiSecretStore((name, request) => step(name, request)),
+    aras: arasHttp(),
   };
 }

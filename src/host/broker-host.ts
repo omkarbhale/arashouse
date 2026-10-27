@@ -3,15 +3,16 @@
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
 // The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot`,
-// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp` and `resetDatabase` so far. Every other
+// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp`, `resetDatabase` and `setLeaseCredentials` so far. Every other
 // method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot stays
 // dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild` is
 // never a verb: a baseline is built in an elevated session (ticket 24).
 
 import { randomUUID } from "node:crypto";
 import type { FlavorKey } from "../core/flavors.js";
-import { parseSlotId, slotId, type SlotRef } from "../core/names.js";
+import { isSecretName, parseSlotId, slotId, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
+import type { SecretStore } from "../core/secret-store.js";
 import { ProtocolError, parseResponse, parseSlotStamp, verbTimeout, type BrokerRequest, type WireResult } from "../broker/protocol.js";
 import type { BrokerTransport } from "./broker-transport.js";
 import { systemClock, type Clock } from "./clock.js";
@@ -45,13 +46,17 @@ const PENDING: Partial<Record<HostMethod, string>> = {
   deployCode: "40",
   restoreDatabase: "39",
   backupDatabase: "43",
-  setLeaseCredentials: "34",
 };
 
 export interface BrokerHostOptions {
   readonly clock?: Clock;
   /** The install root and probes the WSL-side guards use; the broker re-checks on Windows. */
   readonly owned?: OwnedContext;
+  /**
+   * Where a `SecretRef` is looked up on this side: the lease-file store, which holds the lease's password
+   * (`lease-<lease_id>`). Without one, `setLeaseCredentials` is refused.
+   */
+  readonly secrets?: SecretStore;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -101,6 +106,7 @@ function parseDiff(value: unknown): ManifestDiff {
 export class BrokerHost implements HostDriver {
   private readonly clock: Clock;
   private readonly owned: OwnedContext;
+  private readonly secrets: SecretStore | undefined;
 
   constructor(
     private readonly transport: BrokerTransport,
@@ -108,6 +114,7 @@ export class BrokerHost implements HostDriver {
   ) {
     this.clock = options.clock ?? systemClock;
     this.owned = options.owned ?? {};
+    this.secrets = options.secrets;
   }
 
   /** One round trip; returns the result and the time it took. */
@@ -254,8 +261,19 @@ export class BrokerHost implements HostDriver {
     return { ok: result.ok, ms, detail: result.detail };
   }
 
-  setLeaseCredentials(slot: SlotRef, _secretRef: SecretRef): Promise<HostResult> {
-    return this.pending("setLeaseCredentials", this.slotGuard(slot));
+  /**
+   * The handle is looked up here, in the lease-file store, and the password goes to the broker on the request line
+   * (the client's stdin, then the pipe): never in an argument list, and the broker's audit log records no arguments.
+   */
+  async setLeaseCredentials(slot: SlotRef, secretRef: SecretRef): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const name = secretRef?.secretRef;
+    if (typeof name !== "string" || !isSecretName(name)) throw new HostError("Refused", "a secret handle is required");
+    if (this.secrets === undefined) throw new HostError("Refused", "this host has no store to look the lease's password up in");
+    const password = await this.secrets.get(name);
+    if (password === undefined || password.kind !== "lease-password") throw new HostError("Refused", `no lease password is stored as ${name}`);
+    const { result, ms } = await this.call("setLeaseCredentials", { slot: { flavor: slot.flavor, slot: slot.slot } }, { password: password.reveal() });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   /** Never through the broker: its SQL login may not create the build database (ticket 22). The build runs elevated (docs/baselines.md). */

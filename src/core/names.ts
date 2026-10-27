@@ -351,6 +351,14 @@ export function slotLoginSecretName(ref: SlotRef, role: LoginRole): string {
   return `slot-${dashTag(ref)}-${role}`;
 }
 
+/**
+ * `slot-<key>-<NN>-root`: a free slot's Aras `root` password, random, which the reset sets after the pools start
+ * (ticket 32) and `setLeaseCredentials` logs in with to set the lease's password, then deletes (ticket 34).
+ */
+export function slotRootSecretName(ref: SlotRef): string {
+  return `slot-${dashTag(ref)}-root`;
+}
+
 /** `<root>\secrets\<name>.bin` */
 export function secretFile(name: string, root: string = DEFAULT_INSTALL_ROOT): string {
   if (!isSecretName(name)) throw new Error("secret name must be 1 to 64 lower-case letters, digits or '-'");

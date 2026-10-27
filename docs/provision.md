@@ -99,10 +99,10 @@ logical names of the `CoreAndSolutions*.bak` it was restored from.
   broker on the first provision and kept in the host's secret store as `slot-<key>-<NN>-dbo` and `-reg`: machine-scope
   DPAPI blobs in `<root>\secrets\` (`src/broker/dpapi-store.ts`), readable through that folder's ACL by SYSTEM and the
   broker only. They reach SQL Server only on the `database` step's stdin, and the slot only in its rendered configs.
-  A destroy deletes them.
+  A destroy deletes them, and the slot's stored random `root` password (`slot-<key>-<NN>-root`, `docs/lease-credentials.md`).
 - The licence is read from the same store (`licence-<line>`). Nothing stores one there yet, and a slot that must log in
   needs the whole `<License>` element (`docs/baselines.md`, run 5), not the key alone: storing the licence for slots,
-  with its `act_key`, is left to the lease tickets (34, 35).
+  with its `act_key`, is ticket 34b.
 - Nothing secret is in a request's arguments, the audit log, a step's error text (every line goes through `redact`) or
   the result.
 
@@ -141,7 +141,7 @@ worker from WSL, non-elevated, under a scratch `ARASHOUSE_HOME`:
   slot `dirty`, and the reset (tickets 30 to 33; the tree step is in, `docs/reset.md`) brings it to `free`. `FakeHost` checks health, so the offline tests
   cover the `free` path.
 - Starting the agent (ticket 33, `docs/start-stop.md`) and an agent in the golden with its configuration (ticket 33b); the
-  per-lease password (ticket 34).
+  per-lease password is `docs/lease-credentials.md` (ticket 34).
 - The whole contract suite on the real host (ticket 35). `test/host-contract.broker.test.ts` runs it against
   `BrokerHost` with `ARASHOUSE_TEST_BROKER=1` on slot `12sp9-98`. Run on 2026-10-28: `ping`/`hostInfo`, "provisions a
   slot, lists it and destroys it" (40 s) and the refusal of `OLM_Local` and unregistered slots pass; the two tests that

@@ -20,9 +20,10 @@ import {
   type ManifestDiff,
   type ObservedFile,
 } from "../core/manifest.js";
-import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, type SlotRef } from "../core/names.js";
+import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, slotRootSecretName, type SlotRef } from "../core/names.js";
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
+import type { ArasHttp } from "./aras-http.js";
 import type { GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 
@@ -41,10 +42,15 @@ export const GOLDEN_EXTRA_FILES: Readonly<Record<string, string>> = {
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-type Method = Exclude<keyof SlotSystem, "secrets">;
+type Method = Exclude<keyof SlotSystem, "secrets" | "aras">;
 
 export class FakeSlotSystem implements SlotSystem {
   readonly secrets = new MemorySecretStore();
+  /** The slots' Aras servers: every login and edit answers ok unless a test puts its own fake here. */
+  aras: ArasHttp = {
+    login: async () => ({ ok: true, detail: "token issued" }),
+    setPasswords: async (_alias, _database, _as, logins) => ({ ok: true, detail: `edited ${logins.join(" and ")}` }),
+  };
   /** Every call, as `<method>` or `<method> <slot id>`, in order. */
   readonly calls: string[] = [];
   /** The host objects of slots, by name: folders, IIS applications, the database and the logins. */
@@ -126,6 +132,7 @@ export class FakeSlotSystem implements SlotSystem {
     const left = mine.filter((o) => this.objects.has(o));
     left.push(...this.filesUnder(n.slotDir).map((f) => `file ${f}`));
     for (const role of ["dbo", "reg"] as const) if (await this.secrets.has(slotLoginSecretName(slot, role))) left.push(`secret ${role}`);
+    if (await this.secrets.has(slotRootSecretName(slot))) left.push("secret root");
     return left;
   }
 

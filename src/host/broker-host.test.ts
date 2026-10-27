@@ -10,7 +10,11 @@ import { registerResetVerbs } from "../broker/reset-tree.js";
 import { FAKE_GOLDEN_HASH, FakeSlotSystem } from "../broker/slot-system.fixture.js";
 import { registerCoreVerbs, type BrokerSystem } from "../broker/verbs.js";
 import { buildManifest, writeManifestOnce } from "../broker/manifest-fs.js";
+import { FakeAras } from "../../test/fake-aras.js";
 import { makeSampleTree } from "../../test/sample-tree.js";
+import { slotRootSecretName } from "../core/names.js";
+import { Secret } from "../core/secret.js";
+import { MemorySecretStore } from "../core/secret-store.js";
 import { BrokerHost } from "./broker-host.js";
 import { interopTransport, type BrokerTransport } from "./broker-transport.js";
 import { FakeClock } from "./clock.js";
@@ -128,7 +132,21 @@ describe("BrokerHost against an in-process broker", () => {
     const calls: Record<
       Exclude<
         keyof HostDriver,
-        "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot" | "startSlot" | "stopSlot" | "resetDatabase" | "quiesce" | "resetTree" | "writeStamp"
+        | "ping"
+        | "hostInfo"
+        | "readStamp"
+        | "listSlots"
+        | "baselineBuild"
+        | "baselineVerify"
+        | "provisionSlot"
+        | "destroySlot"
+        | "startSlot"
+        | "stopSlot"
+        | "resetDatabase"
+        | "quiesce"
+        | "resetTree"
+        | "writeStamp"
+        | "setLeaseCredentials"
       >,
       () => Promise<unknown>
     > = {
@@ -136,9 +154,8 @@ describe("BrokerHost against an in-process broker", () => {
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       backupDatabase: () => host.backupDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       healthCheck: () => host.healthCheck(s1),
-      setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: LEASE_REF }),
     };
-    expect(Object.keys(calls).length + 14).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 15).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -171,6 +188,35 @@ describe("BrokerHost against an in-process broker", () => {
     expect((await rejection(host.provisionSlot({ flavor: "OLM_Local" as never, slot: 1 }))).kind).toBe("Refused");
     expect((await rejection(host.destroySlot({ flavor: "12sp9", slot: 100 }))).kind).toBe("Refused");
     expect(transport.requests).toHaveLength(3);
+  });
+
+  it("sets the lease's credentials from the handle, the password on the request line only", async () => {
+    await host.provisionSlot(s1);
+    const aras = new FakeAras();
+    slots.aras = aras;
+    const free = ["free", "Root", "Pw", "x9"].join("-");
+    const leasePassword = ["lease", "Pw", "Vb3nM8kL2qXs"].join("_");
+    for (const login of ["root", "admin"]) aras.set("ah-12sp9-01", login, free);
+    await slots.secrets.put(slotRootSecretName(s1), Secret.of(free, "aras-login"));
+    const leases = new MemorySecretStore();
+    await leases.put(LEASE_REF, Secret.of(leasePassword, "lease-password"));
+    const leased = new BrokerHost(transport, { secrets: leases });
+
+    const set = await leased.setLeaseCredentials(s1, { secretRef: LEASE_REF });
+    expect(set).toMatchObject({ ok: true, detail: expect.stringMatching(/^lease credentials set for admin and root of 12sp9-01/) });
+    expect(aras.logsIn("ah-12sp9-01", "root", leasePassword)).toBe(true);
+    expect(aras.logsIn("ah-12sp9-01", "admin", leasePassword)).toBe(true);
+    expect(transport.requests.at(-1)).toMatchObject({ verb: "setLeaseCredentials", slot: s1, args: { password: leasePassword } });
+    expect(set.detail).not.toContain(leasePassword);
+
+    // Refused on this side, with nothing sent: no handle, a handle with nothing behind it, no store at all.
+    const sent = transport.requests.length;
+    expect((await rejection(leased.setLeaseCredentials(s1, { secretRef: "" }))).message).toBe("a secret handle is required");
+    const unknown = { secretRef: `${LEASE_REF}0` };
+    expect((await rejection(leased.setLeaseCredentials(s1, unknown))).message).toBe("no lease password is stored as lease-10");
+    expect((await rejection(host.setLeaseCredentials(s1, { secretRef: LEASE_REF }))).kind).toBe("Refused");
+    expect((await rejection(leased.setLeaseCredentials({ flavor: "OLM_Local" as never, slot: 1 }, { secretRef: LEASE_REF }))).kind).toBe("Refused");
+    expect(transport.requests).toHaveLength(sent);
   });
 
   it("starts and stops a slot through the broker's verbs, the agent only when asked, guarded on both sides", async () => {

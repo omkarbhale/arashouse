@@ -48,6 +48,7 @@ import { parseArgs, parseSeconds, stringOption, type ParsedArgs } from "./args.j
 import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
 import { selectHost, type SelectedHost } from "./host.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
+import { parsePasswordFd, writePasswordFd } from "./password-fd.js";
 import { runWithLease } from "./run.js";
 import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
 import { checkMedia } from "../core/media-check.js";
@@ -67,7 +68,7 @@ export interface CliIo {
 
 const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
   get: [
-    "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json]",
+    "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]",
     "",
     `Leases a clean slot of <flavor> (${FLAVOR_KEYS.join(", ")}) to <task>. With --json, stdout is the`,
     "lease contract (docs/schemas/get.schema.json) and nothing else; it holds the lease's password,",
@@ -75,6 +76,8 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "--wait <seconds> waits up to that long for a slot; without it, no free slot exits 3 at once.",
     "--agent also starts the slot's agent service (conversion tasks, scheduled methods); without it the",
     "agent stays stopped. A flavor whose golden has no agent refuses it (exit 7).",
+    "--password-fd <n> writes the password and a newline to descriptor <n> (3 or more, opened for the",
+    "command, for example `3>file`) instead, and --json then leaves it out.",
   ],
   return: [
     "usage: arashouse return <lease_id> [--wait[=<seconds>]]",
@@ -346,22 +349,35 @@ function printJson(io: CliIo, value: unknown): void {
 }
 
 async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
-  const parsed = parseArgs(args, { holder: "value", wait: "value", agent: "flag", json: "flag" });
+  const parsed = parseArgs(args, { holder: "value", wait: "value", agent: "flag", json: "flag", "password-fd": "value" });
   const [flavor, extra] = parsed.positionals;
   if (flavor === undefined) throw new UsageError(`get needs a flavor: ${FLAVOR_KEYS.join(", ")}`);
   if (extra !== undefined) throw new UsageError(`get takes one flavor, not "${extra}" too`);
   const holder = stringOption(parsed, "holder");
   if (holder === undefined) throw new UsageError("get needs --holder <task>: who is taking the lease");
   const wait = stringOption(parsed, "wait");
-  const grant = await getLease(await leaseDeps(ctx), {
+  const fdText = stringOption(parsed, "password-fd");
+  // Checked before the lease is taken, so a descriptor that is not open costs no slot.
+  const passwordFd = fdText === undefined ? undefined : parsePasswordFd(fdText);
+  const deps = await leaseDeps(ctx);
+  const grant = await getLease(deps, {
     flavor,
     holder,
     waitSeconds: wait === undefined ? 0 : parseSeconds(wait, "--wait"),
     agent: parsed.options.agent === true,
   });
   const returnHint = `return it with: arashouse return ${grant.lease_id}`;
+  if (passwordFd !== undefined) {
+    try {
+      writePasswordFd(passwordFd, grant.password);
+    } catch {
+      // Nobody has the password, so nobody can use the lease: it goes back at once.
+      await returnLease(deps, { target: grant.lease_id });
+      throw new UsageError(`the password could not be written to descriptor ${passwordFd}; the lease of ${grant.slot} was returned`);
+    }
+  }
   if (parsed.options.json === true) {
-    printJson(ctx.io, renderGetJson(grant));
+    printJson(ctx.io, renderGetJson(grant, { password: passwordFd === undefined }));
     ctx.io.err(`arashouse: leased ${grant.slot} to ${grant.holder}; ${returnHint}`);
     return EXIT_CODES.ok;
   }
@@ -372,7 +388,9 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     `database:  ${grant.database}`,
     `user:      ${grant.user}`,
     `lease id:  ${grant.lease_id}`,
-    `password:  not shown; use \`arashouse run --lease ${grant.lease_id} -- <command>\``,
+    passwordFd === undefined
+      ? `password:  not shown; use \`arashouse run --lease ${grant.lease_id} -- <command>\``
+      : `password:  written to descriptor ${passwordFd}`,
     returnHint,
   ]) {
     ctx.io.out(line);

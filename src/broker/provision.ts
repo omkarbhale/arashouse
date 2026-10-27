@@ -14,13 +14,15 @@ import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type
 import { FLAVORS, type FlavorKey } from "../core/flavors.js";
 import { licenceSecretName } from "../core/licence.js";
 import type { Manifest, ManifestDiff } from "../core/manifest.js";
-import { goldenLayout, slotId, slotLoginSecretName, stampFile, type LoginRole, type SlotNames, type SlotRef } from "../core/names.js";
+import { goldenLayout, slotId, slotLoginSecretName, slotRootSecretName, stampFile, type LoginRole, type SlotNames, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { Secret } from "../core/secret.js";
 import type { SecretStore } from "../core/secret-store.js";
 import type { SlotStamp } from "../host/driver.js";
 import { HostError, isHostError } from "../host/errors.js";
+import type { ArasHttp } from "./aras-http.js";
 import { newLoginPassword } from "./baseline-build.js";
+import { parseLeaseCredentialArgs, setLeaseCredentialsOnHost, type LeaseCredentialArgs } from "./lease-credentials.js";
 import { parseStartArgs, startSlotOnHost, stopSlotOnHost, type StartArgs } from "./start-stop.js";
 import type { Broker, VerbContext } from "./broker.js";
 import type { WireResult } from "./protocol.js";
@@ -131,6 +133,8 @@ export interface SlotSystem {
   removeEmptyDir(path: string): Promise<void>;
   /** Machine-scope DPAPI under `<root>\secrets\` on the host. */
   readonly secrets: SecretStore;
+  /** Logins and password edits through a slot's own Aras server, on this machine (ticket 34). */
+  readonly aras: ArasHttp;
 }
 
 const LOGIN_ROLES: readonly LoginRole[] = ["dbo", "reg"];
@@ -291,6 +295,7 @@ async function removeSlot(system: SlotSystem, slot: SlotRef, names: SlotNames, t
   });
   await attempt("secrets", async () => {
     for (const role of LOGIN_ROLES) await system.secrets.delete(slotLoginSecretName(slot, role));
+    await system.secrets.delete(slotRootSecretName(slot));
   });
   let left: readonly string[];
   try {
@@ -390,7 +395,7 @@ export class SlotLocks {
   }
 }
 
-/** Registers `provisionSlot`, `destroySlot`, `startSlot`, `stopSlot` and `resetDatabase` on `broker`, under `locks` (shared with the reset verbs, reset-tree.ts). */
+/** Registers `provisionSlot`, `destroySlot`, `startSlot`, `stopSlot`, `resetDatabase` and `setLeaseCredentials` on `broker`, under `locks` (shared with the reset verbs, reset-tree.ts). */
 export function registerSlotVerbs(broker: Broker, system: SlotSystem, locks: SlotLocks = new SlotLocks()): Broker {
   const exclusive = (ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>) => locks.run(ctx, fn);
   return broker
@@ -416,5 +421,10 @@ export function registerSlotVerbs(broker: Broker, system: SlotSystem, locks: Slo
       args: resetDatabaseArgs,
       run: (ctx) =>
         exclusive(ctx, (slot) => resetDatabaseOnHost(system, slot, ctx.root, ctx.args as ResetDatabaseArgs, (flavor) => ootbUnusable(system, flavor, ctx.root))),
+    })
+    .register("setLeaseCredentials", {
+      target: "slot",
+      args: parseLeaseCredentialArgs,
+      run: (ctx) => exclusive(ctx, (slot) => setLeaseCredentialsOnHost(system, slot, ctx.root, ctx.args as LeaseCredentialArgs)),
     });
 }

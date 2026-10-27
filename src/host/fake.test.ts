@@ -354,6 +354,13 @@ describe("FakeHost call record", () => {
     expect(host.inspect(slot)?.credentials).toEqual(handle("handle-for-lease-xyz"));
   });
 
+  it("forgets the credentials when the database is reset", async () => {
+    const host = await provisioned();
+    await host.setLeaseCredentials(slot, handle("lease-abc"));
+    await host.resetDatabase(slot, host.backup(slot.flavor));
+    expect(host.inspect(slot)?.credentials).toBeNull();
+  });
+
   it("refuses an empty secret handle", async () => {
     const host = await provisioned();
     expect(await kindOf(() => host.setLeaseCredentials(slot, handle("")))).toBe("Refused");

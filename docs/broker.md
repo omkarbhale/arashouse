@@ -37,7 +37,7 @@ WSL side first, so a refused name is never sent.
 | `healthCheck` | slot | | 32 |
 | `startSlot` | slot | starts the slot's pools, its agent service only with `args.agent` (`Refused` when the slot has none), then warms three URLs; `ok: false` when one does not answer (`docs/start-stop.md`) | 33 |
 | `stopSlot` | slot | stops the slot's agent, then its pools, and waits for its worker processes to end; the reset's quiesce (`docs/start-stop.md`) | 33 |
-| `setLeaseCredentials` | slot | | 34 |
+| `setLeaseCredentials` | slot | `args.password` (the lease's, 16 to 128 URL-safe characters) for `root` and `admin`: an OAuth login as `root` with the slot's stored random password (`slot-<key>-<NN>-root`), an AML `edit` of both `User` items, a login with the new password, then the stored one deleted; no stored password is `Retryable`, a refusal by the server `Quarantine` (`docs/lease-credentials.md`) | 34 |
 | `restoreDatabase`, `deployCode`, `backupDatabase` | slot | | 39, 40, 43 |
 | `baselineVerify` | flavor | checks `golden\<key>` against its manifest at `args.level` (`golden`, the default; `fast`; `full`): `ok`, `level`, the diff (counts and paths only) and `goldenHash` (the manifest hash a reset mirrors to); "not built" when there is no manifest | 28, 24, 30 |
 | `baselineBuild` | flavor | never served: the build runs in the captain's elevated session, since the broker's SQL login may not create its database (`docs/baselines.md`); `BrokerHost` refuses it without asking | 24 |
@@ -60,7 +60,7 @@ of quarantining it. A ticket that adds a verb registers it in `src/broker/` the 
   sent: `BrokerHost` measures the round trip on its own clock.
 - Limits: a request line of 64 KiB, a response line of 1 MiB; the broker drops a connection that has not
   sent its line within 5 s; each verb has a time bound (`VERB_TIMEOUT_MS`: `ping` 5 s, `readStamp` 10 s,
-  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot`, `destroySlot` and `resetTree` 30 minutes, `quiesce` and `resetDatabase` 10 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
+  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot`, `destroySlot` and `resetTree` 30 minutes, `quiesce`, `resetDatabase` and `setLeaseCredentials` 10 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
   the bound plus 5 s, and `BrokerHost` the bound plus 10 s, killing the client after that.
 
 | failure | kind |

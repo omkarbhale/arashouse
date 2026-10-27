@@ -7,6 +7,7 @@
 
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import { goldenLayout } from "../core/names.js";
+import { LeaseFileStore } from "../core/lease-files.js";
 import { UsageError, type LeaseHost } from "../core/lease.js";
 import type { OperatorHost } from "../core/operator.js";
 import type { GoldenSet } from "../core/reset.js";
@@ -90,7 +91,8 @@ async function brokerGolden(host: BrokerHost, flavor: FlavorKey): Promise<Golden
 export async function selectHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {
   if (hostKind(env) === "fake") return fakeHost(env, store);
   const node = env[WINDOWS_NODE_ENV]?.trim() || DEFAULT_WINDOWS_NODE;
-  const host = new BrokerHost(interopTransport({ node }));
+  // The lease's password is looked up in the lease-file store by its handle and sent to the broker (ticket 34).
+  const host = new BrokerHost(interopTransport({ node }), { secrets: new LeaseFileStore(store.paths.home) });
   return {
     kind: "broker",
     host,

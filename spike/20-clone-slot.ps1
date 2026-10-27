@@ -108,6 +108,24 @@ try {
         if ($mapped.Count -ne 2) { Write-Host 'warning: the expected users innovator and innovator_regular were not both found; map the users from restoredDatabaseUsers by hand' }
     }
 
+    Invoke-SpikeStep "check the CD's post-restore scripts on $NewDatabase (Utilities\add_innovator_user.sql, fix_innovator_user.sql, change_to_innovator_owner.sql) with per-slot names: users mapped, table owners, vault URL" {
+        # The CD scripts hard-code the machine-wide logins innovator/innovator_regular (the captain's own databases use them) and the database name
+        # Innovator, so their steps are applied here with per-slot names instead: Update_One is the ALTER USER ... WITH LOGIN above; db access and
+        # db_owner come with the restored users; the owner change is needed only if tables are owned by dbo.
+        $db = Format-SpikeSqlIdent $NewDatabase
+        $orphans = @(Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT dp.name FROM $db.sys.database_principals dp LEFT JOIN sys.server_principals sp ON sp.sid = dp.sid WHERE dp.type = 'S' AND sp.sid IS NULL AND dp.name NOT IN ('guest','INFORMATION_SCHEMA','sys','dbo')") | ForEach-Object { $_.name })
+        Add-SpikeFact 'orphanedUsersAfterMapping' $orphans
+        $owners = @(Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT s.name AS schemaName, COUNT(*) AS n FROM $db.sys.tables t JOIN $db.sys.schemas s ON s.schema_id = t.schema_id GROUP BY s.name"))
+        Add-SpikeFact 'tablesPerSchema' @($owners | ForEach-Object { [ordered]@{ schema = $_.schemaName; tables = $_.n } })
+        Add-SpikeFact 'ownerChangeNeeded' (@($owners | Where-Object { $_.schemaName -eq 'dbo' -and $_.n -gt 0 }).Count -gt 0)
+        $roles = @(Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT u.name AS usr, r.name AS role FROM $db.sys.database_role_members m JOIN $db.sys.database_principals r ON r.principal_id = m.role_principal_id JOIN $db.sys.database_principals u ON u.principal_id = m.member_principal_id WHERE u.name IN ('innovator','innovator_regular')"))
+        Add-SpikeFact 'restoredUserRoles' @($roles | ForEach-Object { $_.usr + ':' + $_.role })
+        try {
+            $vaults = @(Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT name, vault_url FROM $db.innovator.[VAULT]"))
+            Add-SpikeFact 'vaultUrls' @($vaults | ForEach-Object { [ordered]@{ name = $_.name; url = $_.vault_url } })
+        } catch { Add-SpikeFact 'vaultUrls' 'not readable' }
+    }
+
     Invoke-SpikeStep "create vault folder $vault" {
         New-Item -ItemType Directory -Path $vault | Out-Null
         & icacls.exe $vault /grant 'IIS_IUSRS:(OI)(CI)M' | Out-Null
@@ -149,6 +167,15 @@ try {
                 $n = ([regex]::Matches($text, [regex]::Escape($from), 'IgnoreCase')).Count
                 if ($n -gt 0) { $text = [regex]::Replace($text, [regex]::Escape($from), $pairs[$k][1].Replace('$', '$$'), 'IgnoreCase'); $counts[$k] = $n }
             }
+            if ($f.Name -eq 'vault.config') {
+                # Each slot has its own vault file store, so returning a slot deletes exactly its files (the vault keeps files in folders named
+                # after their database ids, so one shared store would also work, but would make cleanup hard).
+                $vxml = New-Object Xml.XmlDocument
+                $vxml.PreserveWhitespace = $true
+                $vxml.LoadXml($text)
+                foreach ($n in @($vxml.SelectNodes("//appSettings/add[@key='LocalPath']"))) { $n.SetAttribute('value', ($vault.TrimEnd('\') + '\')); $counts['vaultLocalPath'] = 1 }
+                $text = $vxml.OuterXml
+            }
             if ($f.Name -eq 'InnovatorServerConfig.xml') {
                 $xml = New-Object Xml.XmlDocument
                 $xml.PreserveWhitespace = $true
@@ -158,7 +185,8 @@ try {
                 if ($conn.Count -eq 1) {
                     $node = $conn[0]
                     $attrNames = @($node.Attributes | ForEach-Object { $_.Name })
-                    $set = [ordered]@{ uid = @($loginDbo, $ctx.dboPw); regular_uid = @($loginReg, $ctx.regPw) }
+                    # 12.0 and later name them dbo_uid/dbo_pwd and regular_uid/regular_pwd (read from installed configs, 2026-10-27); older ones uid/pwd.
+                    $set = [ordered]@{ dbo_uid = @($loginDbo, $ctx.dboPw); uid = @($loginDbo, $ctx.dboPw); regular_uid = @($loginReg, $ctx.regPw) }
                     foreach ($uidName in $set.Keys) {
                         if ($node.HasAttribute($uidName)) {
                             $node.SetAttribute($uidName, $set[$uidName][0])
@@ -199,6 +227,7 @@ try {
             }
         }
         Add-SpikeFact 'editedFiles' $report
+        Add-SpikeFact 'vaultLocalPathSet' (@($report | Where-Object { $_.replacements -is [System.Collections.IDictionary] -and $_.replacements.Contains('vaultLocalPath') }).Count -gt 0)
         $ctx.edited = @($report | ForEach-Object { Join-Path $NewTree $_.file })
     }
 

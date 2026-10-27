@@ -569,6 +569,39 @@ function Remove-SpikeIisApps {
     return [pscustomobject]@{ apps = $apps; pools = $pools }
 }
 
+function Move-SpikeAppsToOwnPools {
+    # The MSI puts its applications into fixed, machine-wide pools ("Aras Innovator AppPool ASP.NET 4.0" and so on) that the captain's own installs
+    # share. Gives every application of one spike alias its own pool "<alias>-<role>" with the same settings, so recycling a spike never touches theirs.
+    param([Parameter(Mandatory)][string]$Alias, [string]$SiteName = 'Default Web Site')
+    Assert-SpikeName -Kind Alias -Name $Alias
+    $mgr = Get-SpikeIisManager
+    $moved = @()
+    try {
+        $site = $mgr.Sites[$SiteName]
+        foreach ($app in @($site.Applications | Where-Object { $_.Path -eq "/$Alias" -or $_.Path -like "/$Alias/*" })) {
+            $sub = $app.Path.Substring($Alias.Length + 1)
+            $poolName = "$Alias-" + (Get-SpikePoolRole $sub)
+            Assert-SpikeName -Kind Pool -Name $poolName
+            if ($app.ApplicationPoolName -eq $poolName) { continue }
+            $from = $mgr.ApplicationPools[$app.ApplicationPoolName]
+            $pool = $mgr.ApplicationPools[$poolName]
+            if (-not $pool) {
+                $pool = $mgr.ApplicationPools.Add($poolName)
+                if ($from) {
+                    $pool.ManagedRuntimeVersion = $from.ManagedRuntimeVersion
+                    $pool.ManagedPipelineMode = $from.ManagedPipelineMode
+                    $pool.Enable32BitAppOnWin64 = $from.Enable32BitAppOnWin64
+                    $pool.ProcessModel.IdentityType = $from.ProcessModel.IdentityType
+                    $pool.ProcessModel.IdleTimeout = $from.ProcessModel.IdleTimeout
+                }
+            }
+            $moved += [pscustomobject]@{ path = $app.Path; fromPool = $app.ApplicationPoolName; toPool = $poolName }
+            $app.ApplicationPoolName = $poolName
+        }
+        $mgr.CommitChanges()
+    } finally { $mgr.Dispose() }
+    return $moved
+}
 function Restart-SpikePools {
     # Recycles (or starts) every pool of one spike alias.
     param([Parameter(Mandatory)][string]$Alias, [switch]$Stop, [switch]$Start)

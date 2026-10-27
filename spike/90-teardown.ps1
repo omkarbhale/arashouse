@@ -40,7 +40,7 @@ try {
                 $loc = Get-SpikeProperty $e 'InstallLocation'
                 if (-not $loc -or -not (Test-SpikeUnder ($loc.TrimEnd('\')) $script:SpikeRoot)) { continue }
                 if ($k.PSChildName -notmatch '^\{[0-9A-Fa-f-]{36}\}$') { continue }
-                $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/x', $k.PSChildName, '/qn', 'REMOVE_DATABASES=0', '/norestart') -Wait -PassThru
+                $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/x', $k.PSChildName, '/qn', 'REMOVE_DATABASES=0', 'REBOOT=ReallySuppress', 'MSIRESTARTMANAGERCONTROL=Disable', '/norestart') -Wait -PassThru
                 $done += [ordered]@{ productCode = $k.PSChildName; exitCode = $p.ExitCode }
             }
         }
@@ -107,7 +107,8 @@ try {
             $base = Join-Path $env:windir "Microsoft.NET\$fw\v4.0.30319\Temporary ASP.NET Files"
             if (-not (Test-Path -LiteralPath $base)) { continue }
             foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory -Filter 'ah-spike-*' -ErrorAction SilentlyContinue)) {
-                Assert-SpikeName -Kind Alias -Name $d.Name
+                # ASP.NET names these after the application: the alias itself, or the alias plus '_client', '_server' and so on.
+                Assert-SpikeName -Kind Alias -Name ($d.Name -replace '_[a-z]+$', '')
                 Remove-Item -LiteralPath $d.FullName -Recurse -Force
                 $removed++
             }

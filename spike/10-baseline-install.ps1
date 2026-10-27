@@ -101,6 +101,8 @@ try {
     Assert-SpikeName -Kind Login -Name $loginDbo
     Assert-SpikeName -Kind Login -Name $loginReg
     $InstallDir = Assert-SpikePath -Path $InstallDir -Mode Write
+    # The vault file store: VAULT_ROOT is a Directory-table key that defaults to C:\, i.e. C:\Aras\Vault, which the captain's Aras12 uses.
+    $vaultRoot = Assert-SpikePath -Path (Join-Path $script:SpikeRoot ("vaults\$Flavor-$Suffix")) -Mode Write
     $stageDir = Assert-SpikePath -Path (Join-Path $script:SpikeStagingDir $Flavor) -Mode Read -AllowRoot
     $logDir = Assert-SpikePath -Path (Join-Path $script:SpikeRoot "logs") -Mode Write
     $logFile = Join-Path $logDir "10-msi-$Flavor-$Suffix.log"
@@ -211,7 +213,8 @@ try {
                 IS_SQLSERVER_DATABASE = $DatabaseName
             }
             $want[$InstallDirProperty] = $InstallDir
-            $builtIn = @($InstallDirProperty, 'REBOOT', 'MSIRESTARTMANAGERCONTROL')
+            $want['VAULT_ROOT'] = $vaultRoot
+            $builtIn = @($InstallDirProperty, 'VAULT_ROOT', 'REBOOT', 'MSIRESTARTMANAGERCONTROL')
             if ($SqlAuth -eq 'Sa') { $want['IS_SQLSERVER_USERNAME'] = 'sa' } else { $want['IS_SQLSERVER_AUTHENTICATION'] = '0' }  # the MSI's own code: 0 is Windows authentication, 1 a SQL login
             # The MSI creates the database owner and regular logins itself; their names default to the shared 'innovator' and
             # 'innovator_regular' that the captain's installs use, so throw-away names are always set (the secret passwords below).
@@ -289,6 +292,12 @@ try {
         }
     }
 
+    if (-not $RecordOnly) {
+        Invoke-SpikeStep "give each application of /$Alias its own pool $Alias-<role> (the MSI uses machine-wide pools that the captain's installs share)" {
+            Add-SpikeFact 'appsMovedOffSharedPools' @(Move-SpikeAppsToOwnPools -Alias $Alias)
+        }
+    }
+
     Invoke-SpikeStep "record what the MSI created: version, tree size, IIS apps and pools of /$Alias, new services, new uninstall entry, Program Files untouched" {
         $core = if (Test-Path -LiteralPath $InstallDir) { Find-SpikeFile -Root $InstallDir -Name 'Aras.Server.Core.dll' } else { $null }
         Add-SpikeFact 'serverCoreVersion' $(if ($core) { (Get-Item -LiteralPath $core).VersionInfo.FileVersion } else { $null })
@@ -319,6 +328,12 @@ try {
         $rootsAfter = @(Get-ChildItem 'C:\Program Files (x86)' -Directory -Filter 'Aras*' -ErrorAction SilentlyContinue).Count
         $rootsBefore = if ($before) { $before.rootCount } else { $null }
         Add-SpikeFact 'programFilesAras' ([ordered]@{ rootCountBefore = $rootsBefore; rootCountAfter = $rootsAfter; unchanged = ($rootsBefore -eq $rootsAfter) })
+        $vaultConfig = Find-SpikeFile -Root $InstallDir -Name 'vault.config'
+        if ($vaultConfig) {
+            $local = ([xml](Get-Content -LiteralPath $vaultConfig -Raw)).configuration.appSettings.add | Where-Object { $_.key -eq 'LocalPath' } | Select-Object -First 1
+            Add-SpikeFact 'vaultLocalPath' $(if ($local) { $local.value } else { $null })
+            Add-SpikeFact 'vaultLocalPathUnderSpike' ([bool]($local -and (Test-SpikeUnder ($local.value.TrimEnd('\')) $script:SpikeRoot)))
+        }
         $dbMarker = Join-Path $InstallDir 'DB'
         Add-SpikeFact 'dbFolderExists' (Test-Path -LiteralPath $dbMarker)
     }

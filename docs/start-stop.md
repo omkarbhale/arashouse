@@ -12,7 +12,7 @@ one at a time per slot with `provisionSlot`, `destroySlot` and `resetDatabase` (
 
 | verb | what it does |
 |---|---|
-| `startSlot(slot, { agent })` | Starts each of the slot's pools `ah-<key>-<NN>-<role>` that is not running (waiting out a pool still stopping) and fails if one does not start. With `agent: true` it starts `ArasHouseAgent_<key>_<NN>` and waits until the service runs and something listens on the slot's agent port (`8800 + 100 x flavor index + NN`); a slot with no agent service is `Refused`. Then it requests `Client/`, `Server/DBList.aspx` and `OAuthServer/.well-known/openid-configuration` under `http://localhost/<alias>/` once each, together, with a 2-minute bound: any answer from 200 to 399 is warm; anything else makes the result `ok: false`, naming the URL. |
+| `startSlot(slot, { agent })` | Starts each of the slot's pools `ah-<key>-<NN>-<role>` that is not running (waiting out a pool still stopping) and fails if one does not start. With `agent: true` it starts `ArasHouseAgent_<key>_<NN>` and waits until the service runs and something listens on the slot's agent port (`8800 + 100 x flavor index + NN`); a slot with no agent service is `Refused`. Then it requests `Client/`, `Server/DBList.aspx` and `OAuthServer/.well-known/openid-configuration` under `http://localhost/<alias>/` once each, together, with a 2-minute bound, and, when the agent started, its health URL (below): any answer from 200 to 399 is warm, and any answer below 500 from the agent; anything else makes the result `ok: false`, naming the URL. |
 | `stopSlot(slot)` | Stops the agent service if the slot has one, then the slot's pools, and waits (up to a minute) until no `w3wp.exe` of the slot's pools is left; one that is left is `Retryable`. Idempotent. |
 
 `stopSlot` is the quiesce the spike measured (spike record, section 4: stopping the pools frees every locked file and
@@ -20,10 +20,14 @@ closes Aras's SQL sessions), so the reset's `quiesce` (ticket 30) and `destroySl
 `arashouse disable` calls it. A stopped pool does not start on a request (IIS answers 503), so a slot stays offline
 until `startSlot`: the reset's `start` step, or `get --agent`.
 
-**The agent.** No golden has one yet: every build ran with `INSTALL_AGENT_SERVICE=0`, so `service.json` says
-`installed: false`, provisioning makes no service, and `startSlot` with `agent: true` is refused with "slot
-`<id>` has no agent service: the `<flavor>` golden was built without one (ticket 33b)". Ticket 33b puts the agent in
-the golden, renders its configuration (the slot's port and server URL) and adds its health endpoint to the check.
+**The agent.** A golden built since ticket 33b holds the agent (`docs/baselines.md`): provisioning makes the slot's
+service from its `service.json`, and the edit list points the agent at the slot's port and server (`docs/edits.md`).
+Its health URL is the slot's agent address (names.ts `agentUrl`) plus the release's health path: 12.0's WCF host
+serves its WSDL, `http://localhost:<port>/<alias>?wsdl`; 14.x's Kestrel host has a `/health` route,
+`http://localhost:<port>/health`. Any HTTP answer below 500 counts (12.0's WSDL sits behind the endpoint's Basic
+authentication and may answer 401). A slot made from an older golden (`installed: false`) has no service, and
+`startSlot` with `agent: true` is refused with "slot `<id>` has no agent service: the `<flavor>` golden was built
+without one (rebuild it: baseline build `<flavor>` --replace)".
 
 ## `get --agent`
 
@@ -65,8 +69,38 @@ Through firstmate's elevated gate, `setup-host.ps1 -Apply -UpdateBroker` install
 The warm-up runs on the broker, so it does not depend on reaching the slot from WSL; in this run the WSL-side address
 discovery (`docs/slot-url.md`) found no address that answered, which is the health check's concern (ticket 32).
 
+## Measured with the agent (2026-10-28, ticket 33b)
+
+After the `12sp9` golden was rebuilt with the agent and a broker built from ticket 33b installed (`setup-host.ps1 -Apply
+-UpdateBroker`, exit 0), as the worker from WSL, non-elevated, through `BrokerHost` on the throw-away slot `12sp9-97`:
+
+- `provisionSlot`: 26.7 s (agent 2.9 s; configs: 9 files, 21 edits). `ArasHouseAgent_12sp9_97` exists, stopped,
+  `DEMAND_START`, `LocalSystem`, running `C:\aras_installations\slots\12sp9\97\AgentService\Aras.Server.Agent.Service.exe`.
+  The slot's agent config names `http://localhost:8897/ah-12sp9-97` and the slot's server, and its server config's
+  `<AgentService InnovatorToServiceAddress>` the same address; the commented-out HTTPS block is as shipped.
+- `startSlot` without the agent: 11.1 s, all three warm; the agent stays stopped.
+- `stopSlot`: 9.1 s, "agent stopped".
+- `startSlot` with the agent: 4.6 s, "agent ArasHouseAgent_12sp9_97 running on port 8897", and its health URL
+  `http://localhost:8897/ah-12sp9-97?wsdl` answered 200 (with the three warm-ups); the service runs.
+- `stopSlot`: 7.5 s; the service is stopped. `destroySlot`: 12.1 s (agent 1.0 s); the service and the slot folder are
+  gone; the provision's and the destroy's deny-list checks found every object unchanged.
+
+The same on `23-97` and `35-97` after their rebuilds (the 14.x agent: Kestrel, `/health`):
+
+| | `23-97` | `35-97` |
+|---|---|---|
+| `provisionSlot` | 33.5 s; 9 files, 21 edits; agent on 8997 | 27.5 s; 7 files, 18 edits; agent on 9097 |
+| the service | stopped, `DEMAND_START`, `LocalSystem`, `"...\slots\23\97\AgentService\bin\Aras.Server.Agent.Service.exe" --service` | the same under `slots\35\97` |
+| rendered | `appsettings.json` `Url` `http://localhost:8997/`, `InnovatorServerUrl` the slot's server; `InnovatorToServiceAddress="http://localhost:8997/"` | the same with 9097 |
+| `startSlot` without the agent | 25.8 s, all warm, agent stopped | 25.4 s, all warm, agent stopped |
+| `stopSlot` | 10.6 s | 11.6 s |
+| `startSlot` with the agent | 16.7 s, `http://localhost:8997/health` 200, service running | 15.8 s, `http://localhost:9097/health` 200 |
+| `stopSlot`, `destroySlot` | 11.1 s, 12.5 s; service gone, deny-list unchanged | 11.1 s, 12.1 s; the same |
+
+The broker these ran on was built from the first commit of ticket 33b; the fix that leaves the builds' own agent
+services out of a slot's deny-list fingerprints came after, and matters only when a provision overlaps a build (none did).
+
 ## Not here
 
-- The agent in the golden, its configuration and its health endpoint (ticket 33b).
 - `sc sdset` with `(A;;LCRPWP;;;<user SID>)` would let a non-admin start and stop a slot's service without the broker
   (spike record); nothing uses it, since the broker does it.

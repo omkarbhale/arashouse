@@ -13,6 +13,7 @@ import { win32 } from "node:path";
 import {
   BUILD_STEPS,
   ENGINE_CHECK_ITEM,
+  SERVICE_TREE_TOKEN,
   SHIPPED_ADMIN_LOGIN,
   compareDenyList,
   flavorRecord,
@@ -29,6 +30,7 @@ import {
 import { EDIT_LIST_SCHEMA, innovatorServerUrl, renderFile, serializeEditList, type Edit, type EditList, type EditSecrets, type EditVars } from "../core/edits.js";
 import { editList } from "../core/edit-lists.js";
 import { decodeText, parseXmlSelector, selectXml } from "../core/config-text.js";
+import { agentHealthUrl } from "../core/names.js";
 import type { Manifest } from "../core/manifest.js";
 import { redact } from "../core/redact.js";
 import { Secret } from "../core/secret.js";
@@ -100,6 +102,14 @@ export interface EngineExport {
   readonly lastLine?: string;
 }
 
+/** The build's own agent service as Windows has it (`Win32_Service`), after `startAgent`. */
+export interface AgentServiceInfo {
+  readonly state: string;
+  readonly startMode: string;
+  /** The service's command line: the executable, quoted or not, and any arguments. */
+  readonly pathName: string;
+}
+
 export interface CopyResult {
   readonly files: number;
   readonly bytes: number;
@@ -141,6 +151,13 @@ export interface BuildSystem {
   engineExport(plan: BaselinePlan, user: string, password: Secret): Promise<EngineExport>;
   /** `Aras.Server.Core.dll`'s file version, or null when the file is missing. */
   serverVersion(plan: BaselinePlan): Promise<string | null>;
+  /**
+   * The build's own agent service, by its recorded name only (`scratch.agent.service`), and only when its executable is
+   * in the build folder: started when it is not running, then waited for until something listens on its port. Null
+   * when there is no such service.
+   */
+  startAgent(plan: BaselinePlan): Promise<AgentServiceInfo | null>;
+  /** Stops the build's agent service (by its recorded name) and the build's pools, and waits for their processes to end. */
   stopPools(plan: BaselinePlan): Promise<void>;
   /** Copies the install directory to the candidate's `tree\` (times kept, no junction followed, the install's `DB\` left out). */
   copyTree(plan: BaselinePlan): Promise<CopyResult>;
@@ -153,7 +170,7 @@ export interface BuildSystem {
   rename(from: string, to: string): Promise<void>;
   buildManifest(plan: BaselinePlan, tree: string, serverBuild: string): Promise<Manifest>;
   writeManifest(file: string, manifest: Manifest): Promise<void>;
-  /** Removes the alias, pools, database, logins, product registration and service; returns what is still there. */
+  /** Removes the alias, pools, database, logins, product registration and the build's agent service (by its name); returns what is still there. */
   removeThrowaway(plan: BaselinePlan): Promise<readonly string[]>;
   /** Gives `golden\<key>` its read-only ACL: the broker reads, only the elevated build writes. */
   seal(plan: BaselinePlan): Promise<void>;
@@ -255,6 +272,7 @@ interface RunState {
   engineChecked: boolean;
   tree: { files: number; bytes: number } | null;
   licenceOriginal: Record<"lic_type" | "company", string> | null;
+  agent: ServiceRecord | null;
 }
 
 /** Runs the build of `plan`. Never throws: the report says what happened. */
@@ -275,6 +293,7 @@ export async function runBaselineBuild(system: BuildSystem, plan: BaselinePlan, 
     engineChecked: false,
     tree: null,
     licenceOriginal: null,
+    agent: null,
   };
   const inputs = options.inputs ?? {};
   let msiCopy = "";
@@ -336,7 +355,7 @@ export async function runBaselineBuild(system: BuildSystem, plan: BaselinePlan, 
     verify: () => verify(system, plan, inputs, options.engineCheck === true, state),
     stop: async () => {
       await system.stopPools(plan);
-      return `stopped the ${plan.scratch.poolPrefix}* pools`;
+      return `stopped ${plan.scratch.agent.service} and the ${plan.scratch.poolPrefix}* pools`;
     },
     "blank-secrets": async () => {
       const l = inputs.licence;
@@ -369,12 +388,13 @@ export async function runBaselineBuild(system: BuildSystem, plan: BaselinePlan, 
     },
     metadata: async () => {
       const iis: IisRecord = { schema: 1, site: "Default Web Site", applications: state.applications };
-      // INSTALL_AGENT_SERVICE=0: the build installs no agent (spike record, section 1).
-      const service: ServiceRecord = { schema: 1, installed: false, name: null, binaryPath: null, startMode: null };
+      const service = state.agent as ServiceRecord;
+      const binary = win32.join(plan.candidate.tree, service.binaryPath as string);
+      if (!(await system.exists(binary))) throw new BuildStepError("metadata", `the agent's ${service.binaryPath} is not in the new golden's tree`);
       await system.writeFile(plan.candidate.edits, serializeEditList(editList(plan.flavor)));
       await system.writeFile(plan.candidate.iis, goldenJson(iis));
       await system.writeFile(plan.candidate.service, goldenJson(service));
-      return "wrote edits.json, iis.json and service.json";
+      return `wrote edits.json, iis.json and service.json (the agent ${service.binaryPath}, inside the tree)`;
     },
     manifest: async () => {
       const serverBuild = state.serverBuild as string;
@@ -537,6 +557,8 @@ async function verify(system: BuildSystem, plan: BaselinePlan, inputs: BuildInpu
       login = `logged in as ${SHIPPED_ADMIN_LOGIN}`;
     }
   }
+  const agent = await checkAgent(system, plan, state);
+  if (agent.problem) problems.push(agent.problem);
   let engine = "";
   if (engineCheck && !state.loginChecked) engine = "; engine check skipped: it needs the login";
   else if (engineCheck && inputs.adminPassword) {
@@ -554,7 +576,58 @@ async function verify(system: BuildSystem, plan: BaselinePlan, inputs: BuildInpu
     }
   }
   if (problems.length > 0) throw new BuildStepError("verify", problems.join("; "));
-  return `DBList.aspx lists ${plan.names.database}; OAuth discovery answers; server ${version}; ${login}${engine}`;
+  return `DBList.aspx lists ${plan.names.database}; OAuth discovery answers; server ${version}; ${agent.detail}; ${login}${engine}`;
+}
+
+/**
+ * The executable and arguments of a service's command line, the executable relative to `installDir` and the arguments
+ * with `installDir` written `{{tree}}`. Throws when the executable is not inside `installDir`.
+ */
+export function serviceCommand(pathName: string, installDir: string): { binaryPath: string; arguments: string | null } {
+  const line = pathName.trim();
+  let exe: string;
+  let rest: string;
+  if (line.startsWith('"')) {
+    const end = line.indexOf('"', 1);
+    if (end < 0) throw new Error("the service's command line has an unclosed quote");
+    exe = line.slice(1, end);
+    rest = line.slice(end + 1);
+  } else {
+    const end = line.toLowerCase().indexOf(".exe");
+    exe = end < 0 ? line : line.slice(0, end + 4);
+    rest = end < 0 ? "" : line.slice(end + 4);
+  }
+  const dir = installDir.replace(/\\+$/, "");
+  if (!exe.toLowerCase().startsWith(`${dir.toLowerCase()}\\`)) throw new Error(`the service runs ${exe}, not an executable inside ${dir}`);
+  const args = rest.trim().replace(new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), SERVICE_TREE_TOKEN);
+  return { binaryPath: exe.slice(dir.length + 1), arguments: args.length > 0 ? args : null };
+}
+
+/** The agent answers its health request: any HTTP status below 500 (12.0's WSDL may ask for credentials). */
+function agentAnswers(answer: HttpAnswer): boolean {
+  return answer.status !== undefined && answer.status < 500;
+}
+
+/** The build's agent service runs from the install directory and answers on its address; recorded for `service.json`. */
+async function checkAgent(system: BuildSystem, plan: BaselinePlan, state: RunState): Promise<{ problem?: string; detail: string }> {
+  const name = plan.scratch.agent.service;
+  const info = await system.startAgent(plan);
+  if (info === null) return { problem: `the MSI made no agent service ${name}`, detail: "" };
+  let command: { binaryPath: string; arguments: string | null };
+  try {
+    command = serviceCommand(info.pathName, plan.names.dir);
+  } catch (err) {
+    return { problem: `agent ${name}: ${err instanceof Error ? err.message : String(err)}`, detail: "" };
+  }
+  const url = agentHealthUrl(plan.flavor, plan.scratch.agent.address);
+  let answer = await system.get(url, false);
+  for (let i = 1; i < ANSWER_ATTEMPTS && !agentAnswers(answer); i++) {
+    await system.sleep(ANSWER_PAUSE_MS);
+    answer = await system.get(url, false);
+  }
+  if (!agentAnswers(answer)) return { problem: `agent ${name} (${info.state}): ${url} ${failure(answer)}`, detail: "" };
+  state.agent = { schema: 1, installed: true, name, binaryPath: command.binaryPath, startMode: info.startMode, arguments: command.arguments };
+  return { detail: `agent ${name} (${command.binaryPath}, ${info.startMode}) answers ${url} with ${answer.status}` };
 }
 
 /** Why the engine check's export does not prove the engine serves this server, or null when it does. */

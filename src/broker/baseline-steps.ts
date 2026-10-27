@@ -10,10 +10,10 @@
 // as src/core/names.ts, and refuses a flavor that is not registered. Generated from the registry and
 // the deny-list; the shapes come from the spike scripts (spike/10-baseline-install.ps1, 09, 20, 90).
 
-import { BUILD_SCRATCH_SUFFIXES, DEFAULT_INSTALL_ROOT, buildNames } from "../core/names.js";
+import { BUILD_SCRATCH_SUFFIXES, DEFAULT_INSTALL_ROOT, buildNames, buildScratch } from "../core/names.js";
 import { FLAVORS, FLAVOR_KEYS } from "../core/flavors.js";
 import { DENIED_ALIASES, DENIED_INSTALL_ROOTS, DENIED_SERVICE_PREFIXES, assertValidRoot } from "../core/guards.js";
-import { MSI_HIDDEN_PROPERTIES, OOTB_OWNER, SHIPPED_DATABASE_USERS } from "../core/baseline.js";
+import { MSI_BUILT_IN_PROPERTIES, MSI_CUSTOM_ACTION_PROPERTIES, MSI_HIDDEN_PROPERTIES, OOTB_OWNER, SHIPPED_DATABASE_USERS } from "../core/baseline.js";
 import { BROKER_SERVICE_NAME } from "../core/names.js";
 import { psQuote, serviceSid } from "../core/setup-host.js";
 import { PS_DENY_LIST_PRINTS, PS_IIS, PS_PATHS_AND_PRINTS, psSql } from "./ps-common.js";
@@ -27,6 +27,7 @@ export const PS_STEPS = [
   "install",
   "pools",
   "database",
+  "agent",
   "stop",
   "server-version",
   "copy-tree",
@@ -50,6 +51,11 @@ export function renderBuildStepsScript(root: string = DEFAULT_INSTALL_ROOT): str
     (key) =>
       `    ${psQuote(key)} = @{ msi = ${psQuote(FLAVORS[key].msiName)}; core = ${psQuote(FLAVORS[key].backups.core)}; cas = ${psQuote(FLAVORS[key].backups.coreAndSolutions)} }`,
   ).join("\n");
+  // The build's agent service (ticket 33b): its name, port and address, as names.ts derives them.
+  const agents = FLAVOR_KEYS.map((key) => {
+    const a = buildScratch(key, r).agent;
+    return `    ${psQuote(key)} = @{ service = ${psQuote(a.service)}; folder = ${psQuote(a.folder)}; port = ${a.port}; address = ${psQuote(a.address)} }`;
+  }).join("\n");
   const list = (items: readonly string[]) => `@(${items.map(psQuote).join(", ")})`;
 
   return `# baseline-steps.ps1: the Windows operations of \`arashouse baseline build\` (ticket 24, docs/baselines.md). Generated; do not edit.
@@ -63,6 +69,9 @@ $Root = ${psQuote(r)}
 $FlavorKeys = ${list(FLAVOR_KEYS)}
 $MediaNames = @{
 ${media}
+}
+$Agents = @{
+${agents}
 }
 $ScratchSuffixes = ${list(BUILD_SCRATCH_SUFFIXES)}
 $DeniedRoots = ${list(DENIED_INSTALL_ROOTS)}
@@ -99,6 +108,13 @@ $SqlData = Join-Path $Root 'sqldata'
 $DataFile = Join-Path $SqlData "$Database.mdf"
 $LogFile = Join-Path $SqlData "$($Database)_log.ldf"
 $BackupScratch = Join-Path $SqlData "$Database-ootb.bak"
+# The agent service the MSI makes for the build (AS_FOLDER = the alias): the build's own, acted on by this name only.
+$AgentService = [string]$Agents[$Flavor].service
+$AgentFolder = [string]$Agents[$Flavor].folder
+$AgentPort = [int]$Agents[$Flavor].port
+$AgentAddress = [string]$Agents[$Flavor].address
+# The deny-list fingerprints leave it out: it appears with the install and goes with the removal (Get-Present reports it if it stays).
+$OwnServices = @($AgentService)
 
 ${PS_PATHS_AND_PRINTS}
 
@@ -121,6 +137,28 @@ function Stop-BuildProcesses {
     }
     foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
     return $left.Count
+}
+# The executable of a service's command line (quoted or not, arguments after it).
+function Get-ServiceExe($Svc) {
+    $p = if ($Svc.PathName) { ([string]$Svc.PathName).Trim() } else { '' }
+    if ($p.StartsWith('"')) { $end = $p.IndexOf('"', 1); if ($end -gt 0) { return $p.Substring(1, $end - 1) } else { return $p.Trim('"') } }
+    $i = $p.IndexOf('.exe', [StringComparison]::OrdinalIgnoreCase)
+    if ($i -ge 0) { return $p.Substring(0, $i + 4) }
+    return $p
+}
+# The build's agent service when it is the build's: that name, its executable in the build folder. Another service of that name is
+# never touched (Get-Present reports it).
+function Get-BuildAgent {
+    $svc = Get-CimInstance Win32_Service -Filter "Name='$AgentService'"
+    if (-not $svc) { return $null }
+    if (-not (Test-Under (Get-ServiceExe $svc) $BuildDir)) { return $null }
+    return $svc
+}
+function Stop-BuildAgent {
+    $svc = Get-BuildAgent
+    if (-not $svc) { return }
+    if ($svc.State -ne 'Stopped') { Stop-Service -Name $AgentService -Force -ErrorAction SilentlyContinue }
+    (Get-Service -Name $AgentService).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(60))
 }
 function Get-Role([string]$SubPath) {
     $role = $SubPath.Trim('/').ToLowerInvariant() -replace '[^a-z0-9]+', '-'
@@ -179,8 +217,8 @@ function Get-Present([switch]$NoFolders) {
     } finally { $c.Dispose() }
     foreach ($p in (Get-BuildProducts)) { $present += "product $p" }
     foreach ($svc in @(Get-CimInstance Win32_Service)) {
-        $image = if ($svc.PathName) { $svc.PathName.Trim().Trim('"') } else { '' }
-        if ($image -and (Test-Under $image $BuildDir)) { $present += "service $($svc.Name)" }
+        $image = Get-ServiceExe $svc
+        if (($svc.Name -ieq $AgentService) -or ($image -and (Test-Under $image $BuildDir))) { $present += "service $($svc.Name)" }
     }
     if (Test-Path -LiteralPath $BackupScratch) { $present += $BackupScratch }
     return @($present)
@@ -270,9 +308,11 @@ switch ($Step) {
         while ($true) { $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null); if (-not $rec) { break }; $names[[string]$rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, @(1))] = $true }
         $view.GetType().InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
         [void][Runtime.InteropServices.Marshal]::ReleaseComObject($db)
-        $builtIn = @('INSTALLDIR', 'VAULT_ROOT', 'REBOOT', 'MSIRESTARTMANAGERCONTROL')
+        $builtIn = ${list([...MSI_BUILT_IN_PROPERTIES, ...MSI_CUSTOM_ACTION_PROPERTIES])}
         $want = [ordered]@{
-            INSTALLDIR = $BuildDir; VAULT_ROOT = $VaultRoot; WEBALIAS = $Alias; INSTALL_DATABASE = '0'; INSTALL_AGENT_SERVICE = '0'
+            INSTALLDIR = $BuildDir; VAULT_ROOT = $VaultRoot; WEBALIAS = $Alias; INSTALL_DATABASE = '0'; INSTALL_AGENT_SERVICE = '1'
+            AS_FOLDER = $AgentFolder; AS_HOST = 'localhost'; AS_PORT = [string]$AgentPort; INNOVATOR_TO_SERVICE_ADDRESS = $AgentAddress
+            ARAS_AGENTSERVICE_TO_INNOVATORSERVER_URL = "http://localhost/$Alias/Server/InnovatorServer.aspx"
             IS_SQLSERVER_SERVER = '(local)'; IS_SQLSERVER_DATABASE = $Database; IS_SQLSERVER_AUTHENTICATION = '0'
             SQL_SERVER_LOGIN_NAME = $LoginDbo; SQL_SERVER_LOGIN_REGULAR_NAME = $LoginReg; REBOOT = 'ReallySuppress'; MSIRESTARTMANAGERCONTROL = 'Disable'
         }
@@ -383,7 +423,29 @@ switch ($Step) {
         } finally { $c.Dispose() }
         Write-Result @{ database = $Database }
     }
+    'agent' {
+        # The build's agent service (ticket 33b), by its name only: the MSI made it; started when it is not running (the 12.0 MSI starts
+        # it, the 14.x custom action should), then given up to a minute until something listens on its port. The health request is Node's.
+        $svc = Get-CimInstance Win32_Service -Filter "Name='$AgentService'"
+        if (-not $svc) { Write-Result @{ present = $false }; break }
+        if (-not (Test-Under (Get-ServiceExe $svc) $BuildDir)) { Stop-Step "the service $AgentService does not run an executable inside $BuildDir" }
+        if ($svc.State -ne 'Running') {
+            Start-Service -Name $AgentService
+            (Get-Service -Name $AgentService).WaitForStatus('Running', [TimeSpan]::FromSeconds(60))
+        }
+        $listening = $false
+        for ($i = 0; $i -lt 120; $i++) {
+            if (@(Get-NetTCPConnection -State Listen -LocalPort $AgentPort -ErrorAction SilentlyContinue).Count -gt 0) { $listening = $true; break }
+            Start-Sleep -Milliseconds 500
+        }
+        if (-not $listening) { Stop-Step "the agent $AgentService runs but nothing listens on its port $AgentPort" }
+        $svc = Get-CimInstance Win32_Service -Filter "Name='$AgentService'"
+        Write-Result @{ present = $true; state = [string]$svc.State; startMode = [string]$svc.StartMode; pathName = [string]$svc.PathName }
+    }
     'stop' {
+        # The agent first (it holds files in AgentService\ and calls the server); the MSI set it to restart on failure, so it is stopped
+        # through the service manager, never by ending its process.
+        Stop-BuildAgent
         $mgr = Get-Iis
         try {
             foreach ($pool in $mgr.ApplicationPools) {
@@ -434,7 +496,8 @@ switch ($Step) {
     'remove' {
         # Everything the throw-away instance has outside its folders (the build removes those): its IIS applications and pools, the product
         # registration (msiexec /x after the applications are gone, as spike 90 did), the database, its logins and their master users,
-        # any service whose binary is in the build folder, ASP.NET's temporary files of the alias, the backup scratch file.
+        # the build's agent service (by its name, if the uninstall left it), ASP.NET's temporary files of the alias, the backup scratch file.
+        Stop-BuildAgent
         $mgr = Get-Iis
         try {
             $s = $mgr.Sites[$Site]
@@ -447,11 +510,10 @@ switch ($Step) {
             $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/x', $code, '/qn', 'REMOVE_DATABASES=0', 'REBOOT=ReallySuppress', 'MSIRESTARTMANAGERCONTROL=Disable', '/norestart') -Wait -PassThru
             if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010 -and $p.ExitCode -ne 1605) { [Console]::Error.WriteLine("warning: msiexec /x $code returned $($p.ExitCode)") }
         }
-        foreach ($svc in @(Get-CimInstance Win32_Service)) {
-            $image = if ($svc.PathName) { $svc.PathName.Trim().Trim('"') } else { '' }
-            if (-not $image -or -not (Test-Under $image $BuildDir)) { continue }
-            if ($svc.State -ne 'Stopped') { Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue }
-            & sc.exe delete $svc.Name | Out-Null
+        if (Get-BuildAgent) {
+            Stop-BuildAgent
+            & sc.exe delete $AgentService | Out-Null
+            if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("warning: sc.exe could not delete $AgentService ($LASTEXITCODE)") }
         }
         $c = New-Sql
         try {

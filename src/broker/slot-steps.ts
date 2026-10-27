@@ -24,6 +24,7 @@ import {
   SLOT_POOL_IDLE_MINUTES,
   STAMP_FILE_NAME,
   agentServiceName,
+  buildScratch,
   databaseFiles,
   databaseName,
   goldenDir,
@@ -124,6 +125,9 @@ $MarkerAt = ${psQuote(DATABASE_MARKER.resetAt)}
 $PoolIdentities = @('ApplicationPoolIdentity', 'NetworkService', 'LocalService')
 $DeniedRoots = ${list(DENIED_INSTALL_ROOTS)}
 $DeniedServicePrefixes = ${list(DENIED_SERVICE_PREFIXES)}
+# The baseline builds' own agent services (ArasInnovatorAgent_ah-build-<key>, ticket 33b) come and go while a build runs, which a
+# provision or destroy may overlap; they are arashouse's, so the fingerprints leave out those exact names and nothing else.
+$OwnServices = ${list(FLAVOR_KEYS.map((key) => buildScratch(key, r).agent.service))}
 
 function Stop-Step([string]$Message) { [Console]::Error.WriteLine("error: $Message"); exit 1 }
 function Write-Result($Value) { [Console]::Out.WriteLine(${psQuote(RESULT_MARKER)} + (ConvertTo-Json -InputObject $Value -Depth 8 -Compress)) }
@@ -403,10 +407,14 @@ switch ($Step) {
             if (-not $rel -or -not (Test-Relative $rel)) { Stop-Step "service.json names the binary '$rel', not a path inside the tree" }
             $bin = Join-Path $SlotDir $rel
             if (-not (Test-Path -LiteralPath $bin)) { Stop-Step "$bin does not exist" }
+            # The build's arguments, if the MSI gave the service any, with the tree ({{tree}}) the slot's; no other path may appear.
+            $arguments = ([string]$record.arguments).Replace('{{tree}}', $SlotDir)
+            foreach ($m in [regex]::Matches($arguments, '[A-Za-z]:\\\\[^"\\s]*')) { if (-not (Test-Under $m.Value $SlotDir)) { Stop-Step "service.json's arguments name a path outside the slot" } }
             if ($ReservedPorts -contains $AgentPort) { Stop-Step "the agent port $AgentPort is reserved" }
             $existing = Get-Service -Name $Service -ErrorAction SilentlyContinue
             if (-not $existing -and @(Get-NetTCPConnection -State Listen -LocalPort $AgentPort -ErrorAction SilentlyContinue).Count -gt 0) { Stop-Step "something already listens on the agent port $AgentPort" }
-            if (-not $existing) { New-Service -Name $Service -BinaryPathName ('"' + $bin + '"') -StartupType Manual -DisplayName "ArasHouse agent $Flavor-$NN" | Out-Null }
+            $command = '"' + $bin + '"' + $(if ($arguments) { ' ' + $arguments } else { '' })
+            if (-not $existing) { New-Service -Name $Service -BinaryPathName $command -StartupType Manual -DisplayName "ArasHouse agent $Flavor-$NN" | Out-Null }
             Write-Result @{ installed = $true; port = $AgentPort }
         }
     }

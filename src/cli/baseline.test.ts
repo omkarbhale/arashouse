@@ -104,6 +104,9 @@ describe("the baseline bundle", () => {
   it("refuses media that fail the check or lack a property the install sets, and a folder that is not a bundle", async () => {
     const lacking = await media(NEEDED.filter((p) => p !== "INSTALL_DATABASE"));
     expect(mediaRefusal(lacking, "12sp9")).toBe("the 12sp9 MSI has no INSTALL_DATABASE, which the unattended install sets");
+    // The 14.x MSIs have no INNOVATOR_TO_SERVICE_ADDRESS row, though their custom actions read it: not required.
+    expect(mediaRefusal(await media(NEEDED.filter((p) => p !== "INNOVATOR_TO_SERVICE_ADDRESS")), "12sp9")).toBeNull();
+    expect(mediaRefusal(await media(NEEDED.filter((p) => p !== "AS_FOLDER")), "12sp9")).toBe("the 12sp9 MSI has no AS_FOLDER, which the unattended install sets");
     rmSync(join(dir, "media", "12sp9", "Core120.bak"));
     const broken = await checkMedia("12sp9", { env: { [MEDIA_ENV]: join(dir, "media") }, startDir: dir, readMsi: async () => ({ productVersion: "12.0.0", names: NEEDED }) });
     expect(mediaRefusal(broken, "12sp9")).toMatch(/do not pass `arashouse media check 12sp9`/);

@@ -57,7 +57,7 @@ export class FakeSlotSystem implements SlotSystem {
   readonly objects = new Set<string>();
   /** The login passwords the database step was given, by login name. */
   readonly loginSecrets = new Map<string, Secret>();
-  /** Whether the slots have an agent service (no golden has one yet: ticket 33b). */
+  /** Whether the golden has an agent service (ticket 33b), so a provision makes the slot's and a start can start it. */
   agentInstalled = false;
   /** The slots whose pools run, and whose agent runs, by slot id. */
   readonly running = new Set<string>();
@@ -190,7 +190,7 @@ export class FakeSlotSystem implements SlotSystem {
 
   async createAgent(slot: SlotRef): Promise<{ readonly installed: boolean; readonly port?: number }> {
     this.record("createAgent", slot);
-    return { installed: false };
+    return this.agentInstalled ? { installed: true, port: agentPort(slot) } : { installed: false };
   }
 
   async restoreDatabase(slot: SlotRef, logins: SlotLogins): Promise<void> {

@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { renderBaselineBuildScript } from "../src/core/baseline-script.js";
 import { PS_STEPS, renderBuildStepsScript } from "../src/broker/baseline-steps.js";
+import { msiInstallProperties, baselinePlan } from "../src/core/baseline.js";
+import { FLAVOR_KEYS } from "../src/core/flavors.js";
+import { buildScratch } from "../src/core/names.js";
 import { repoRoot } from "./helpers.js";
 
 const steps = renderBuildStepsScript();
@@ -66,6 +69,41 @@ describe("baseline-steps.ps1 (static)", () => {
     const remove = steps.slice(steps.indexOf("    'remove' {"));
     expect(remove.indexOf("[void](Stop-BuildProcesses)")).toBeGreaterThan(-1);
     expect(remove.indexOf("[void](Stop-BuildProcesses)")).toBeLessThan(remove.indexOf("msiexec.exe"));
+  });
+
+  it("installs the agent under the build's own AS_FOLDER and port, with the properties the plan sets", () => {
+    for (const key of FLAVOR_KEYS) {
+      const a = buildScratch(key).agent;
+      expect(steps).toContain(`    '${key}' = @{ service = '${a.service}'; folder = '${a.folder}'; port = ${a.port}; address = '${a.address}' }`);
+    }
+    const install = steps.slice(steps.indexOf("    'install' {"), steps.indexOf("    'pools' {"));
+    // Every property the plan sets is in the step's list; none is the MSI's default agent folder or port.
+    for (const name of Object.keys(msiInstallProperties(baselinePlan("12sp9", { msiSha256: "0".repeat(64) })))) expect(install, name).toMatch(new RegExp(`\\b${name} = `));
+    expect(install).toContain("INSTALL_AGENT_SERVICE = '1'");
+    expect(install).toContain("AS_FOLDER = $AgentFolder; AS_HOST = 'localhost'; AS_PORT = [string]$AgentPort; INNOVATOR_TO_SERVICE_ADDRESS = $AgentAddress");
+    expect(install).toContain("$builtIn = @('INSTALLDIR', 'VAULT_ROOT', 'REBOOT', 'MSIRESTARTMANAGERCONTROL', 'INNOVATOR_TO_SERVICE_ADDRESS')");
+    expect(steps).not.toMatch(/8734|AS_FOLDER = 'ArasInnovatorAgent'/);
+  });
+
+  it("starts, stops and deletes only the build's own agent service, by its recorded name and with its executable in the build folder", () => {
+    for (const m of steps.matchAll(/(Start-Service|Stop-Service|sc\.exe delete|New-Service|Set-Service) [^\n]*/g)) {
+      expect(m[0]).toMatch(/^(Start-Service -Name \$AgentService$|Stop-Service -Name \$AgentService -Force -ErrorAction SilentlyContinue \}|sc\.exe delete \$AgentService \| Out-Null)/);
+    }
+    expect(steps).toContain("if (-not (Test-Under (Get-ServiceExe $svc) $BuildDir)) { return $null }");
+    expect(steps).toContain(`if (-not (Test-Under (Get-ServiceExe $svc) $BuildDir)) { Stop-Step "the service $AgentService does not run an executable inside $BuildDir" }`);
+    const remove = steps.slice(steps.indexOf("    'remove' {"));
+    expect(remove.slice(0, remove.indexOf("sc.exe delete"))).toContain("if (Get-BuildAgent) {");
+    // The service is stopped through the service manager before the build ends its processes: the MSI sets it to restart on failure.
+    expect(remove.indexOf("Stop-BuildAgent")).toBeLessThan(remove.indexOf("[void](Stop-BuildProcesses)"));
+    const stop = steps.slice(steps.indexOf("    'stop' {"));
+    expect(stop.indexOf("Stop-BuildAgent")).toBeLessThan(stop.indexOf("$ended = Stop-BuildProcesses"));
+  });
+
+  it("leaves the build's agent service out of the deny-list fingerprints, and only that one name", () => {
+    expect(steps).toContain("$OwnServices = @($AgentService)");
+    expect(steps).toContain("if (@($OwnServices) -contains $svc.Name) { continue }");
+    // The survey reports it by name, so a leftover is found even though the fingerprints leave it out.
+    expect(steps).toContain("if (($svc.Name -ieq $AgentService) -or ($image -and (Test-Under $image $BuildDir))) { $present += \"service $($svc.Name)\" }");
   });
 
   it("removes only the build alias's applications and pools", () => {

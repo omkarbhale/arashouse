@@ -3,7 +3,7 @@
 // guards.ts's question (`assertOwned`), not this file's.
 
 import { win32 } from "node:path";
-import { FLAVOR_KEYS, type FlavorKey, isFlavorKey } from "./flavors.js";
+import { FLAVORS, FLAVOR_KEYS, type FlavorKey, isFlavorKey } from "./flavors.js";
 
 /** Default install root: outside Program Files, on the Windows side. Overridable only at setup (ticket 21). */
 export const DEFAULT_INSTALL_ROOT = "C:\\aras_installations";
@@ -107,6 +107,24 @@ export function agentPort(ref: SlotRef): number {
   return AGENT_PORT_BASE + index * 100 + ref.slot;
 }
 
+/**
+ * The address an agent of `flavor` listens on and its server config names (`<AgentService InnovatorToServiceAddress>`):
+ * `http://localhost:<port>/<path>` on 12.0, `http://localhost:<port>/` on 14.x (`FLAVORS[...].agent`).
+ */
+export function agentAddress(flavor: FlavorKey, port: number, path: string): string {
+  return FLAVORS[flavorOf(flavor)].agent.address === "path" ? `http://localhost:${port}/${path}` : `http://localhost:${port}/`;
+}
+
+/** The URL an agent at `address` answers its health request on: 12.0's WSDL, 14.x's `/health`. */
+export function agentHealthUrl(flavor: FlavorKey, address: string): string {
+  return `${address}${FLAVORS[flavorOf(flavor)].agent.health}`;
+}
+
+/** The slot's agent address: its reserved port and, on 12.0, its alias as the path (ticket 33b's edit list renders it). */
+export function agentUrl(ref: SlotRef): string {
+  return agentAddress(ref.flavor, agentPort(ref), webAlias(ref));
+}
+
 /** `arashouse_<key>_<NN>_dbo` or `_reg` */
 export function loginName(ref: SlotRef, role: LoginRole): string {
   if (role !== "dbo" && role !== "reg") throw new Error(`unknown login role "${String(role)}"`);
@@ -143,7 +161,10 @@ export function goldenDir(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROOT
   return win32.join(root, "golden", flavorOf(flavor));
 }
 
-/** The MSI's default agent port (`AS_PORT`), which a baseline install keeps and its golden config names. */
+/**
+ * The MSI's default agent port (`AS_PORT`): the captain's agents listen there, and the goldens built before ticket 33b
+ * name it (their edit lists' `build.agentPort`). A build installs its agent on a port of its own (`BuildScratch.agent`).
+ */
 export const MSI_DEFAULT_AGENT_PORT = 8734;
 
 /**
@@ -157,6 +178,7 @@ export interface BuildNames {
   readonly database: string;
   /** `<root>\golden-build\<key>`: the install directory. */
   readonly dir: string;
+  /** `MSI_DEFAULT_AGENT_PORT`, for the edit lists of goldens built before ticket 33b; the build's agent is `BuildScratch.agent`. */
   readonly agentPort: number;
 }
 
@@ -194,6 +216,12 @@ export interface BuildScratch {
   readonly engineDir: string;
   /** `<root>\staging\baseline-<key>`: the bundle `arashouse baseline build` writes (the script, the build, the media). */
   readonly bundleDir: string;
+  /**
+   * The throw-away instance's agent service (ticket 33b): the MSI's `AS_FOLDER` is `ah-build-<key>`, never its default
+   * `ArasInnovatorAgent` (the captain's installs may use it), so the service is `ArasInnovatorAgent_ah-build-<key>`; it
+   * listens on `8800 + 100 x flavor index`, the flavor's agent block below its first slot, never the MSI's 8734.
+   */
+  readonly agent: { readonly folder: string; readonly service: string; readonly port: number; readonly address: string };
 }
 
 /** The suffixes of the scratch folders next to `golden-build\<key>`; the guards admit only these. */
@@ -201,6 +229,7 @@ export const BUILD_SCRATCH_SUFFIXES = ["msi", "vault", "golden", "old", "promoti
 
 export function buildScratch(flavor: FlavorKey, root: string = DEFAULT_INSTALL_ROOT): BuildScratch {
   const build = buildNames(flavor, root);
+  const agentPortOfBuild = AGENT_PORT_BASE + FLAVOR_KEYS.indexOf(flavor) * 100;
   return {
     logins: { dbo: `${build.database}_dbo`, reg: `${build.database}_reg` },
     poolPrefix: `${build.alias}-`,
@@ -211,6 +240,7 @@ export function buildScratch(flavor: FlavorKey, root: string = DEFAULT_INSTALL_R
     promotingMarker: `${build.dir}.promoting`,
     engineDir: `${build.dir}.engine`,
     bundleDir: win32.join(root, "staging", `baseline-${flavorOf(flavor)}`),
+    agent: { folder: build.alias, service: `ArasInnovatorAgent_${build.alias}`, port: agentPortOfBuild, address: agentAddress(flavor, agentPortOfBuild, build.alias) },
   };
 }
 

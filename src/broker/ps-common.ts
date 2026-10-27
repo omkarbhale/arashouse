@@ -1,6 +1,6 @@
 // PowerShell shared by the generated Windows scripts: the baseline build's `baseline-steps.ps1`
 // (ticket 24) and the broker's `slot-steps.ps1` (ticket 25). Text only, pasted into each script; the
-// scripts define `$Root`, `$DeniedRoots`, `$DeniedServicePrefixes` and `Stop-Step` before it.
+// scripts define `$Root`, `$DeniedRoots`, `$DeniedServicePrefixes`, `$OwnServices` and `Stop-Step` before it.
 
 /** `Test-Under` and `Get-Print`: a path prefix test and the SHA-256 of a text. */
 export const PS_PATHS_AND_PRINTS = `function Test-Under([string]$Path, [string]$Parent) {
@@ -61,7 +61,9 @@ export const PS_IIS = `function Get-Iis {
  * `Get-DenyListPrints`: fingerprints of what is not arashouse's and that a change on the host could disturb: the
  * captain's install roots (their config's SHA-256), every IIS application and pool not named `ah-*` (settings and
  * members), the agent services of the deny-list, and the Aras products registered outside the root. Names and
- * hashes only; databases are not listed (the tool creates and drops only its own). Needs `PS_PATHS_AND_PRINTS` and `PS_IIS`.
+ * hashes only; databases are not listed (the tool creates and drops only its own). `$OwnServices` names the deny-listed
+ * services arashouse itself makes and removes, left out: the builds' `ArasInnovatorAgent_ah-build-<key>` (ticket 33b),
+ * the build's own in `baseline-steps.ps1`, all three in `slot-steps.ps1` (a provision may overlap a build). Needs `PS_PATHS_AND_PRINTS` and `PS_IIS`.
  */
 export const PS_DENY_LIST_PRINTS = `function Get-DenyListPrints {
     $prints = [ordered]@{}
@@ -88,6 +90,7 @@ export const PS_DENY_LIST_PRINTS = `function Get-DenyListPrints {
     } finally { $mgr.Dispose() }
     foreach ($svc in @(Get-CimInstance Win32_Service)) {
         if (@($DeniedServicePrefixes | Where-Object { $svc.Name.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) { continue }
+        if (@($OwnServices) -contains $svc.Name) { continue }
         $prints["service $($svc.Name)"] = Get-Print (@($svc.PathName, $svc.StartMode, $svc.StartName) -join '|')
     }
     foreach ($hive in @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall')) {

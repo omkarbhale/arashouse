@@ -36,7 +36,8 @@ export type EditKind = (typeof EDIT_KINDS)[number];
 
 /**
  * The names a template can use. `build.*` are the names the flavor's baseline was installed under
- * (ticket 24), which its golden config files still hold.
+ * (ticket 24), which its golden config files still hold; `build.agentPort` is the MSI's default agent
+ * port, which only the lists of goldens built before ticket 33b use.
  */
 export const EDIT_VARIABLES = [
   "alias",

@@ -1,11 +1,12 @@
 // Sample golden config files for the edit-list tests, written from the structure of the spike installs
 // (12sp9 and 23 in spikes 05 and 07, 35 read on 2026-10-27) and the 12.0 MSI's script for
 // `SelfServiceReportConfig.xml`: element and attribute names, CRLF line endings, tab indents, the
-// quoting each file uses. Every value is a placeholder: the build's names (ticket 24) and fake
-// passwords, never a real key or password.
+// quoting each file uses. The agent's configs (ticket 33b) follow the files the MSIs ship, as their
+// XML and search-and-replace tables rewrite them for the build's agent. Every value is a placeholder:
+// the build's names (ticket 24) and fake passwords, never a real key or password.
 
 import { type FlavorKey } from "./flavors.js";
-import { buildNames } from "./names.js";
+import { buildNames, buildScratch } from "./names.js";
 
 const crlf = (lines: readonly string[]) => `${lines.join("\r\n")}\r\n`;
 
@@ -17,7 +18,7 @@ const HOSTS = ["localhost", "EXAMPLEHOST", "EXAMPLEHOST.example.com", "192.0.2.1
 
 export function sampleGolden(flavor: FlavorKey): Record<string, string> {
   const b = buildNames(flavor);
-  const agentAddress = flavor === "12sp9" ? `http://localhost:${b.agentPort}/ArasInnovatorAgent` : `http://localhost:${b.agentPort}/`;
+  const agentAddress = buildScratch(flavor).agent.address;
   const serverConfig = crlf([
     `<?xml version="1.0" encoding="utf-8"?>`,
     `<Innovator>`,
@@ -100,6 +101,56 @@ export function sampleGolden(flavor: FlavorKey): Record<string, string> {
     "OAuthServer/OAuthServer.config": oauthServer,
     "VaultServer/vault.config": vault,
   };
+  if (flavor === "12sp9") {
+    files["AgentService/Aras.Server.Agent.Service.exe.config"] = crlf([
+      `<?xml version="1.0" encoding="utf-8"?>`,
+      `<configuration>`,
+      `\t<oauth configSource="OAuth.config" />`,
+      `\t<appSettings>`,
+      `\t\t<add key="InnovatorServer" value="http://localhost/${b.alias}/Server/InnovatorServer.aspx" />`,
+      `\t</appSettings>`,
+      `\t<system.serviceModel>`,
+      `\t\t<services>`,
+      `\t\t\t<service name="Aras.Server.Agent.Service.InternalAgent" behaviorConfiguration="basicAuthBehaviour">`,
+      `\t\t\t\t<host>`,
+      `\t\t\t\t\t<baseAddresses>`,
+      `\t\t\t\t\t\t<add baseAddress="${agentAddress}" />`,
+      `\t\t\t\t\t</baseAddresses>`,
+      `\t\t\t\t</host>`,
+      `\t\t\t\t<endpoint address="" binding="basicHttpBinding" bindingConfiguration="basic" contract="Aras.Server.Agent.IInternalAgent" />`,
+      `\t\t\t\t<endpoint address="mex" binding="mexHttpBinding" contract="IMetadataExchange" />`,
+      `\t\t\t</service>`,
+      `\t\t</services>`,
+      `\t</system.serviceModel>`,
+      `\t<!-- HTTPS enabled -->`,
+      `\t<!--system.serviceModel>`,
+      `\t\t<services>`,
+      `\t\t\t<service name="Aras.Server.Agent.Service.InternalAgent" behaviorConfiguration="basicAuthBehaviour">`,
+      `\t\t\t\t<host><baseAddresses><add baseAddress="Https://localhost:8735/ArasInnovatorAgent" /></baseAddresses></host>`,
+      `\t\t\t</service>`,
+      `\t\t</services>`,
+      `\t</system.serviceModel-->`,
+      `</configuration>`,
+    ]);
+  } else {
+    files["AgentService/appsettings.json"] = crlf([
+      `{`,
+      `\t"AgentService": {`,
+      `\t\t"InnovatorServerUrl": "http://localhost/${b.alias}/Server/InnovatorServer.aspx"`,
+      `\t},`,
+      `\t"Kestrel": {`,
+      `\t\t"Endpoints": {`,
+      `\t\t\t"HTTP": {`,
+      `\t\t\t\t"Url": "${agentAddress}"`,
+      `\t\t\t}`,
+      `\t\t}`,
+      `\t},`,
+      `\t"LoggerConfiguration": {`,
+      `\t\t"MinimumLevel": "Fatal"`,
+      `\t}`,
+      `}`,
+    ]);
+  }
   if (flavor !== "35") {
     files["SelfServiceReportConfig.xml"] = crlf([
       `<?xml version="1.0" encoding="utf-8"?>`,

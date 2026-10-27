@@ -4,7 +4,7 @@ import { BUILD_STEPS, baselinePlan, type BaselinePlan, type DenyListSnapshot, ty
 import { makeManifest, type Manifest } from "../core/manifest.js";
 import { Secret } from "../core/secret.js";
 import type { HttpAnswer } from "../host/http.js";
-import { buildEditVars, newLoginPassword, parseLicenceInput, runBaselineBuild, runBuildCleanup, type BuildLogins, type BuildSystem, type EngineExport } from "./baseline-build.js";
+import { buildEditVars, newLoginPassword, parseLicenceInput, runBaselineBuild, runBuildCleanup, serviceCommand, type AgentServiceInfo, type BuildLogins, type BuildSystem, type EngineExport } from "./baseline-build.js";
 
 const MSI_SHA = "a".repeat(64);
 // Assembled at run time so no secret-shaped literal sits in the source.
@@ -42,6 +42,9 @@ class FakeBuildSystem implements BuildSystem {
   engineAnswer: EngineExport = { exitCode: 0, summary: { result: "success", engine: "12.0", server: "12.0.0.24090", items: 1 } };
   missing: string[] | null = [];
   leftovers: string[] = [];
+  /** What `startAgent` finds of the build's agent service (null: the MSI made none), and how its health URL answers. */
+  agent: AgentServiceInfo | null = { state: "Running", startMode: "Auto", pathName: "" };
+  agentAnswer: HttpAnswer = { status: 200, ms: 5 };
   /** What the login and restore steps were given (to check the secrets reached them). */
   readonly seen: { logins?: BuildLogins; password?: Secret; enginePassword?: Secret; engineUser?: string } = {};
   private clock = 0;
@@ -109,6 +112,7 @@ class FakeBuildSystem implements BuildSystem {
       this.instance.add("product");
       this.put(win32.join(this.plan.names.dir, "InnovatorServerConfig.xml"), SERVER_CONFIG);
       this.put(win32.join(this.plan.names.dir, "Innovator", "Server", "bin", "Aras.Server.Core.dll"), "MZ");
+      this.put(win32.join(this.plan.names.dir, "AgentService", "Aras.Server.Agent.Service.exe"), "MZ");
       return { exitCode: this.installExit, failedActions: [] as string[] };
     });
   }
@@ -138,6 +142,7 @@ class FakeBuildSystem implements BuildSystem {
   readonly early: HttpAnswer[] = [];
   slept = 0;
   get(url: string): Promise<HttpAnswer> {
+    if (url.startsWith(`http://localhost:${this.plan.scratch.agent.port}/`)) return this.act("get", () => this.agentAnswer);
     return this.act("get", () => this.early.shift() ?? (url.endsWith("DBList.aspx") ? { status: 200, ms: 5, body: this.dbList } : { status: 200, ms: 5 }));
   }
   sleep(ms: number): Promise<void> {
@@ -160,6 +165,9 @@ class FakeBuildSystem implements BuildSystem {
   }
   serverVersion() {
     return this.act("serverVersion", () => this.version);
+  }
+  startAgent() {
+    return this.act("startAgent", () => (this.agent === null ? null : { ...this.agent, pathName: this.agent.pathName || `"${this.plan.names.dir}\\AgentService\\Aras.Server.Agent.Service.exe"` }));
   }
   stopPools() {
     return this.act("stopPools", () => undefined);
@@ -251,6 +259,7 @@ describe("the baseline build", () => {
       "ownPools",
       "restoreDatabase",
       "serverVersion",
+      "startAgent",
       "stopPools",
       "copyTree",
       "backupDatabase",
@@ -273,8 +282,53 @@ describe("the baseline build", () => {
     expect(flavor).toMatchObject({ flavor: "12sp9", serverBuild: "12.0.0.24090", msiSha256: MSI_SHA, manifestHash: report.goldenHash });
     expect(flavor.backups.map((b: { file: string }) => b.file)).toEqual(["Core120.bak", "CoreAndSolutions120.bak", "ootb.bak"]);
     expect(JSON.parse(system.text(golden.iis) as string).applications).toHaveLength(3);
-    expect(JSON.parse(system.text(golden.service) as string)).toMatchObject({ installed: false });
+    expect(JSON.parse(system.text(golden.service) as string)).toEqual({
+      schema: 1,
+      installed: true,
+      name: "ArasInnovatorAgent_ah-build-12sp9",
+      binaryPath: "AgentService\\Aras.Server.Agent.Service.exe",
+      startMode: "Auto",
+      arguments: null,
+    });
+    expect(report.steps.find((s) => s.step === "verify")?.detail).toContain(
+      "agent ArasInnovatorAgent_ah-build-12sp9 (AgentService\\Aras.Server.Agent.Service.exe, Auto) answers http://localhost:8800/ah-build-12sp9?wsdl with 200",
+    );
     expect(JSON.parse(system.text(golden.edits) as string).flavor).toBe("12sp9");
+  });
+
+  it("fails the verify step when the MSI made no agent, its agent runs from outside the build, or does not answer", async () => {
+    const none = setup();
+    none.system.agent = null;
+    const r1 = await runBaselineBuild(none.system, none.plan, OPTIONS);
+    expect(r1.error).toBe("verify: the MSI made no agent service ArasInnovatorAgent_ah-build-12sp9");
+    expect(none.system.instance.size).toBe(0);
+
+    const elsewhere = setup();
+    elsewhere.system.agent = { state: "Running", startMode: "Auto", pathName: '"C:\\Program Files (x86)\\Aras12\\AgentService\\Aras.Server.Agent.Service.exe"' };
+    const r2 = await runBaselineBuild(elsewhere.system, elsewhere.plan, OPTIONS);
+    expect(r2.error).toMatch(/^verify: agent ArasInnovatorAgent_ah-build-12sp9: the service runs C:\\Program Files \(x86\)\\Aras12\\.*, not an executable inside C:\\aras_installations\\golden-build\\12sp9$/);
+
+    const silent = setup();
+    silent.system.agentAnswer = { ms: 5, error: "connection refused" };
+    const r3 = await runBaselineBuild(silent.system, silent.plan, OPTIONS);
+    expect(r3.error).toBe("verify: agent ArasInnovatorAgent_ah-build-12sp9 (Running): http://localhost:8800/ah-build-12sp9?wsdl connection refused");
+    expect(silent.system.slept).toBe(50_000);
+
+    // A credentials challenge is an answer: 12.0's WSDL sits behind the endpoint's Basic authentication.
+    const challenged = setup();
+    challenged.system.agentAnswer = { status: 401, ms: 5 };
+    expect((await runBaselineBuild(challenged.system, challenged.plan, OPTIONS)).ok).toBe(true);
+  });
+
+  it("reads a service's command line: the executable inside the install directory, and its arguments with the tree as {{tree}}", () => {
+    const dir = "C:\\aras_installations\\golden-build\\23";
+    expect(serviceCommand(`"${dir}\\AgentService\\bin\\Aras.Server.Agent.Service.exe"`, dir)).toEqual({ binaryPath: "AgentService\\bin\\Aras.Server.Agent.Service.exe", arguments: null });
+    expect(serviceCommand(`${dir}\\AgentService\\Agent.exe --contentRoot "${dir.toUpperCase()}\\AgentService"`, dir)).toEqual({
+      binaryPath: "AgentService\\Agent.exe",
+      arguments: '--contentRoot "{{tree}}\\AgentService"',
+    });
+    expect(() => serviceCommand('"C:\\Windows\\agent.exe"', dir)).toThrow(/not an executable inside/);
+    expect(() => serviceCommand(`"${dir}.old\\agent.exe"`, dir)).toThrow(/not an executable inside/);
   });
 
   it("skips the login without a licence key and the admin password, and logs in with both", async () => {

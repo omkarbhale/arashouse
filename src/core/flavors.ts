@@ -61,6 +61,17 @@ export type HostPrerequisite =
   /** The Visual C++ 2015-2022 (14.x) x64 runtime. */
   | "vcredist-14-x64";
 
+/**
+ * How a flavor's agent service is addressed (ticket 33b, from the MSIs' tables and shipped configs). 12.0's agent is a WCF host on
+ * `http://localhost:<port>/<path>` (the MSI's `AS_FOLDER` is the path) and serves its WSDL there; 14.x's is a Kestrel host on
+ * `http://localhost:<port>/` with a `/health` route.
+ */
+export interface AgentLayout {
+  readonly address: "path" | "root";
+  /** Appended to the address for the health request. */
+  readonly health: string;
+}
+
 export interface Flavor {
   readonly key: FlavorKey;
   /** The Aras release the key stands for. */
@@ -100,7 +111,11 @@ export interface Flavor {
   readonly runtimeDirs: readonly RuntimeRule[];
   /** What the host needs before a baseline of this flavor can run (spike record, section 1). */
   readonly hostPrerequisites: readonly HostPrerequisite[];
+  readonly agent: AgentLayout;
 }
+
+const WCF_AGENT: AgentLayout = { address: "path", health: "?wsdl" };
+const KESTREL_AGENT: AgentLayout = { address: "root", health: "health" };
 
 export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
   "12sp9": {
@@ -120,6 +135,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     runtimeDirs: RUNTIME_DIRS,
     // OAuth and Vault are netcoreapp2.1 under `AspNetCoreModule` (V1); the rest is .NET Framework 4.x.
     hostPrerequisites: ["iis", "netfx-4.7.2", "aspnetcore-2.1", "ancm-v1"],
+    agent: WCF_AGENT,
   },
   "23": {
     key: "23",
@@ -138,6 +154,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     runtimeDirs: RUNTIME_DIRS,
     // net6.0 throughout, out of process (spike 07).
     hostPrerequisites: ["iis", "netfx-4.7.2", "aspnetcore-6.0", "ancm-v2"],
+    agent: KESTREL_AGENT,
   },
   "35": {
     key: "35",
@@ -157,6 +174,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     runtimeDirs: RUNTIME_DIRS,
     // ASP.NET Core 8 and the VC++ 14.x runtime (spike 08, the Release 35 Installation Guide).
     hostPrerequisites: ["iis", "netfx-4.7.2", "aspnetcore-8.0", "ancm-v2", "vcredist-14-x64"],
+    agent: KESTREL_AGENT,
   },
 };
 

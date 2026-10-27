@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { ENGINE_BUNDLE_DIR, MSI_BUILT_IN_PROPERTIES, baselinePlan, msiInstallProperties } from "../core/baseline.js";
+import { ENGINE_BUNDLE_DIR, MSI_BUILT_IN_PROPERTIES, MSI_CUSTOM_ACTION_PROPERTIES, baselinePlan, msiInstallProperties } from "../core/baseline.js";
 import { BUILD_SCRIPT_NAME, PLAN_FILE, RESULT_FILE, renderBaselineBuildScript, type BundlePlan, type PinnedFile } from "../core/baseline-script.js";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import { FLAVOR_KEYS, getFlavor, isFlavorKey, type FlavorKey } from "../core/flavors.js";
@@ -40,7 +40,8 @@ function sha256File(path: string): Promise<string> {
 export function mediaRefusal(report: FlavorMediaReport, flavor: FlavorKey): string | null {
   if (!report.ok) return `the ${flavor} media do not pass \`arashouse media check ${flavor}\`: ${report.problems.join("; ") || "see its report"}`;
   if (!report.msi?.read) return `the ${flavor} MSI could not be read (${report.msi?.error ?? "no MSI"})`;
-  const needed = Object.keys(msiInstallProperties(baselinePlan(flavor, { msiSha256: "0".repeat(64) }))).filter((p) => !MSI_BUILT_IN_PROPERTIES.includes(p));
+  const unlisted = [...MSI_BUILT_IN_PROPERTIES, ...MSI_CUSTOM_ACTION_PROPERTIES];
+  const needed = Object.keys(msiInstallProperties(baselinePlan(flavor, { msiSha256: "0".repeat(64) }))).filter((p) => !unlisted.includes(p));
   const lacking = missingProperties(report.msi.publicProperties, needed);
   if (lacking.length > 0) return `the ${flavor} MSI has no ${lacking.join(", ")}, which the unattended install sets`;
   return null;

@@ -46,9 +46,9 @@ finishes the reset even past the deadline); without `--wait` it starts a reset w
 exits 3 (`docs/reset.md`).
 
 `--agent` also starts the slot's agent service (`ArasHouseAgent_<key>_<NN>`, on the slot's reserved port), which
-conversion tasks and scheduled methods need; without it the agent stays stopped. The reset stops it again. No golden
-has an agent yet (ticket 33b), so `get --agent` is refused (exit 7) and the slot it took goes back to be reset
-(`docs/start-stop.md`).
+conversion tasks and scheduled methods need; without it the agent stays stopped. The reset stops it again. A slot
+made from a golden built before ticket 33b has no agent: `get --agent` is then refused (exit 7) and the slot it took
+goes back to be reset (`docs/start-stop.md`).
 
 With `--json`, stdout is the lease contract and nothing else (`docs/schemas/get.schema.json`); any
 human text goes to stderr. It is the one output that shows the lease's password, once. There is no

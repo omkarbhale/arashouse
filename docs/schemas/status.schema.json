@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/status.schema.json",
   "title": "arashouse status --json",
-  "description": "One row per slot, totals per flavor, and the active-lease count against max_active. It never carries a password or a full lease id.",
+  "description": "One row per slot, totals per flavor, the active-lease count against max_active, the running resets against max_resets, and the get --wait queue. It never carries a password or a full lease id.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["generated_at", "max_active", "slots", "flavors"],
+  "required": ["generated_at", "max_active", "max_resets", "slots", "flavors", "queue"],
   "properties": {
     "generated_at": { "type": "string" },
     "max_active": {
@@ -17,7 +17,17 @@
         "in_use": { "type": "integer", "minimum": 0 }
       }
     },
+    "max_resets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit", "in_use"],
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1 },
+        "in_use": { "type": "integer", "minimum": 0, "description": "Slots that are resetting." }
+      }
+    },
     "slots": { "type": "array", "items": { "$ref": "#/$defs/row" } },
+    "queue": { "type": "array", "items": { "$ref": "#/$defs/waiter" }, "description": "The live get --wait callers, first served first." },
     "flavors": {
       "type": "object",
       "additionalProperties": false,
@@ -57,6 +67,17 @@
         "last_reset_at": { "type": ["string", "null"] },
         "last_reset_ms": { "type": ["integer", "null"], "minimum": 0 },
         "quarantine_reason": { "type": ["string", "null"] }
+      }
+    },
+    "waiter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ticket", "flavor", "holder", "queued_at"],
+      "properties": {
+        "ticket": { "type": "integer", "minimum": 1 },
+        "flavor": { "enum": ["12sp9", "23", "35"] },
+        "holder": { "type": "string" },
+        "queued_at": { "type": "string" }
       }
     },
     "totals": {

@@ -16,5 +16,7 @@ export * from "./recovery.js";
 export * from "./zip.js";
 export * from "./media-check.js";
 export * from "./exit-codes.js";
+export * from "./config.js";
+export * from "./governor.js";
 export * from "./lease.js";
 export * from "./lease-files.js";

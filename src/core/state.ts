@@ -60,16 +60,37 @@ export interface Slot {
   readonly reset?: ResetInfo;
 }
 
+/**
+ * A `get --wait` caller standing in the queue (ticket 17). Tickets are handed out in arrival order
+ * and the governor serves them first come, first served. A waiter whose process is gone or whose
+ * wait has run out no longer holds its place.
+ */
+export interface Waiter {
+  readonly ticket: number;
+  readonly flavor: FlavorKey;
+  readonly holder: string;
+  readonly pid: number;
+  /** The waiting process's start time, so a reused pid is not mistaken for it (lock.ts); null where unknown. */
+  readonly start_time: string | null;
+  readonly queued_at: string;
+  /** When the caller stops waiting; null for a wait without a limit. */
+  readonly expires_at: string | null;
+}
+
 export interface State {
   readonly version: typeof STATE_VERSION;
   /** Incremented by every committed update; two commits never share a revision. */
   readonly revision: number;
   readonly updated_at: string;
   readonly slots: Readonly<Record<string, Slot>>;
+  /** The next queue ticket; tickets only grow. */
+  readonly next_ticket: number;
+  /** The `get --wait` callers, in ticket order. */
+  readonly queue: readonly Waiter[];
 }
 
 export function emptyState(now: Date = new Date()): State {
-  return { version: STATE_VERSION, revision: 0, updated_at: now.toISOString(), slots: {} };
+  return { version: STATE_VERSION, revision: 0, updated_at: now.toISOString(), slots: {}, next_ticket: 1, queue: [] };
 }
 
 /** A new slot enters the pool `provisioning`: nothing is handed out until a provision succeeds. */
@@ -248,7 +269,16 @@ export function serialiseState(state: State): string {
       ...(s.quarantine_reason !== undefined ? { quarantine_reason: s.quarantine_reason } : {}),
       ...(s.reset ? { reset: { started_at: s.reset.started_at, pid: s.reset.pid, attempt: s.reset.attempt } } : {}),
     }));
-  return `${JSON.stringify({ version: STATE_VERSION, revision: state.revision, updated_at: state.updated_at, slots }, null, 2)}\n`;
+  const queue = state.queue.map((w) => ({
+    ticket: w.ticket,
+    flavor: w.flavor,
+    holder: w.holder,
+    pid: w.pid,
+    start_time: w.start_time,
+    queued_at: w.queued_at,
+    expires_at: w.expires_at,
+  }));
+  return `${JSON.stringify({ version: STATE_VERSION, revision: state.revision, updated_at: state.updated_at, slots, next_ticket: state.next_ticket, queue }, null, 2)}\n`;
 }
 
 type Json = Record<string, unknown>;
@@ -340,6 +370,38 @@ function parseSlot(path: string, key: string, raw: unknown): Slot {
   };
 }
 
+function parseWaiter(path: string, index: number, raw: unknown): Waiter {
+  const where = `queue[${index}]`;
+  if (!isObject(raw)) return fail(path, `${where} is not an object`);
+  if (!Number.isInteger(raw.ticket) || (raw.ticket as number) < 1) fail(path, `${where}.ticket is not a positive integer`);
+  if (!isFlavorKey(raw.flavor)) fail(path, `${where}.flavor is not a flavor`);
+  if (!Number.isInteger(raw.pid) || (raw.pid as number) < 1) fail(path, `${where}.pid is not a positive integer`);
+  return {
+    ticket: raw.ticket as number,
+    flavor: raw.flavor,
+    holder: str(path, `${where}.holder`, raw.holder),
+    pid: raw.pid as number,
+    start_time: strOrNull(path, `${where}.start_time`, raw.start_time),
+    queued_at: str(path, `${where}.queued_at`, raw.queued_at),
+    expires_at: strOrNull(path, `${where}.expires_at`, raw.expires_at),
+  };
+}
+
+/** The queue of a state file; a file written before the queue existed has an empty one. */
+function parseQueue(path: string, raw: Json): { next_ticket: number; queue: Waiter[] } {
+  if (raw.next_ticket === undefined && raw.queue === undefined) return { next_ticket: 1, queue: [] };
+  if (!Number.isInteger(raw.next_ticket) || (raw.next_ticket as number) < 1) fail(path, "next_ticket is not a positive integer");
+  if (!Array.isArray(raw.queue)) fail(path, "queue is not a list");
+  const next_ticket = raw.next_ticket as number;
+  const queue = (raw.queue as unknown[]).map((entry, i) => parseWaiter(path, i, entry));
+  for (let i = 0; i < queue.length; i++) {
+    const ticket = (queue[i] as Waiter).ticket;
+    if (ticket >= next_ticket) fail(path, `queue[${i}].ticket is not below next_ticket`);
+    if (i > 0 && ticket <= (queue[i - 1] as Waiter).ticket) fail(path, "the queue is not in ticket order");
+  }
+  return { next_ticket, queue };
+}
+
 /** Parses and validates the bytes of a state file; throws `StateCorruptError` (naming `path`) on any defect. */
 export function parseState(text: string, path = "state.json"): State {
   let raw: unknown;
@@ -363,5 +425,6 @@ export function parseState(text: string, path = "state.json"): State {
     revision: raw.revision as number,
     updated_at: str(path, "updated_at", raw.updated_at),
     slots,
+    ...parseQueue(path, raw),
   };
 }

@@ -95,7 +95,7 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | 0 | ok (including `already returned`) |
 | 1 | any other failure |
 | 2 | usage: an unknown command, option or flavor, a missing argument, `return` by slot name without `--if-lease-id` |
-| 3 | no slot available: none of the flavor is free, or the governor refused (`max_active`) |
+| 3 | no slot available: none of the flavor is free, or the governor refused (`max_active`, `min_free_ram_mb`; `docs/governor.md`) |
 | 4 | lease mismatch: `return --if-lease-id` named a lease the slot no longer holds; `run` on a lease that is not held, or whose password is gone |
 | 5 | reset failed: the slot is quarantined or disabled, or `return --wait` timed out |
 | 6 | host unreachable (the host or broker did not answer) |

@@ -61,7 +61,7 @@ lease, so it cannot change a leaseholder's password. A destroy deletes the store
 (`licence-12`, `licence-14`), no slot of it renders one and its server refuses every login, with any password; the check
 then passes as `not checked: no licence key is stored for line 12, ...` rather than logging in. Once a key is stored,
 every login check runs, and it fails (and quarantines) when neither password works. Storing the whole `<License>`
-element and the golden backup's `root` password is left to tickets 34 and 35; nothing stores either yet.
+element and the golden backup's `root` password is left to tickets 34b and 35; nothing stores either yet.
 
 ## Dirty detection in `get`
 
@@ -116,8 +116,8 @@ checked three times (the reset's `golden` step, `resetDatabase`'s and `resetTree
 the health check follows.
 
 The `login` check reported "not checked": no licence is stored, so the one-time password and the refusal of the golden
-backup's password are proven only offline (`src/broker/health.test.ts`, `src/broker/aras-login.test.ts`) until a
-licence and `ootb-root-<key>` are stored (tickets 34 and 35).
+backup's password are proven only offline (`src/broker/health.test.ts`, with ticket 34's `src/broker/aras-http.test.ts` for the requests) until a
+licence and `ootb-root-<key>` are stored (tickets 34b and 35).
 
 ## Safety
 

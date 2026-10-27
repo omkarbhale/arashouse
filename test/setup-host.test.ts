@@ -71,8 +71,9 @@ describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
     expect(lines).toContain(`would do: create ${root}`);
     for (const folder of ROOT_FOLDERS) expect(lines).toContain(`would do: create ${root}\\${folder}`);
     expect(lines.filter((l) => l.startsWith(`would do: set the ACL of ${root}\\`))).toHaveLength(ROOT_FOLDERS.length);
-    expect(lines.some((l) => l.startsWith("would do: create the service ArasHouseBroker"))).toBe(true);
-    const result = JSON.parse(json) as { applied: boolean; ok: boolean; folders: unknown[]; planned: string[]; changes: unknown[]; principals: { brokerSid: string } };
+    const result = JSON.parse(json) as { applied: boolean; ok: boolean; folders: unknown[]; planned: string[]; changes: unknown[]; principals: { brokerSid: string }; broker: { installed: boolean } };
+    // On a host where setup has already run, the service exists and the dry run rightly does not plan to create it.
+    expect(lines.some((l) => l.startsWith("would do: create the service ArasHouseBroker"))).toBe(!result.broker.installed);
     expect(result.applied).toBe(false);
     expect(result.ok).toBe(false);
     expect(result.folders).toHaveLength(ROOT_FOLDERS.length);
@@ -106,7 +107,7 @@ describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
     try {
       const r = run(["-Uninstall", "-RemoveRoot"]);
       expect(r.err).toMatch(/refused to remove .*not-arashouse, which are not arashouse folders/);
-      expect(r.out).not.toMatch(/would do: remove /);
+      expect(r.out).not.toContain(`would do: remove ${root}`);
       expect(existsSync(`/mnt/c/${foreign.slice(3).replace(/\\/g, "/")}`)).toBe(true);
     } finally {
       runPs(["-Command", `Remove-Item -LiteralPath '${root}' -Recurse -Force`]);

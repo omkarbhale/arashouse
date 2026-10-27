@@ -1,7 +1,7 @@
 // The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `help`, `version`
 // (and `media check`, ticket 18, `baseline verify`, ticket 28, and `reset-worker`, ticket 14), thin
 // over the lease core, and the operator commands (`doctor`, `repair`, `destroy`, `prune`,
-// `force-return`, `disable`, `enable`, ticket 16; `baseline build`, ticket 24), thin over
+// `force-return`, `disable`, `enable`, ticket 16; `baseline build`, ticket 24; `teardown`, ticket 49), thin over
 // operator.ts. Output rules: no command prints a password except `get --json`, once; `--verbose`
 // never adds a secret; an error is one line plus a hint, with the stack only under `ARASHOUSE_DEBUG=1`. The exit codes are docs/cli.md's table.
 
@@ -52,6 +52,8 @@ import { runWithLease } from "./run.js";
 import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
 import { checkMedia } from "../core/media-check.js";
 import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
+import { teardownPool, teardownSwitches, type TeardownRequest } from "../core/teardown.js";
+import { writeTeardownBundle } from "./teardown.js";
 
 export const DEBUG_ENV = "ARASHOUSE_DEBUG";
 
@@ -172,6 +174,16 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "Lists, and with --yes destroys, the slots that are disabled or orphaned (on the host with no",
     "record). Never by age: a lease has no expiry.",
   ],
+  teardown: [
+    "usage: arashouse teardown [--goldens] [--keep-sql] [--remove-root] [--include-leased <slot>...] [--yes] [--out <dir>]",
+    "",
+    "Removes the whole pool. A dry run without --yes. From WSL it destroys every slot (as `destroy` does)",
+    "and writes teardown.ps1 to <dir> (default: arashouse-teardown in the Windows temp folder), which the",
+    "captain then runs elevated: it drops the SQL objects of setup-sql (not with --keep-sql), uninstalls the",
+    "broker service, and with --goldens first removes golden\\<flavor>, with --remove-root last the install",
+    "root if it holds only arashouse folders. It refuses while a slot is leased unless every leased slot is",
+    "named after --include-leased (their leases are lost). See docs/teardown.md.",
+  ],
   "force-return": [
     "usage: arashouse force-return <slot> --lease-id <lease> [--yes]",
     "",
@@ -214,6 +226,7 @@ const OVERVIEW: readonly string[] = [
   "  repair <slot> [--rebuild]                                  reset a quarantined slot from golden",
   "  destroy <slot> [--yes] [--include-leased]                  remove a slot from the host and the pool",
   "  prune [--yes]                                              destroy disabled and orphaned slots",
+  "  teardown [--goldens] [--keep-sql] [--remove-root] [--yes]  remove the whole pool, then the broker (elevated)",
   "  force-return <slot> --lease-id <lease> [--yes]             return a crashed holder's lease",
   "  disable <slot>                                             take a slot out of rotation",
   "  enable <slot>                                              put a disabled slot back (through a reset)",
@@ -576,6 +589,49 @@ async function cmdPrune(ctx: Context, args: readonly string[]): Promise<number> 
   return printResult(ctx, await prune(await operatorDeps(ctx), { yes: parsed.options.yes === true }));
 }
 
+async function cmdTeardown(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { yes: "flag", "include-leased": "flag", goldens: "flag", "keep-sql": "flag", "remove-root": "flag", out: "value" });
+  const o = parsed.options;
+  if (o["include-leased"] !== true && parsed.positionals.length > 0) throw new UsageError(`teardown names slots only after --include-leased, not "${parsed.positionals[0]}"`);
+  if (o["include-leased"] === true && parsed.positionals.length === 0) throw new UsageError("--include-leased needs the exact name of every leased slot (<flavor>-<NN>)");
+  const request: TeardownRequest = { yes: o.yes === true, includeLeased: parsed.positionals, goldens: o.goldens === true, keepSql: o["keep-sql"] === true, removeRoot: o["remove-root"] === true };
+  const switches = teardownSwitches(request);
+  const deps = await operatorDeps(ctx);
+  const out = stringOption(parsed, "out");
+  let script = "";
+  const writeBundle = async () => {
+    const written = await writeTeardownBundle({
+      outDir: out ?? join(await windowsTempDir(), "arashouse-teardown"),
+      distDir: DIST_DIR,
+      packageJson: PACKAGE_JSON,
+      version: version(),
+      worker: await workerIdentity(),
+      flavors: await flavorsToCheck((flavor) => mediaPresent(flavor, { env: ctx.env })),
+    });
+    script = (await defaultRun("wslpath", ["-w", written]).catch(() => written)).trim();
+  };
+  const result = await teardownPool(deps, request, writeBundle);
+  for (const line of result.lines) ctx.io.out(line);
+  const command = (extra: string) => `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}"${[...switches, extra].filter(Boolean).map((s) => ` ${s}`).join("")}`;
+  if (!request.yes) {
+    ctx.io.out(`with --yes it first writes teardown.ps1 and the two scripts it runs to ${out ?? "arashouse-teardown in the Windows temp folder"}`);
+  } else if (!result.slotsGone) {
+    ctx.io.out(`wrote ${script}, but slots are left, and it refuses until they are gone: run arashouse teardown --yes again`);
+  } else {
+    for (const line of [
+      `wrote ${script} and the two scripts it runs (each pinned by SHA-256)`,
+      "in an elevated Windows PowerShell (Run as administrator):",
+      `${command("")}           # the plan`,
+      `${command("-Apply")}    # make the changes`,
+      "it prints the deny-list before and after, what is left, and the result as JSON (docs/teardown.md)",
+    ]) {
+      ctx.io.out(line);
+    }
+    if (!/^[A-Za-z]:\\/.test(script)) ctx.io.err(`arashouse: ${script} is not on a Windows drive; copy its folder to one before running it`);
+  }
+  return result.exitCode;
+}
+
 async function cmdForceReturn(ctx: Context, args: readonly string[]): Promise<number> {
   const parsed = parseArgs(args, { "lease-id": "value", yes: "flag" });
   const slot = oneSlot(parsed, "force-return");
@@ -608,6 +664,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   repair: cmdRepair,
   destroy: cmdDestroy,
   prune: cmdPrune,
+  teardown: cmdTeardown,
   "force-return": cmdForceReturn,
   disable: cmdDisable,
   enable: cmdEnable,

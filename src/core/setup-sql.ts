@@ -393,6 +393,11 @@ const DATA_SOURCE = /^(lpc:\.|\(localdb\)\\[A-Za-z0-9_]{1,64})$/;
 
 const VERSION = /^[0-9A-Za-z.+-]{1,64}$/;
 
+/** `<column> COLLATE Latin1_General_BIN2 LIKE N'<p1>' OR ...`: matches any of `patterns`, in a binary collation. */
+export function likeAny(column: string, patterns: readonly string[]): string {
+  return `(${patterns.map((p) => `${column} COLLATE Latin1_General_BIN2 LIKE N'${p}'`).join(" OR ")})`;
+}
+
 /** A PowerShell array of single-quoted strings. */
 function psArray(items: readonly string[]): string {
   return `@(${items.map(psQuote).join(", ")})`;
@@ -453,6 +458,7 @@ export function renderSetupSqlScript(options: SetupSqlScriptOptions): string {
 #   setup-sql.ps1                      the facts, the plan and the checks of what exists
 #   setup-sql.ps1 -Apply               create or repair arashouse_admin, its procedures, their signature and the broker's login
 #   setup-sql.ps1 -Apply -SelfTest     ... and, as the broker's login, create and drop the throw-away database ${selfTestDatabase}
+#   setup-sql.ps1 -Uninstall [-Apply]  drop those objects again (ticket 49); refused while a slot's database or login is left
 #
 # It creates or changes only: the login [${POOL_LOGIN}] (no server role), the database ${UTILITY_DATABASE} (files under
 # ${sqlDataDir(root)}\\), its user ${POOL_USER}, its five procedures, the certificate ${SIGNER} in ${UTILITY_DATABASE} and
@@ -461,7 +467,8 @@ export function renderSetupSqlScript(options: SetupSqlScriptOptions): string {
 # Exit codes: 0 ok, 1 a step or a check failed, 2 refused arguments, 3 cannot connect to SQL Server, 4 the login is not sysadmin.
 param(
     [switch]$Apply,
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    [switch]$Uninstall
 )
 $ErrorActionPreference = 'Stop'
 
@@ -485,6 +492,8 @@ $NegativeBackup = ${psQuote(negativeBackup)}
 $SelfTestDatabase = ${psQuote(selfTestDatabase)}
 $SelfTestLogin = ${psQuote(selfTestLogin)}
 $SelfTestDataFile = ${psQuote(databaseFiles(selfTestDatabase, root).data)}
+$SlotDatabaseFilter = ${psQuote(likeAny("name", databasePatterns()))}
+$SlotLoginFilter = ${psQuote(likeAny("name", loginPatterns()))}
 $ConnectionString = 'Data Source=${dataSource};Initial Catalog=master;Integrated Security=SSPI;Connect Timeout=10;Pooling=False;Application Name=arashouse-setup-sql'
 $Procedures = [ordered]@{}
 ${procedureBlocks}
@@ -874,8 +883,70 @@ function Test-RoundTrip {
     return $out
 }
 
+# ---- uninstall (ticket 49) ----
+
+function Get-UninstallState {
+    # What of this script's objects exists, and what would make dropping them unsafe: a slot's database or login (the pool login owns
+    # each slot database; dropping it would orphan them), or any other database the pool login owns. Slot names are the pool's own.
+    $s = [ordered]@{}
+    $s.slotDatabases = (Get-SqlList 'master' ("SELECT name FROM sys.databases WHERE {0} ORDER BY name" -f $SlotDatabaseFilter))
+    $s.slotLogins = (Get-SqlList 'master' ("SELECT name FROM sys.server_principals WHERE {0} ORDER BY name" -f $SlotLoginFilter))
+    $s.poolLogin = ($null -ne (Get-SqlValue 'master' 'SELECT principal_id FROM sys.server_principals WHERE name = @login' @{ login = $PoolLogin }))
+    $s.poolOwns = 0
+    $s.poolSessions = 0
+    if ($s.poolLogin) {
+        $s.poolOwns = [int](Get-SqlValue 'master' 'SELECT COUNT(*) FROM sys.databases WHERE owner_sid = SUSER_SID(@login)' @{ login = $PoolLogin })
+        $s.poolSessions = [int](Get-SqlValue 'master' 'SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE security_id = SUSER_SID(@login)' @{ login = $PoolLogin })
+    }
+    $s.adminDatabase = ($null -ne (Get-SqlValue 'master' 'SELECT DB_ID(@db)' @{ db = $AdminDatabase }))
+    $s.adminDataFile = $null
+    if ($s.adminDatabase) { $s.adminDataFile = Get-SqlValue 'master' 'SELECT physical_name FROM sys.master_files WHERE database_id = DB_ID(@db) AND type = 0' @{ db = $AdminDatabase } }
+    $s.signerLogin = ($null -ne (Get-SqlValue 'master' "SELECT principal_id FROM sys.server_principals WHERE name = @signer AND type = 'C'" @{ signer = $Signer }))
+    $s.masterCertificate = ($null -ne (Get-SqlValue 'master' 'SELECT CERT_ID(@signer)' @{ signer = $Signer }))
+    return $s
+}
+
+function Remove-AdminDatabase {
+    Invoke-Sql 'master' ('ALTER DATABASE [{0}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{0}];' -f $AdminDatabase)
+}
+
+function Remove-SignerLogin { Invoke-Sql 'master' ('DROP LOGIN [{0}];' -f $Signer) }
+
+function Remove-MasterCertificate { Invoke-Sql 'master' ('DROP CERTIFICATE [{0}];' -f $Signer) }
+
+function Remove-PoolLogin {
+    # The broker may hold a session (each of its calls opens one); a login cannot be dropped while it is logged in.
+    foreach ($spid in (Get-SqlList 'master' 'SELECT session_id FROM sys.dm_exec_sessions WHERE security_id = SUSER_SID(@login) AND session_id <> @@SPID' @{ login = $PoolLogin })) {
+        Invoke-Sql 'master' ('KILL {0};' -f [int]$spid)
+    }
+    Invoke-Sql 'master' ('DROP LOGIN {0};' -f (Get-SqlValue 'master' 'SELECT QUOTENAME(@login)' @{ login = $PoolLogin }))
+}
+
+function Invoke-Uninstall {
+    # Drops what -Apply created, in the reverse order, and nothing else: the utility database (and with it the pool user, the
+    # procedures and their certificate), the certificate's login and its copy in master, then the broker's login. Refused, with
+    # nothing changed, while a slot's database or login is left: \`arashouse teardown\` destroys the slots first.
+    $state = Get-UninstallState
+    $blocked = New-Object System.Collections.ArrayList
+    if ($state.slotDatabases.Count -gt 0) { [void]$blocked.Add(('slot databases are left: {0}' -f ($state.slotDatabases -join ', '))) }
+    if ($state.slotLogins.Count -gt 0) { [void]$blocked.Add(('slot logins are left: {0}' -f ($state.slotLogins -join ', '))) }
+    if ($state.poolOwns -gt 0) { [void]$blocked.Add(('the login [{0}] owns {1} database(s)' -f $PoolLogin, $state.poolOwns)) }
+    if ($state.adminDatabase -and $state.adminDataFile -ne $AdminDataFile) { [void]$blocked.Add(('{0} has its data file at {1}, not {2}: it is not the one this script made' -f $AdminDatabase, $state.adminDataFile, $AdminDataFile)) }
+    if ($blocked.Count -gt 0) {
+        foreach ($b in $blocked) { [void]$Errors.Add("refused: $b; destroy the slots first (arashouse teardown), nothing was dropped") }
+        return $state
+    }
+    if ($state.adminDatabase) { Invoke-Change "drop the database $AdminDatabase (its user $PoolUser, its five procedures and the certificate $Signer in it)" { Remove-AdminDatabase } }
+    if ($state.signerLogin) { Invoke-Change "drop the login $Signer (made from the certificate)" { Remove-SignerLogin } }
+    if ($state.masterCertificate) { Invoke-Change "drop the certificate $Signer in master" { Remove-MasterCertificate } }
+    if ($state.poolLogin) { Invoke-Change ("drop the login [{0}]{1}" -f $PoolLogin, $(if ($state.poolSessions -gt 0) { " after ending its $($state.poolSessions) session(s)" } else { '' })) { Remove-PoolLogin } }
+    if ($Apply) { $state = Get-UninstallState }
+    return $state
+}
+
 # ---- main ----
 
+if ($Uninstall -and $SelfTest) { Fail 2 '-Uninstall takes only -Apply' }
 if ($SelfTest -and -not $Apply) { Write-Host 'note: -SelfTest without -Apply checks the objects as they are now' }
 try { $Conn = Open-Sql } catch { Fail 3 ('cannot connect to SQL Server by shared memory with Windows authentication: {0}' -f (Get-ErrorText $_)) }
 
@@ -885,6 +956,23 @@ $facts = Get-Facts
 Write-Host ('SQL Server {0} {1}, {2}; {3}; service account {4}; default data folder {5}' -f $facts.version, $facts.level, $facts.edition, $facts.authentication, $facts.serviceAccount, $facts.defaultDataPath)
 Write-Host ('connected as {0} by Windows authentication (sysadmin: {1}); the sa login is {2} and is not used' -f $facts.connectedAs, $facts.sysadmin, $(if ($facts.saEnabled) { 'enabled' } elseif ($null -eq $facts.saEnabled) { 'not visible' } else { 'disabled' }))
 Write-Host ('databases named arashouse_*: {0}' -f $(if ($facts.arashouseDatabases.Count -gt 0) { $facts.arashouseDatabases -join ', ' } else { 'none' }))
+
+if ($Uninstall) {
+    $state = $null
+    try { $state = Invoke-Uninstall } catch { [void]$Errors.Add((Get-ErrorText $_)) }
+    $gone = $state -and -not $state.adminDatabase -and -not $state.signerLogin -and -not $state.masterCertificate -and -not $state.poolLogin
+    $ok = ($Errors.Count -eq 0) -and $(if ($Apply) { [bool]$gone } else { $true })
+    $record = [ordered]@{
+        schema = 1; tool = 'setup-sql.ps1'; version = $ToolVersion; time = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        mode = 'uninstall'; applied = [bool]$Apply; ok = [bool]$ok; facts = $facts; state = $state
+        changes = @($Changes); planned = @($Planned); errors = @($Errors)
+    }
+    $Conn.Dispose()
+    Write-Host 'result:'
+    Write-Host ($record | ConvertTo-Json -Depth 6)
+    if (-not $ok) { exit 1 }
+    exit 0
+}
 
 $state = $null
 try {
@@ -944,6 +1032,7 @@ $record = [ordered]@{
     tool = 'setup-sql.ps1'
     version = $ToolVersion
     time = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    mode = 'install'
     applied = [bool]$Apply
     ok = [bool]$ok
     facts = $facts

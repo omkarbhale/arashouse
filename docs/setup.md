@@ -129,7 +129,8 @@ WSL as the worker:
 service and removes the Defender exclusion if there is one. `-RemoveRoot` also deletes the root, but only when it
 holds nothing but the arashouse folders above and no junction or link; otherwise it refuses and deletes nothing.
 On this host the root also holds `gate\`, `instances\` and `spike\`, so `-RemoveRoot` refuses until they are gone.
-Ticket 49 (`arashouse teardown`) removes the slots, IIS objects and SQL objects first.
+`arashouse teardown` (ticket 49, `docs/teardown.md`) removes the slots, the goldens and the SQL objects first, and runs
+this `-Uninstall` from its own elevated script.
 
 ## What it never does
 

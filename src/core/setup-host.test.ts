@@ -263,7 +263,8 @@ describe("checkSetup (what doctor reads back)", () => {
   });
 
   it("fails when the worker can read a closed folder or cannot read an open one", () => {
-    const leaky = { ...access, secrets: "read", slots: "denied", vaults: "missing" } as SetupObservation["access"];
+    const readable = "read" as const;
+    const leaky = { ...access, secrets: readable, slots: "denied", vaults: "missing" } as SetupObservation["access"];
     expect(checkSetup({ record, rootExists: true, access: leaky }).at(-1)).toEqual({
       level: "fail",
       check: "setup acl",

@@ -254,7 +254,7 @@ verify 46.2 (cold start, login and engine check included), stop 10.2, blank-secr
 `DBList.aspx` is at `/<alias>/Server/DBList.aspx` in `23` as in `12sp9`. From WSL as the worker, through the broker:
 `arashouse baseline verify 23` passed in 2.1 s (golden level, 26,280 files), `--full` in 11.6 s, and `arashouse
 doctor` reports `ok baseline 23`. The `35` golden below was built before the engine check existed; its `-Replace`
-rebuild (ticket 25's `ootb.bak` owner change asks for one) can run it with `--engine-check`.
+rebuild (below) can run it with `--engine-check`.
 
 ## Measured: the `35` golden (2026-10-27, ticket 27)
 
@@ -294,3 +294,7 @@ files), `--full` in 28.0 s the first time and 8.0 s warm, and `arashouse doctor`
   `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, which `23` shares (ticket 26).
 - A slot's licence needs the whole `<License>` element, not `lic_key` alone (run 5): ticket 25's edit list adds
   `act_key` (`{{secret:licence_act_key}}`), `lic_type` and `company`, and the secret store keeps the four together.
+- **Rebuild `23` and `35` after ticket 25.** The broker can use and drop a restore of a golden's `ootb.bak` only when
+  that database's owner is `NT SERVICE\ArasHouseBroker`; ticket 25's builder fix sets it and records `ootbOwner` in
+  `flavor.json`. Once it merges, both goldens built before it need `baseline build <key> --replace` (with
+  `--engine-check`) and `-Apply -Replace`.

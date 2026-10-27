@@ -59,7 +59,8 @@ Run scripts with `powershell -ExecutionPolicy Bypass -File C:\aras_installations
 | 11 | `00-preflight.ps1 -Apply` | no | none | `denyListUnchangedSinceBaseline` must be `true` |
 
 Steps 3b to 6 are ticket 05, steps 7 to 9 are ticket 06 and may share its sitting. Ticket 07 repeats steps 3 to 6, 10 and 11 with
-`-Flavor 23` (4b after 6, with a fresh 3b in between: the first install's product code is then registered); ticket 08 with `-Flavor 35`.
+`-Flavor 23` (4b after 6, with a fresh 3b in between: the first install's product code is then registered); ticket 08 does the same with
+`-Flavor 35` (the first 3b ran unelevated before the sitting; 6 read the Aras28 key first, then Aras12's).
 
 ## The ticket 06 sitting
 

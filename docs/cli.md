@@ -92,7 +92,7 @@ the command, and `run` waits for it to exit; `SIGTERM` and `SIGHUP` are forwarde
 ### `flavors --json`
 
 `docs/schemas/flavors.schema.json`: one entry per flavor with `flavor`, `release`, `aras` (the server
-build; null until the baseline is built), `engine`, `slots` (`free`, `leased`, `total`), `media` (every
+build from the registry; null when it is not known), `engine`, `slots` (`free`, `leased`, `total`), `media` (every
 expected installer file is in `media/<flavor>/`, loose or inside a CD-image zip; null when the media
 folder cannot be found) and `baseline` (the golden verifies at the fast level; null when the host could
 not be asked). `media` reads only zip directories; `media check` is the full check.

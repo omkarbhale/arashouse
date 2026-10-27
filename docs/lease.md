@@ -52,7 +52,7 @@ reset`, without.
   "lease_id": "<32 hex>", "holder": "<task>", "password": <shown once, a string> }
 ```
 
-`aras` is null for a flavor whose baseline is not built yet (35 today). The password is a `Secret`
+`aras` is the flavor's server build from the registry (null for a flavor whose build is not known; none today). The password is a `Secret`
 inside the core; `renderGetJson` is the one place it becomes text, and it is in no other output, file
 or log.
 

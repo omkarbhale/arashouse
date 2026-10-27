@@ -21,7 +21,7 @@ One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `s
 
 `forgetLicence(line, store)` is for an `arashouse licence forget <line>` command, which does not exist yet. `licenceStatus` backs `doctor`'s `licence line 14: present` once `doctor` is given the host's store (tickets 20 and 21): the key's presence is reported as a boolean only.
 
-`licence.required` is provisional (`to-install` for every flavor) until ticket 09 reports whether install, login or neither needs a key, and whether one key serves `23` and `35`; the registry is data, so the answer changes one line per flavor.
+`licence.required` is provisional (`to-install` for every flavor) until the code catches up with [the spike record](spike-record.md), which answers whether install, login or neither needs a key and whether one key serves `23` and `35`; the registry is data, so the answer changes one line per flavor.
 
 ## Not here
 

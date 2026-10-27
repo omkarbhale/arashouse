@@ -34,8 +34,9 @@ returning (ticket 43 gives it helpers); after `return` the holder may assume the
    works the next day.
 4. **Dirty detection before handing out** (belt and braces, `checkClean` in `lease.ts`; ticket 32
    owns the markers): a `free` slot is handed out only if its stamp carries the golden hash the state
-   recorded, names no lease, records a reset time, and the host's health check (tree and database
-   marker against the stamp, applications online) passes. A slot that fails goes to `dirty` and is
+   recorded, that hash is the flavor's current golden manifest hash (when the host can name it; a
+   slot reset from an older golden is dirty), names no lease, records a reset time, and the host's
+   health check (tree and database marker against the stamp, applications online) passes. A slot that fails goes to `dirty` and is
    reset first: by the same `get` if it waits, by a worker otherwise.
 
 A slot whose `get` failed after it was reserved (a host error while writing the lease's stamp or
@@ -55,8 +56,9 @@ path, and in `repair` (`docs/cli.md`).
 | `start` | `startSlot` | Brings the applications online, without the agent (ticket 33 owns the agent). |
 | `health` | `healthCheck`, `readStamp` | The health check must pass, and the stamp must carry the golden hash, no lease and a reset time (ticket 32). |
 
-Then, under the lock, the slot moves `resetting -> free` with the golden hash and the reset's
-duration (`last_reset_ms`, shown by `status`).
+Then the golden is read again: if its hash changed during the reset (a `baseline build -Replace`
+promoted a new one), the slot goes back to `dirty`. Otherwise, under the lock, the slot moves
+`resetting -> free` with the golden hash and the reset's duration (`last_reset_ms`, shown by `status`).
 
 **Every step re-derives its target.** Before each attempt the worker re-reads the slot from the state
 file: it must still be `resetting` under this worker's pid and start time, and its id must parse to
@@ -71,6 +73,7 @@ host no more.
 |---|---|
 | A step throws `Retryable` (or any non-host error), or returns `ok: false` | Tries the step once more (every step is idempotent). A second failure quarantines the slot: `reset step <step> failed twice: <error>`. |
 | A step throws `Refused` (a guard) or `Quarantine` | Quarantines at once: `reset step <step> was refused: <error>`. |
+| The `golden` step throws `Retryable` (the build's `golden-build\<key>.promoting` marker is present: a new golden is being moved into place) | Gives the slot back as `dirty` at once, as for `Unreachable`, so no reset reads a half-moved golden. |
 | A step throws `Unreachable` twice | Gives the slot back as `dirty` (the slot is not at fault) and stops; a later worker or `get` tries again, and this reset does not count toward the attempt cap. A lazy reset in `get` exits 6. |
 | The slot's reset is started a 4th time after 3 workers died mid-reset (`MAX_RESET_ATTEMPTS`) | Quarantines it: `reset started 4 times without finishing`. |
 

@@ -53,6 +53,16 @@ export interface ResetDeps {
   readonly now?: () => Date;
 }
 
+/** The flavor's golden manifest hash now, or undefined when the host cannot name it. */
+export async function currentGoldenHash(golden: ResetDeps["golden"], flavor: FlavorKey): Promise<string | undefined> {
+  try {
+    return (await golden(flavor)).tree.hash;
+  } catch (err) {
+    if (isHostError(err)) return undefined;
+    throw err;
+  }
+}
+
 export const RESET_STEPS = ["golden", "quiesce", "database", "tree", "start", "health"] as const;
 export type ResetStep = (typeof RESET_STEPS)[number];
 
@@ -239,11 +249,12 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
           return { ok: false, outcome: await quarantine(step, `was refused: ${errorText(err)}`) };
         }
         failure = errorText(err);
-        unreachable = isHostError(err, "Unreachable");
+        unreachable = isHostError(err, "Unreachable") || (step === "golden" && isHostError(err, "Retryable"));
+        if (unreachable && !isHostError(err, "Unreachable")) break;
       }
     }
     if (unreachable) {
-      const reason = clip(redact(`reset step ${step}: the host did not answer: ${failure}`));
+      const reason = clip(redact(`reset step ${step}: ${step === "golden" ? "the golden could not be read" : "the host did not answer"}: ${failure}`));
       return { ok: false, outcome: await settle({ to: "dirty" }, reason, { kind: "dirty", slot: slot.id, reason }) };
     }
     return { ok: false, outcome: await quarantine(step, `failed twice: ${failure}`) };
@@ -254,6 +265,11 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
     if (!result.ok) return result.outcome;
   }
   const ms = Math.max(0, now().getTime() - started);
+  const hash = (golden as GoldenSet).tree.hash;
+  if ((await currentGoldenHash(deps.golden, slot.flavor)) !== hash) {
+    const reason = "the golden changed during the reset";
+    return settle({ to: "dirty" }, reason, { kind: "dirty", slot: slot.id, reason });
+  }
   return settle({ to: "free", golden_hash: (golden as GoldenSet).tree.hash, reset_ms: ms }, "reset", { kind: "free", slot: slot.id, ms });
 }
 

@@ -30,14 +30,14 @@ describe("runtime directories", () => {
     for (const key of FLAVOR_KEYS) expect(FLAVORS[key].runtimeDirs).toBe(RUNTIME_DIRS);
   });
 
-  it("treats everything under Server/temp, dll and logs as runtime, case-insensitively", () => {
-    for (const p of ["Server/temp/a.tmp", "server/TEMP/x/y.bin", "Server/dll/M.dll", "Server/logs/s.log"]) {
+  it("treats everything under Innovator/Server/temp, dll and logs as runtime, case-insensitively", () => {
+    for (const p of ["Innovator/Server/temp/a.tmp", "innovator/server/TEMP/x/y.bin", "Innovator/Server/dll/M.dll", "Innovator/Server/logs/s.log"]) {
       expect(isRuntimePath(p, RUNTIME_DIRS)).toBe(true);
     }
-    expect(isRuntimeDir("Server/temp", RUNTIME_DIRS)).toBe(true);
-    expect(isRuntimeDir("Server/temp/sub", RUNTIME_DIRS)).toBe(true);
-    expect(isRuntimeDir("Server/bin", RUNTIME_DIRS)).toBe(false);
-    expect(isRuntimePath("Server/templates/a.xml", RUNTIME_DIRS)).toBe(false);
+    expect(isRuntimeDir("Innovator/Server/temp", RUNTIME_DIRS)).toBe(true);
+    expect(isRuntimeDir("Innovator/Server/temp/sub", RUNTIME_DIRS)).toBe(true);
+    expect(isRuntimeDir("Innovator/Server/bin", RUNTIME_DIRS)).toBe(false);
+    expect(isRuntimePath("Innovator/Server/templates/a.xml", RUNTIME_DIRS)).toBe(false);
   });
 
   it("matches the OAuth sqlite and key files by name and nothing else in that folder", () => {
@@ -50,10 +50,10 @@ describe("runtime directories", () => {
     expect(isRuntimeDir("OAuthServer/App_Data", RUNTIME_DIRS)).toBe(false);
   });
 
-  it("hashes configs and Server/bin DLLs in the fast set only", () => {
+  it("hashes configs and Innovator/Server/bin DLLs in the fast set only", () => {
     expect(isFastHashed("Server/web.config")).toBe(true);
     expect(isFastHashed("Client/Web.Config")).toBe(true);
-    expect(isFastHashed("Server/bin/Aras.Server.Core.dll")).toBe(true);
+    expect(isFastHashed("Innovator/Server/bin/Aras.Server.Core.dll")).toBe(true);
     expect(isFastHashed("Client/bin/Other.dll")).toBe(false);
     expect(isFastHashed("Client/app.js")).toBe(false);
   });
@@ -147,12 +147,12 @@ describe("compareTree", () => {
   });
 
   it("does not flag a runtime path even if the scan passes one in", () => {
-    const diff = compareTree(manifest, [seen("Client/a.js"), seen("Server/web.config"), seen("Server/temp/x.tmp")], new Map(), opts);
+    const diff = compareTree(manifest, [seen("Client/a.js"), seen("Server/web.config"), seen("Innovator/Server/temp/x.tmp")], new Map(), opts);
     expect(diff.ok).toBe(true);
   });
 
   it("skips manifest entries that sit in a runtime directory", () => {
-    const odd = makeManifest("35", null, [entry("Client/a.js"), entry("Server/temp/old.tmp")]);
+    const odd = makeManifest("35", null, [entry("Client/a.js"), entry("Innovator/Server/temp/old.tmp")]);
     const diff = compareTree(odd, [seen("Client/a.js")], new Map(), opts);
     expect(diff).toMatchObject({ ok: true, checked: 1, skippedRuntime: 1 });
   });

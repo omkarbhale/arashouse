@@ -10,6 +10,7 @@ import { DEFAULT_INSTALL_ROOT, brokerTokenFile } from "../core/names.js";
 import type { Clock } from "../host/clock.js";
 import { guarded } from "../host/owned.js";
 import { FileAudit, type AuditSink } from "./audit.js";
+import { registerBaselineVerbs } from "./baseline-verbs.js";
 import { Broker } from "./broker.js";
 import { nodeBrokerFs, type BrokerFs } from "./fs.js";
 import { servePipe } from "./pipe.js";
@@ -56,15 +57,18 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
     freeRamBytes: options.system?.freeRamBytes ?? freemem,
     sqlLogin: options.system?.sqlLogin ?? powershellSqlProbe(),
   };
-  const broker = registerCoreVerbs(
-    new Broker({
-      root,
-      isReparsePoint: fs.isReparsePoint,
-      realPath: fs.realPath,
-      audit: options.audit ?? new FileAudit(root),
-      clock: options.clock,
-      onAuditError: options.onError,
-    }),
+  const broker = registerBaselineVerbs(
+    registerCoreVerbs(
+      new Broker({
+        root,
+        isReparsePoint: fs.isReparsePoint,
+        realPath: fs.realPath,
+        audit: options.audit ?? new FileAudit(root),
+        clock: options.clock,
+        onAuditError: options.onError,
+      }),
+      system,
+    ),
     system,
   );
   const token = newToken();

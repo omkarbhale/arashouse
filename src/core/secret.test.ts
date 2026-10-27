@@ -10,6 +10,7 @@ const VALUES: Record<SecretKind, string> = {
   "lease-password": ["lp", "_", "Rk4t9V", "-", "w1Yd_3m"].join(""),
   "sql-login": ["sl", "#", "Hq2", "-", "v8Pn", "!e"].join(""),
   "broker-token": ["9c41", "e07a", "b2d5", "f318"].join(""),
+  "aras-login": ["al", "!", "Qw7", "-", "z3Rn"].join(""),
 };
 
 afterEach(() => vi.restoreAllMocks());

@@ -59,6 +59,8 @@ export type EditVars = Readonly<Record<EditVariable, string>>;
 const SQL_LOGIN = "sql-login";
 export const SECRET_HANDLES = {
   licence: "licence",
+  // The `<License act_key>` that goes with a key; a key alone is refused ("License Key is invalid", ticket 24).
+  licence_act_key: "licence",
   db_dbo_password: SQL_LOGIN,
   db_reg_password: SQL_LOGIN,
 } as const satisfies Record<string, SecretKind>;

@@ -4,7 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Broker, inProcessTransport } from "../broker/broker.js";
 import { mappedRoot, type MappedRoot } from "../broker/mapped-fs.fixture.js";
 import type { BrokerRequest } from "../broker/protocol.js";
-import { registerCoreVerbs } from "../broker/verbs.js";
+import { registerBaselineVerbs } from "../broker/baseline-verbs.js";
+import { registerCoreVerbs, type BrokerSystem } from "../broker/verbs.js";
+import { buildManifest, writeManifestOnce } from "../broker/manifest-fs.js";
+import { makeSampleTree } from "../../test/sample-tree.js";
 import { BrokerHost } from "./broker-host.js";
 import { interopTransport, type BrokerTransport } from "./broker-transport.js";
 import { FakeClock } from "./clock.js";
@@ -24,13 +27,14 @@ let host: BrokerHost;
 
 beforeEach(() => {
   root = mappedRoot(ROOT);
-  broker = registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), {
+  const system: BrokerSystem = {
     fs: root.fs,
     brokerVersion: "0.1.0",
     os: () => "Windows_NT 10.0.26100",
     freeRamBytes: () => 8 * 1024 * 1024 * 1024,
     sqlLogin: async () => ({ login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 }),
-  });
+  };
+  broker = registerBaselineVerbs(registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), system), system);
   const inner = inProcessTransport(broker);
   const requests: BrokerRequest[] = [];
   transport = {
@@ -107,7 +111,7 @@ describe("BrokerHost against an in-process broker", () => {
   });
 
   it("every method the broker does not have yet is Unreachable, naming its ticket, after the guards", async () => {
-    const calls: Record<Exclude<keyof HostDriver, "ping" | "hostInfo" | "readStamp" | "listSlots">, () => Promise<unknown>> = {
+    const calls: Record<Exclude<keyof HostDriver, "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify">, () => Promise<unknown>> = {
       provisionSlot: () => host.provisionSlot(s1),
       destroySlot: () => host.destroySlot(s1),
       quiesce: () => host.quiesce(s1),
@@ -121,10 +125,8 @@ describe("BrokerHost against an in-process broker", () => {
       healthCheck: () => host.healthCheck(s1),
       writeStamp: () => host.writeStamp(s1, { slotId: "12sp9-01", flavor: "12sp9", goldenHash: null, lastResetAt: null }),
       setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: LEASE_REF }),
-      baselineBuild: () => host.baselineBuild("12sp9"),
-      baselineVerify: () => host.baselineVerify("12sp9"),
     };
-    expect(Object.keys(calls).length + 4).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 6).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -133,6 +135,27 @@ describe("BrokerHost against an in-process broker", () => {
     expect((await rejection(host.quiesce({ flavor: "prod" as never, slot: 1 }))).kind).toBe("Refused");
     expect((await rejection(host.baselineBuild("olm" as never))).kind).toBe("Refused");
     expect(transport.requests).toEqual([]);
+  });
+
+  it("never builds a baseline through the broker: the build is an elevated session's", async () => {
+    const err = await rejection(host.baselineBuild("12sp9"));
+    expect(err.kind).toBe("Refused");
+    expect(err.message).toContain("arashouse baseline build 12sp9");
+    expect(transport.requests).toEqual([]);
+  });
+
+  it("verifies a golden through the broker's baselineVerify verb", async () => {
+    expect(await host.baselineVerify("12sp9")).toMatchObject({ ok: false, level: "golden", detail: "the 12sp9 baseline is not built" });
+    const golden = root.local(`${ROOT}\\golden\\12sp9`);
+    await makeSampleTree(join(golden, "tree"));
+    await writeManifestOnce(join(golden, "manifest.json"), await buildManifest(join(golden, "tree"), "12sp9", "12.0.0.24090"));
+    const ok = await host.baselineVerify("12sp9");
+    expect(ok).toMatchObject({ ok: true, level: "golden" });
+    expect(ok.diff?.counts).toEqual({ missing: 0, changed: 0, extra: 0 });
+    const full = await host.baselineVerify("12sp9", { level: "full" });
+    expect(full).toMatchObject({ ok: true, level: "full" });
+    expect(transport.requests.map((r) => r.args)).toEqual([{ level: "golden" }, { level: "golden" }, { level: "full" }]);
+    expect((await rejection(host.baselineVerify("12sp9", { level: "everything" as never }))).kind).toBe("Refused");
   });
 });
 

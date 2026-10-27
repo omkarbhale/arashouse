@@ -1,9 +1,9 @@
 // The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `help`, `version`
-// (and `media check`, ticket 18, and `reset-worker`, ticket 14), thin over the lease core, and the
-// operator commands (`doctor`, `repair`, `destroy`, `prune`, `force-return`, `disable`, `enable`,
-// ticket 16), thin over operator.ts. Output rules: no command prints a
-// password except `get --json`, once; `--verbose` never adds a secret; an error is one line plus a
-// hint, with the stack only under `ARASHOUSE_DEBUG=1`. The exit codes are docs/cli.md's table.
+// (and `media check`, ticket 18, `baseline verify`, ticket 28, and `reset-worker`, ticket 14), thin
+// over the lease core, and the operator commands (`doctor`, `repair`, `destroy`, `prune`,
+// `force-return`, `disable`, `enable`, ticket 16; `baseline build`, ticket 24), thin over
+// operator.ts. Output rules: no command prints a password except `get --json`, once; `--verbose`
+// never adds a secret; an error is one line plus a hint, with the stack only under `ARASHOUSE_DEBUG=1`. The exit codes are docs/cli.md's table.
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -47,6 +47,8 @@ import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
 import { selectHost, type SelectedHost } from "./host.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { runWithLease } from "./run.js";
+import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
+import { checkMedia } from "../core/media-check.js";
 import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
 
 export const DEBUG_ENV = "ARASHOUSE_DEBUG";
@@ -92,6 +94,18 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "Example: arashouse run --lease <lease_id> -- aras-pkg export ./out Item:<id>",
   ],
   media: [MEDIA_USAGE, "", "Are a flavor's installers there, intact and the right version? (docs/media-check.md)"],
+  baseline: [
+    "usage: arashouse baseline build <flavor> [--replace]",
+    "       arashouse baseline verify <flavor> [--full] [--json]",
+    "",
+    "build checks the flavor's media (as `media check` does) and writes the bundle the captain runs once,",
+    "elevated: staging\\baseline-<flavor>\\baseline-build.ps1. It installs the MSI into a throw-away instance,",
+    "checks it serves, copies its tree and database into golden\\<flavor>, then removes the instance. It",
+    "refuses a flavor whose golden exists unless --replace, which first marks the flavor's free slots dirty",
+    "so they are reset from the new golden. verify asks the broker to check golden\\<flavor> against its",
+    "manifest (the fast level, or every file's SHA-256 with --full); exit 1 when it does not verify",
+    "(docs/baselines.md).",
+  ],
   "reset-worker": [
     "usage: arashouse reset-worker [--slot <slot>]",
     "",
@@ -174,11 +188,13 @@ const OVERVIEW: readonly string[] = [
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
   "  run --lease <lease_id> -- <command ...>                    run a command with the lease's ARAS_* environment",
   "  media check [<flavor>...] [--json] [--write-sums]          check the installers",
+  "  baseline verify <flavor> [--full] [--json]                 check a flavor's golden against its manifest",
   "  reset-worker [--slot <slot>]                               reset returned slots (return starts it)",
   "",
   "Operator commands (destructive ones are dry runs without --yes):",
   "  setup [--out <dir>]                                        write the one-time, elevated host setup script",
   "  setup-sql [--out <dir>]                                    write the one-time SQL Server setup script",
+  "  baseline build <flavor> [--replace]                        write the elevated script that builds a golden",
   "  doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json] check the pool against the host",
   "  repair <slot> [--rebuild]                                  reset a quarantined slot from golden",
   "  destroy <slot> [--yes] [--include-leased]                  remove a slot from the host and the pool",
@@ -276,6 +292,7 @@ async function leaseDeps(ctx: Context): Promise<LeaseDeps> {
     resolveUrl: selected.resolveUrl,
     config: reset.config,
     reset: resetHooks(reset, (slot) => spawnResetWorker(ctx.env, slot)),
+    golden: selected.golden,
   };
 }
 
@@ -383,6 +400,23 @@ async function cmdMedia(ctx: Context, args: readonly string[]): Promise<number> 
   // An MSI unpacked from a zip must land where Windows Installer can open it: a Windows drive.
   const scratchDir = await windowsTempDir().catch(() => undefined);
   return runMediaCheck(rest, { readMsi: createMsiReader(), scratchDir }, ctx.io);
+}
+
+async function cmdBaseline(ctx: Context, args: readonly string[]): Promise<number> {
+  const selected = await host(ctx);
+  const config = await loadConfig({ home: ctx.store.paths.home });
+  return runBaselineCommand(
+    {
+      host: selected.host,
+      store: ctx.store,
+      checkMedia: async (flavor) => checkMedia(flavor, { env: ctx.env, readMsi: createMsiReader(), scratchDir: await windowsTempDir().catch(() => undefined) }),
+      writeBundle: (flavor, media) =>
+        writeBaselineBundle({ flavor, media, distDir: DIST_DIR, packageJson: PACKAGE_JSON, version: version(), minFreeDiskGb: config.min_free_disk_gb }),
+      out: ctx.io.out,
+      err: ctx.io.err,
+    },
+    args,
+  );
 }
 
 async function cmdResetWorker(ctx: Context, args: readonly string[]): Promise<number> {
@@ -518,6 +552,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   flavors: cmdFlavors,
   run: cmdRun,
   media: cmdMedia,
+  baseline: cmdBaseline,
   "reset-worker": cmdResetWorker,
   setup: cmdSetup,
   "setup-sql": cmdSetupSql,

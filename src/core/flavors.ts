@@ -29,11 +29,16 @@ export interface RuntimeRule {
   readonly files?: readonly string[];
 }
 
-/** The runtime directories every Aras flavor shares (design 5.2 and 6.2). */
+/**
+ * The runtime directories every Aras flavor shares (design 5.2 and 6.2). The server sits under
+ * `Innovator\Server\` in an installed tree (spike record, code follow-ups), and the client rewrites
+ * `jsBundles\data.json` when it first serves (spike 06).
+ */
 export const RUNTIME_DIRS: readonly RuntimeRule[] = [
-  { dir: "Server/temp" },
-  { dir: "Server/dll" },
-  { dir: "Server/logs" },
+  { dir: "Innovator/Server/temp" },
+  { dir: "Innovator/Server/dll" },
+  { dir: "Innovator/Server/logs" },
+  { dir: "Innovator/Client/jsBundles", files: ["data.json"] },
   { dir: "OAuthServer/App_Data", files: ["*.sqlite*", "key-*.xml"] },
 ];
 
@@ -97,8 +102,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     serverBuild: "12.0.0.24090",
     libsJsEngine: "12.0",
     mediaFolder: "media/12sp9",
-    // Provisional until ticket 09 reports whether login, install or neither needs a key.
-    licence: { line: "12", required: "to-install" },
+    // A key is needed to log in, not to install; the 12.x key is refused by 14.x (spike record, section 2).
+    licence: { line: "12", required: "to-login" },
     msiName: "InnovatorSetup.msi",
     msiProductVersion: "12.0",
     msiVersionIdentifiesRelease: false,
@@ -114,8 +119,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     serverBuild: "14.0.9.36073",
     libsJsEngine: "14.0.7",
     mediaFolder: "media/23",
-    // Provisional until ticket 09 reports whether login, install or neither needs a key.
-    licence: { line: "14", required: "to-install" },
+    // A key is needed to log in, not to install (spike record, section 2).
+    licence: { line: "14", required: "to-login" },
     msiName: "InnovatorSetup.msi",
     msiProductVersion: "14.0.9",
     msiVersionIdentifiesRelease: true,
@@ -132,8 +137,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     serverBuild: "14.35.0.43890",
     libsJsEngine: "14.35",
     mediaFolder: "media/35",
-    // Provisional until ticket 09 reports whether login, install or neither needs a key.
-    licence: { line: "35", required: "to-install" },
+    // The 14.0 key serves 14.35 (spike 08), so 35 shares line 14.
+    licence: { line: "14", required: "to-login" },
     msiName: "InnovatorSetup.msi",
     msiProductVersion: "14.35",
     msiVersionIdentifiesRelease: true,

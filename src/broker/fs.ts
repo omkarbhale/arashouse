@@ -18,6 +18,8 @@ export interface BrokerFs {
   isReparsePoint(path: string): boolean;
   /** For the guards: the real path of `path` (itself when it does not exist). */
   realPath(path: string): string;
+  /** The local path of a Windows path, for code that reads a tree itself (the golden manifest check); itself on Windows. */
+  localPath(path: string): string;
 }
 
 function isMissing(err: unknown): boolean {
@@ -77,6 +79,7 @@ export function nodeBrokerFs(options: NodeBrokerFsOptions = {}): BrokerFs {
         throw err;
       }
     },
+    localPath: (path) => local(path),
     realPath(path) {
       try {
         return back(realpathSync.native(local(path)));

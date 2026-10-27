@@ -174,6 +174,7 @@ export class FakeHost implements HostDriver {
   private readonly latencyMs: number;
   private readonly owned: OwnedContext;
   private readonly slots = new Map<string, FakeSlotState>();
+  private readonly promoting = new Set<FlavorKey>();
   private readonly baselines: Set<FlavorKey>;
   private info: HostInfo;
   private reachable = true;
@@ -247,13 +248,21 @@ export class FakeHost implements HostDriver {
     return state ? structuredClone(state) : undefined;
   }
 
+  /** Marks a flavor's golden as being moved into place (the build's promote marker) or not. */
+  setPromoting(flavor: FlavorKey, on: boolean): void {
+    if (on) this.promoting.add(flavor);
+    else this.promoting.delete(flavor);
+  }
+
   /** The golden tree reference the fake accepts for a flavor. */
   golden(flavor: FlavorKey): GoldenRef {
+    if (this.promoting.has(flavor)) throw new HostError("Retryable", `the ${flavor} golden is being promoted`);
     return { flavor, hash: fakeGoldenHash(flavor) };
   }
 
   /** The golden backup reference the fake accepts for a flavor. */
   backup(flavor: FlavorKey): BackupRef {
+    if (this.promoting.has(flavor)) throw new HostError("Retryable", `the ${flavor} golden is being promoted`);
     return { flavor, file: `${goldenDir(flavor, this.root)}\\Core.bak`, hash: fakeGoldenHash(flavor) };
   }
 

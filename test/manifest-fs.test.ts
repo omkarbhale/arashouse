@@ -33,11 +33,11 @@ describe("buildManifest", () => {
     expect(paths).toEqual([
       "Client/scripts/app.js",
       "Client/styles/site.css",
+      "Innovator/Server/bin/Aras.Other.dll",
+      "Innovator/Server/bin/Aras.Server.Core.dll",
       "OAuthServer/App_Data/readme.xml",
       "OAuthServer/web.config",
       "Server/InnovatorServerConfig.xml",
-      "Server/bin/Aras.Other.dll",
-      "Server/bin/Aras.Server.Core.dll",
       "Server/web.config",
     ]);
     expect(manifest.fileCount).toBe(8);
@@ -68,8 +68,8 @@ describe("buildManifest", () => {
 
   it("does not hash a runtime directory's content into the manifest", async () => {
     const { tree, manifest } = await sample();
-    await writeSampleFile(tree, "Server/temp/more.tmp", "x");
-    await writeSampleFile(tree, "Server/logs/newer.log", "y");
+    await writeSampleFile(tree, "Innovator/Server/temp/more.tmp", "x");
+    await writeSampleFile(tree, "Innovator/Server/logs/newer.log", "y");
     expect((await buildManifest(tree, "35", BUILD_35)).manifestHash).toBe(manifest.manifestHash);
   });
 
@@ -123,11 +123,11 @@ describe("verifyTree classification", () => {
 
   it("classifies an extra file, including one a worker added next to the baseline files", async () => {
     const { tree, manifest } = await sample();
-    await writeSampleFile(tree, "Server/bin/Worker.Method.dll", "worker");
+    await writeSampleFile(tree, "Innovator/Server/bin/Worker.Method.dll", "worker");
     await writeSampleFile(tree, "Client/new/page.html", "<html/>");
     const diff = await verifyTree(tree, manifest, { level: "fast" });
     expect(diff.ok).toBe(false);
-    expect(diff.extra).toEqual(["Client/new/page.html", "Server/bin/Worker.Method.dll"]);
+    expect(diff.extra).toEqual(["Client/new/page.html", "Innovator/Server/bin/Worker.Method.dll"]);
     expect(diff.counts).toEqual({ missing: 0, changed: 0, extra: 2 });
   });
 
@@ -141,9 +141,9 @@ describe("verifyTree classification", () => {
 
   it("ignores files in a runtime directory: added, changed and removed", async () => {
     const { tree, manifest } = await sample();
-    await writeSampleFile(tree, "Server/temp/worker-cache.tmp", "deployed by a worker");
-    await writeSampleFile(tree, "Server/dll/Worker.dll", "deployed by a worker");
-    await writeSampleFile(tree, "Server/logs/server.log", "a much longer log than before\n", new Date("2026-10-25T00:00:00Z"));
+    await writeSampleFile(tree, "Innovator/Server/temp/worker-cache.tmp", "deployed by a worker");
+    await writeSampleFile(tree, "Innovator/Server/dll/Worker.dll", "deployed by a worker");
+    await writeSampleFile(tree, "Innovator/Server/logs/server.log", "a much longer log than before\n", new Date("2026-10-25T00:00:00Z"));
     await writeSampleFile(tree, "OAuthServer/App_Data/key-99.xml", "<key/>");
     await rm(join(tree, "OAuthServer/App_Data/oauth.sqlite-wal"));
     const diff = await verifyTree(tree, manifest, { level: "full" });
@@ -262,9 +262,9 @@ describe("scanTree", () => {
   it("prunes runtime directories and counts what it skipped", async () => {
     const tree = await makeSampleTree(join(dir, "tree"));
     const scan = await scanTree(tree, FLAVORS["35"].runtimeDirs);
-    expect(scan.files.map((f) => f.path)).not.toContain("Server/temp/cache.tmp");
+    expect(scan.files.map((f) => f.path)).not.toContain("Innovator/Server/temp/cache.tmp");
     expect(scan.files).toHaveLength(8);
-    // Server/temp, Server/dll and Server/logs pruned; three runtime files in OAuthServer/App_Data skipped.
+    // Innovator/Server/temp, Innovator/Server/dll and Innovator/Server/logs pruned; three runtime files in OAuthServer/App_Data skipped.
     expect(scan.skippedRuntime).toBe(6);
   });
 });
@@ -283,7 +283,7 @@ describe("the fast verify budget", () => {
         await Promise.all(Array.from({ length: perDir }, (_, f) => writeFile(join(sub, `f${f}.js`), `// ${d}/${f}\n`)));
       }
       await writeSampleFile(tree, "Server/web.config", "<configuration/>");
-      await writeSampleFile(tree, "Server/bin/Aras.Server.Core.dll", "MZ");
+      await writeSampleFile(tree, "Innovator/Server/bin/Aras.Server.Core.dll", "MZ");
       // `fast` reads content only for the small hashed set, so the manifest hashes just that set
       // for real; building a real manifest of 40 000 files would only slow the test.
       const { files } = await scanTree(tree, FLAVORS["35"].runtimeDirs);

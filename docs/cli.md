@@ -18,9 +18,11 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 | `arashouse flavors [--json]` | Each flavor's release, build, libs-js engine, slot counts, media and baseline. |
 | `arashouse run --lease <lease_id> -- <command ...>` | Runs a command with the lease's connection in its environment. |
 | `arashouse media check [<flavor>...] [--json] [--write-sums]` | Checks the installers (`docs/media-check.md`). |
+| `arashouse baseline verify <flavor> [--full] [--json]` | Checks the flavor's golden against its manifest, through the broker; exit 1 when it does not verify (`docs/baselines.md`). |
 | `arashouse reset-worker [--slot <slot>]` | Resets returned slots; `return` starts it detached (`docs/reset.md`). |
 | `arashouse setup [--out <dir>]` | Writes the one-time host setup script, which the captain runs elevated (`docs/setup.md`). |
 | `arashouse setup-sql [--out <dir>]` | Writes the one-time SQL Server setup script, which a `sysadmin` login runs (`docs/setup-sql.md`). |
+| `arashouse baseline build <flavor> [--replace]` | Checks the media and writes the script that builds the flavor's golden, which the captain runs elevated; `--replace` marks the flavor's free slots dirty first (`docs/baselines.md`). |
 | `arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]` | Checks the pool against the host; see [Operator commands](#operator-commands). |
 | `arashouse repair <slot> [--rebuild]` | Resets a quarantined slot from golden; the way out of `quarantined`. |
 | `arashouse destroy <slot> [--yes] [--include-leased]` | Removes a slot from the host and the pool. |

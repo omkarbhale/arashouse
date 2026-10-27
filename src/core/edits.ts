@@ -56,10 +56,11 @@ export type EditVariable = (typeof EDIT_VARIABLES)[number];
 export type EditVars = Readonly<Record<EditVariable, string>>;
 
 /** The secret handles a template can use, and the kind of Secret each must be. */
+const SQL_LOGIN = "sql-login";
 export const SECRET_HANDLES = {
   licence: "licence",
-  db_dbo_password: "sql-login",
-  db_reg_password: "sql-login",
+  db_dbo_password: SQL_LOGIN,
+  db_reg_password: SQL_LOGIN,
 } as const satisfies Record<string, SecretKind>;
 export type SecretHandle = keyof typeof SECRET_HANDLES;
 export type EditSecrets = Readonly<Partial<Record<SecretHandle, Secret>>>;

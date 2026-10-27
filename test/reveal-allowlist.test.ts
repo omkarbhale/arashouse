@@ -11,13 +11,15 @@ import { repoRoot } from "./helpers.js";
  * (ticket 21) is the expected addition. `renderGetJson` (src/core/lease.ts) is where `get --json`
  * shows the lease password, once; the lease-file store writes it to its 0600 file; `run` puts it in
  * its child's environment; the config edit list writes the licence key and the slot's SQL login
- * passwords into the slot's rendered config files.
+ * passwords into the slot's rendered config files. The broker's token module writes its client
+ * token, compares it, and puts it in the client's pipe envelope.
  */
 const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/edits.ts": 1,
   "src/core/lease.ts": 1,
   "src/core/lease-files.ts": 1,
   "src/cli/run.ts": 1,
+  "src/broker/token.ts": 3,
 };
 
 const REVEAL_MODULE = "src/core/secret.ts";

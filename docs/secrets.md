@@ -1,6 +1,6 @@
 # Secrets
 
-One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `secret-store.ts`, `licence.ts`, plus the no-echo TTY read in `src/cli/tty.ts`. Four kinds exist: the SQL `sa` password (`sql-sa`, ticket 22), licence keys (`licence`), per-lease Aras passwords (`lease-password`, ticket 34) and a slot's SQL login passwords (`sql-login`, which the config edit list writes into the slot's config; `docs/edits.md`).
+One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `secret-store.ts`, `licence.ts`, plus the no-echo TTY read in `src/cli/tty.ts` and the broker's client token in `src/broker/token.ts`. Five kinds exist: the SQL `sa` password (`sql-sa`, ticket 22), licence keys (`licence`), per-lease Aras passwords (`lease-password`, ticket 34), a slot's SQL login passwords (`sql-login`, which the config edit list writes into the slot's config; `docs/edits.md`) and the broker's client token (`broker-token`, `docs/broker.md`).
 
 ## Rules
 

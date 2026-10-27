@@ -107,6 +107,14 @@ export function slotDir(ref: SlotRef, root: string = DEFAULT_INSTALL_ROOT): stri
   return win32.join(root, "slots", flavorOf(ref.flavor), slotNumber(ref.slot));
 }
 
+/** The slot stamp's file name inside the slot folder (ticket 11). */
+export const STAMP_FILE_NAME = ".arashouse-slot.json";
+
+/** `<root>\slots\<key>\<NN>\.arashouse-slot.json` */
+export function stampFile(ref: SlotRef, root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(slotDir(ref, root), STAMP_FILE_NAME);
+}
+
 /** `<root>\vaults\<key>-<NN>` */
 export function vaultDir(ref: SlotRef, root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(root, "vaults", dashTag(ref));
@@ -153,6 +161,33 @@ export function stagingDir(leaseId: string, root: string = DEFAULT_INSTALL_ROOT)
 /** `<root>\sqldata` */
 export function sqlDataDir(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(root, "sqldata");
+}
+
+/** `<root>\logs`: the broker's audit log and the reset workers' logs. */
+export function logsDir(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(root, "logs");
+}
+
+/** `<root>\logs\broker-YYYYMMDD.log`: the broker's audit log for one UTC day. */
+export function auditLogFile(day: Date, root: string = DEFAULT_INSTALL_ROOT): string {
+  if (Number.isNaN(day.getTime())) throw new Error("the audit day must be a valid date");
+  const ymd = day.toISOString().slice(0, 10).replace(/-/g, "");
+  return win32.join(logsDir(root), `broker-${ymd}.log`);
+}
+
+/** `<root>\broker`: the broker's code (`app\`) and its client token; the worker user may read it, not write it (ticket 21). */
+export function brokerDir(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(root, "broker");
+}
+
+/** `<root>\broker\app\broker\client.js`: the Windows-side client WSL runs through interop (the installed `dist\`). */
+export function brokerClientScript(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(brokerDir(root), "app", "broker", "client.js");
+}
+
+/** `<root>\broker\client.token`: the token the broker writes at each start and its client presents. */
+export function brokerTokenFile(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(brokerDir(root), "client.token");
 }
 
 /** A stored secret's name: lower-case, digits and '-', so it is safe as a file name (`licence-14`). */

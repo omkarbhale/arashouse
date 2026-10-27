@@ -165,4 +165,25 @@ describeWithPs("slot-steps.ps1 under Windows PowerShell", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("has every step as a case of the top-level switch on $Step", () => {
+    const dir = mkdtempSync(join(tmpdir(), "arashouse-slot-steps-"));
+    try {
+      writeFileSync(join(dir, "slot-steps.ps1"), steps.replace(/\n/g, "\r\n"), "ascii");
+      const win = (p: string) => execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim();
+      const command = [
+        `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${win(join(dir, "slot-steps.ps1"))}', [ref]$null, [ref]$null)`,
+        "$sw = $ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.SwitchStatementAst] -and $_.Condition.Extent.Text -eq '$Step' }",
+        "$sw.Clauses | ForEach-Object { $_.Item1.Value }",
+      ].join("; ");
+      const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-Command", command], {
+        encoding: "utf8",
+        cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
+      });
+      const clauses = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      expect([...clauses].sort()).toEqual([...SLOT_STEPS].sort());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

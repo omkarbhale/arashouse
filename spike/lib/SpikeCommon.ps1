@@ -141,6 +141,7 @@ $script:SpikeSecrets = New-Object System.Collections.ArrayList
 $script:SpikeStopwatch = $null
 $script:SpikeStartedUtc = $null
 $script:SpikeLastLoginError = $null
+$script:SpikeCompleting = $false
 
 function Test-SpikeElevated {
     if ([Environment]::OSVersion.Platform -ne 'Win32NT') { return $false }
@@ -169,6 +170,13 @@ function Exit-SpikeFailure {
     # One line on stderr, exit code 2. (Write-Error under $ErrorActionPreference Stop would end the script with exit 1.)
     param([Parameter(Mandatory)][string]$Message)
     [Console]::Error.WriteLine("error: $Message")
+    # An -Apply run that fails part way keeps the facts it gathered (a sitting is costly to repeat), marked with the failure, and is scanned as usual.
+    if ($script:SpikeApply -and $script:SpikeFacts.Count -gt 0 -and -not $script:SpikeCompleting) {
+        try {
+            Add-SpikeFact -Key 'failedWith' -Value $Message
+            Complete-Spike
+        } catch { [Console]::Error.WriteLine("error: the partial results were not kept: $($_.Exception.Message)") }
+    }
     exit 2
 }
 
@@ -207,6 +215,7 @@ function Complete-Spike {
         Write-Host 'would do: scan the out folder for the secrets this script handled and fail if any is found'
         return
     }
+    $script:SpikeCompleting = $true
     Add-SpikeFact -Key 'finishedUtc' -Value ([DateTime]::UtcNow.ToString('o'))
     Add-SpikeFact -Key 'elapsedSeconds' -Value ([math]::Round($script:SpikeStopwatch.Elapsed.TotalSeconds, 1))
     $outDir = Assert-SpikePath -Path $script:SpikeOutDir -Mode Write

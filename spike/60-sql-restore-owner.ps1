@@ -1,8 +1,9 @@
 # SQL restore permission model: can a login that owns only a spike database (no dbcreator, no sysadmin) restore over it WITH REPLACE,
 # does the owner survive, and if not, does a stored procedure with EXECUTE AS OWNER in a utility database do it? Also the fix-ups after
-# a restore (orphaned users, absolute URLs, root password, an extended-property marker) and whether the SQL service account can read a
-# backup from staging\ and from a golden-style folder. Dry run by default; -Apply makes changes (elevated, sa prompt). Windows PowerShell 5.1.
-# Only spike databases and spike logins are touched. Results are booleans, error numbers and seconds.
+# a restore (orphaned users, absolute URLs, root and admin passwords, an extended-property marker) and whether the SQL service account can
+# read a backup from staging\ and from a golden-style folder. Dry run by default; -Apply makes changes (elevated; an sa prompt unless
+# -SqlAuth Windows). Windows PowerShell 5.1. Only spike databases and spike logins are touched. Results are booleans, counts, error numbers,
+# seconds and names; never a password or a password hash (only its shape: length, hex or not, letter case).
 param(
     [switch]$Apply,
     [ValidateSet('12sp9', '23', '35')][string]$Flavor = '12sp9',
@@ -31,7 +32,12 @@ try {
     $slotTree = Assert-SpikePath -Path (Join-Path $script:SpikeRoot "slot-$Flavor-$SlotSuffix") -Mode Read
 
     Start-Spike -Name "60-sql-restore-owner-$Flavor" -Apply $Apply.IsPresent -NeedsElevation
-    $ctx = @{ sa = $null; sqlPassword = $null; poolPw = $null; bak = $BakPath }
+    $ctx = @{ sa = $null; sqlPassword = $null; poolPw = $null; bak = $BakPath; dbId = $null }
+
+    function New-AdminConnection([string]$catalog = 'master') {
+        if ($SqlAuth -eq 'Sa') { return (New-SpikeSqlConnection -Catalog $catalog -Auth Sa -Password $ctx.sqlPassword) }
+        return (New-SpikeSqlConnection -Catalog $catalog -Auth Windows)
+    }
 
     function Get-Owner([string]$db) {
         $r = Invoke-SpikeSql -Connection $ctx.sa -Query 'SELECT SUSER_SNAME(owner_sid) AS owner FROM sys.databases WHERE name = @n' -Parameters @{ '@n' = $db }
@@ -59,9 +65,16 @@ try {
     }
 
     Invoke-SpikeStep "connect, record the SQL service account, and check it can read a backup from staging\ and from $goldenTest (RESTORE HEADERONLY)" {
-        $ctx.sa = if ($SqlAuth -eq 'Sa') { New-SpikeSqlConnection -Auth Sa -Password $ctx.sqlPassword } else { New-SpikeSqlConnection -Auth Windows }
+        $ctx.sa = New-AdminConnection
         Add-SpikeFact 'sqlServiceAccount' (Get-SpikeSqlServiceAccount)
+        $who = Invoke-SpikeSql -Connection $ctx.sa -Query 'SELECT IS_SRVROLEMEMBER(N''sysadmin'') AS sa'
+        Add-SpikeFact 'adminConnectionIsSysadmin' ([bool]$who[0].sa)
+        $paths = Invoke-SpikeSql -Connection $ctx.sa -Query 'SELECT CAST(SERVERPROPERTY(''InstanceDefaultDataPath'') AS nvarchar(260)) AS data, CAST(SERVERPROPERTY(''InstanceDefaultLogPath'') AS nvarchar(260)) AS log'
+        Add-SpikeFact 'sqlDefaultFilePaths' ([ordered]@{ data = $paths[0].data; log = $paths[0].log })
         if (-not $ctx.bak) { $ctx.bak = (Get-ChildItem -LiteralPath $golden -Recurse -Filter 'CoreAndSolutions*.bak' -File | Select-Object -First 1).FullName }
+        $files = Invoke-SpikeSql -Connection $ctx.sa -Query ("RESTORE FILELISTONLY FROM DISK = " + (Format-SpikeSqlString $ctx.bak))
+        Add-SpikeFact 'backupFiles' @($files | ForEach-Object { [ordered]@{ logicalName = $_.LogicalName; type = $_.Type; sizeMb = [math]::Round([double]$_.Size / 1MB, 1); originalFileName = [IO.Path]::GetFileName($_.PhysicalName) } })
+        Add-SpikeFact 'moveTargetFolder' ((Join-Path $script:SpikeRoot "sqldata\$ScratchDatabase") + '\')
         $sqldata = Assert-SpikePath -Path (Join-Path $script:SpikeRoot 'sqldata') -Mode Write
         if (-not (Test-Path -LiteralPath $sqldata)) { New-Item -ItemType Directory -Path $sqldata | Out-Null }
         Grant-SpikeSqlServiceAccess -Path $sqldata -Right Modify
@@ -108,11 +121,26 @@ try {
         })
     }
 
+    Invoke-SpikeStep "(b2) as $PoolLogin, restore over $ScratchDatabase while another session holds it open: plain WITH REPLACE, then SET SINGLE_USER WITH ROLLBACK IMMEDIATE first" {
+        $map = Get-SpikeBackupFileMap -Connection $ctx.sa -BackupPath $ctx.bak -Database $ScratchDatabase
+        $restore = "RESTORE DATABASE " + (Format-SpikeSqlIdent $ScratchDatabase) + " FROM DISK = " + (Format-SpikeSqlString $ctx.bak) + " WITH REPLACE, " + $map.Moves
+        $holder = New-AdminConnection $ScratchDatabase
+        try {
+            $plain = Invoke-AsPool 'master' $restore
+            $kick = Invoke-AsPool 'master' ("ALTER DATABASE " + (Format-SpikeSqlIdent $ScratchDatabase) + " SET SINGLE_USER WITH ROLLBACK IMMEDIATE; " + $restore)
+        } finally { try { $holder.Dispose() } catch { } }
+        $access = Invoke-SpikeSql -Connection $ctx.sa -Query 'SELECT user_access_desc AS a FROM sys.databases WHERE name = @n' -Parameters @{ '@n' = $ScratchDatabase }
+        Add-SpikeFact 'ownerRestoreWithOpenConnection' ([ordered]@{
+            plainSucceeded = $plain.ok; plainErrorNumber = $plain.errorNumber
+            singleUserThenRestoreSucceeded = $kick.ok; seconds = $kick.seconds; errorNumber = $kick.errorNumber; message = $kick.message
+            userAccessAfter = $access[0].a; ownerIsPoolLoginAfter = ((Get-Owner $ScratchDatabase) -eq $PoolLogin)
+        })
+    }
+
     Invoke-SpikeStep "(c) fallback: utility database $adminDb with a stored procedure WITH EXECUTE AS OWNER (TRUSTWORTHY ON for the spike; module signing is the production alternative), name allowlist inside; $PoolLogin gets EXECUTE only" {
         Invoke-SpikeSql -Connection $ctx.sa -Query ("CREATE DATABASE " + (Format-SpikeSqlIdent $adminDb)) | Out-Null
         Invoke-SpikeSql -Connection $ctx.sa -Query ("ALTER DATABASE " + (Format-SpikeSqlIdent $adminDb) + " SET TRUSTWORTHY ON") | Out-Null
-        $adm = New-SpikeSqlConnection -Catalog $adminDb -Auth Sa -Password $ctx.sqlPassword
-        if ($SqlAuth -eq 'Windows') { $adm.Dispose(); $adm = New-SpikeSqlConnection -Catalog $adminDb -Auth Windows }
+        $adm = New-AdminConnection $adminDb
         try {
             $proc = @"
 CREATE PROCEDURE dbo.reset_database @name sysname, @bak nvarchar(260), @moves nvarchar(max)
@@ -147,9 +175,36 @@ END
         $orphans = Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT dp.name FROM $db.sys.database_principals dp LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid WHERE dp.type = 'S' AND sp.sid IS NULL AND dp.name NOT IN ('dbo','guest','INFORMATION_SCHEMA','sys')")
         Add-SpikeFact 'orphanedUsersAfterRestore' @($orphans | ForEach-Object { $_.name })
         try {
-            $vault = Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT COUNT(*) AS n, SUM(CASE WHEN vault_url LIKE 'http%' THEN 1 ELSE 0 END) AS withUrl FROM $db.innovator.VAULT")
-            Add-SpikeFact 'vaultItem' ([ordered]@{ rows = [int]$vault[0].n; rowsWithAbsoluteUrl = [int]$vault[0].withUrl })
-        } catch [Data.SqlClient.SqlException] { Add-SpikeFact 'vaultItem' "query failed: error $($_.Exception.Number); the table or column name differs in this flavor" }
+            # 12.0 names the column vault_url_pattern (ticket 05); vault_url is the older name.
+            $col = Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT TOP 1 c.name FROM $db.sys.columns c JOIN $db.sys.tables t ON t.object_id = c.object_id JOIN $db.sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'innovator' AND t.name = N'VAULT' AND c.name IN (N'vault_url_pattern', N'vault_url') ORDER BY c.name DESC")
+            $c = Format-SpikeSqlIdent $col[0].name
+            $vault = Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT COUNT(*) AS n, SUM(CASE WHEN $c LIKE 'http%' THEN 1 ELSE 0 END) AS withUrl FROM $db.innovator.VAULT")
+            Add-SpikeFact 'vaultItem' ([ordered]@{ column = $col[0].name; rows = [int]$vault[0].n; rowsWithAbsoluteUrl = [int]$vault[0].withUrl })
+        } catch { Add-SpikeFact 'vaultItem' "query failed: $($_.Exception.Message)" }
+        # Every string column of the innovator schema: rows naming localhost, and rows holding an absolute http(s) URL. Counts only.
+        $cols = Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT t.name AS tbl, c.name AS col FROM $db.sys.columns c JOIN $db.sys.tables t ON t.object_id = c.object_id JOIN $db.sys.schemas s ON s.schema_id = t.schema_id JOIN $db.sys.types ty ON ty.user_type_id = c.user_type_id WHERE s.name = N'innovator' AND ty.name IN (N'nvarchar', N'varchar', N'ntext', N'text') AND (c.max_length = -1 OR c.max_length >= 32 OR ty.name IN (N'ntext', N'text'))")
+        $hits = New-Object System.Collections.ArrayList
+        $scanned = 0
+        foreach ($group in ($cols | Group-Object -Property tbl)) {
+            $parts = @()
+            $i = 0
+            foreach ($r in $group.Group) {
+                $q = Format-SpikeSqlIdent $r.col
+                $parts += "SUM(CASE WHEN $q LIKE N'%localhost%' THEN 1 ELSE 0 END) AS l$i, SUM(CASE WHEN $q LIKE N'%http://%' OR $q LIKE N'%https://%' THEN 1 ELSE 0 END) AS u$i"
+                $i++
+            }
+            try { $row = (Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT " + ($parts -join ', ') + " FROM $db.innovator." + (Format-SpikeSqlIdent $group.Name)))[0] }
+            catch { [void]$hits.Add([ordered]@{ table = $group.Name; error = $_.Exception.Message }); continue }
+            $i = 0
+            foreach ($r in $group.Group) {
+                $scanned++
+                $l = [int]$row.("l$i")
+                $u = [int]$row.("u$i")
+                if ($l -gt 0 -or $u -gt 0) { [void]$hits.Add([ordered]@{ table = $group.Name; column = $r.col; localhostRows = $l; absoluteUrlRows = $u }) }
+                $i++
+            }
+        }
+        Add-SpikeFact 'urlScan' ([ordered]@{ columnsScanned = $scanned; columnsWithHits = @($hits) })
         try {
             Invoke-SpikeSql -Connection $ctx.sa -Query ("USE $db; EXEC sys.sp_addextendedproperty @name = N'arashouse.state', @value = N'clean'; EXEC sys.sp_addextendedproperty @name = N'arashouse.golden_hash', @value = N'spike'") | Out-Null
             $ep = Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT COUNT(*) AS n FROM $db.sys.extended_properties WHERE class = 0 AND name LIKE N'arashouse.%'")
@@ -157,26 +212,113 @@ END
         } catch [Data.SqlClient.SqlException] { Add-SpikeFact 'markerWrittenAfterRestore' $false }
     }
 
-    Invoke-SpikeStep "set a new Aras password for root on the slot database $slotDb (a random value, never shown), recycle the slot, and log in with it (does the per-lease password route work?)" {
-        $db = Format-SpikeSqlIdent $slotDb
-        $newPw = New-SpikePassword
-        $plain = ConvertTo-SpikePlainText $newPw
+    function Get-Md5Hex([securestring]$secure, [switch]$Upper) {
+        $plain = ConvertTo-SpikePlainText $secure
         try {
             $md5 = [Security.Cryptography.MD5]::Create()
             $hex = -join ($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($plain)) | ForEach-Object { $_.ToString('x2') })
         } finally { $plain = $null }
-        $updated = 0
-        try {
-            $r = Invoke-SpikeSql -Connection $ctx.sa -Query ("UPDATE $db.innovator.[USER] SET password = @p WHERE login_name = N'root'; SELECT @@ROWCOUNT AS n") -Parameters @{ '@p' = $hex }
-            $updated = [int]$r[0].n
-        } catch [Data.SqlClient.SqlException] { Add-SpikeFact 'rootPasswordRoute' "update failed: error $($_.Exception.Number); table or column names differ" }
+        if ($Upper) { return $hex.ToUpperInvariant() }
+        return $hex
+    }
+
+    function Get-StoredPassword([string]$login) {
+        # The stored value stays in memory only, to compare and to describe; it is never written out.
+        $r = @(Invoke-SpikeSql -Connection $ctx.sa -Query ("SELECT password AS p, logon_enabled AS e FROM " + (Format-SpikeSqlIdent $slotDb) + ".innovator.[USER] WHERE login_name = @l") -Parameters @{ '@l' = $login })
+        if ($r.Count -eq 0) { return $null }
+        return $r[0]
+    }
+
+    function Get-PasswordShape($stored) {
+        if (-not $stored -or -not $stored.p) { return 'absent' }
+        $v = [string]$stored.p
+        $case = if ($v -cmatch '^[0-9A-F]+$') { 'upper' } elseif ($v -cmatch '^[0-9a-f]+$') { 'lower' } else { 'mixed-or-other' }
+        return [ordered]@{ length = $v.Length; hex = ($v -match '^[0-9A-Fa-f]+$'); case = $case; hasSeparator = ($v -match '[$:.]'); logonEnabled = $stored.e }
+    }
+
+    function Compare-StoredToMd5($stored, [securestring]$secure) {
+        if (-not $stored -or -not $stored.p) { return 'absent' }
+        $v = [string]$stored.p
+        if ($v -ceq (Get-Md5Hex $secure -Upper)) { return 'md5-upper' }
+        if ($v -ceq (Get-Md5Hex $secure)) { return 'md5-lower' }
+        return 'other'
+    }
+
+    function Invoke-ArasEdit([securestring]$token, [string]$login, [securestring]$newPassword) {
+        # AML edit of one User's password through the slot's own server, as the IOM clients do (the password is sent as its MD5 hex).
+        $hex = Get-Md5Hex $newPassword
+        $aml = '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><ApplyItem>' +
+            ('<Item type="User" action="edit" where="[User].login_name=''{0}''"><password>{1}</password></Item>' -f $login, $hex) +
+            '</ApplyItem></SOAP-ENV:Body></SOAP-ENV:Envelope>'
         $hex = $null
-        if ($updated -eq 1) {
-            Restart-SpikePools -Alias $slotAlias
-            $cfg = Find-SpikeFile -Root $slotTree -Name 'InnovatorServerConfig.xml'
-            $id = Get-SpikeDbId -ConfigPath $cfg
-            Add-SpikeFact 'rootPasswordRoute' ([ordered]@{ rowsUpdated = $updated; loginWithNewPassword = (Test-SpikeArasLogin -Alias $slotAlias -DatabaseId $id -ArasPassword $newPw) })
+        $plainToken = ConvertTo-SpikePlainText $token
+        $text = ''
+        try {
+            $req = [Net.HttpWebRequest]::Create("http://localhost/$slotAlias/Server/InnovatorServer.aspx")
+            $req.Method = 'POST'
+            $req.ContentType = 'text/xml; charset=utf-8'
+            $req.Headers.Add('SOAPAction', 'ApplyItem')
+            $req.Headers.Add('Authorization', "Bearer $plainToken")
+            $req.Timeout = 120000
+            $bytes = [Text.Encoding]::UTF8.GetBytes($aml)
+            $aml = $null
+            $stream = $req.GetRequestStream()
+            try { $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Dispose() }
+            try { $res = $req.GetResponse() }
+            catch [Net.WebException] {
+                $res = $_.Exception.Response
+                if (-not $res) { return [ordered]@{ ok = $false; httpStatus = 0; fault = $_.Exception.Message } }
+            }
+            $status = [int]$res.StatusCode
+            try { $text = (New-Object IO.StreamReader($res.GetResponseStream())).ReadToEnd() } finally { $res.Close() }
+        } finally { $plainToken = $null }
+        if ($text -match '<faultstring>([^<]{0,160})') { return [ordered]@{ ok = $false; httpStatus = $status; fault = $Matches[1] } }
+        return [ordered]@{ ok = ($text -match '<Result'); httpStatus = $status; fault = $null }
+    }
+
+    function Test-Login([string]$login, [securestring]$password) {
+        $ok = Test-SpikeArasLogin -Alias $slotAlias -DatabaseId $ctx.dbId -ArasPassword $password -User $login
+        return [ordered]@{ ok = $ok; refusal = $script:SpikeLastLoginError }
+    }
+
+    Invoke-SpikeStep "per-lease passwords on the slot database $slotDb (random values, never shown): the stored format of root and admin; route 1, an AML edit as root through the slot's server; route 2, a direct UPDATE of admin's [USER].password (MD5 hex, upper then lower case); each checked by logging in" {
+        $ctx.dbId = Get-SpikeDbId -ConfigPath (Find-SpikeFile -Root $slotTree -Name 'InnovatorServerConfig.xml')
+        $shipped = Get-SpikeArasPassword
+        $shapes = [ordered]@{}
+        foreach ($u in @('root', 'admin')) {
+            $stored = Get-StoredPassword $u
+            $shapes[$u] = [ordered]@{ shape = (Get-PasswordShape $stored); equalsMd5OfShippedPassword = (Compare-StoredToMd5 $stored $shipped) }
         }
+        Add-SpikeFact 'storedPasswordBefore' $shapes
+
+        $api = [ordered]@{}
+        $rootToken = Get-SpikeArasToken -Alias $slotAlias -DatabaseId $ctx.dbId -ArasPassword $shipped
+        $api.rootLoginWithShippedPassword = [ordered]@{ ok = [bool]$rootToken; refusal = $script:SpikeLastLoginError }
+        if ($rootToken) {
+            # admin first: the edit of root's own password comes last, with the same token.
+            foreach ($u in @('admin', 'root')) {
+                $pw = New-SpikePassword
+                $edit = Invoke-ArasEdit $rootToken $u $pw
+                $stored = Get-StoredPassword $u
+                $api[$u] = [ordered]@{ edit = $edit; storedAfter = (Get-PasswordShape $stored); storedEqualsMd5 = (Compare-StoredToMd5 $stored $pw); login = (Test-Login $u $pw) }
+            }
+        }
+        Add-SpikeFact 'passwordRouteApi' $api
+
+        $sqlRoute = [ordered]@{}
+        foreach ($variant in @('upper', 'lower')) {
+            $pw = New-SpikePassword
+            $hex = Get-Md5Hex $pw -Upper:($variant -eq 'upper')
+            $r = Invoke-SpikeSql -Connection $ctx.sa -Query ("UPDATE " + (Format-SpikeSqlIdent $slotDb) + ".innovator.[USER] SET password = @p WHERE login_name = N'admin'; SELECT @@ROWCOUNT AS n") -Parameters @{ '@p' = $hex }
+            $hex = $null
+            $row = [ordered]@{ rowsUpdated = [int]$r[0].n; loginWithoutRecycle = (Test-Login 'admin' $pw) }
+            if (-not $row.loginWithoutRecycle.ok) {
+                Restart-SpikePools -Alias $slotAlias
+                $row.loginAfterRecycle = (Test-Login 'admin' $pw)
+            }
+            $sqlRoute["md5$variant"] = $row
+        }
+        Add-SpikeFact 'passwordRouteSql' $sqlRoute
     }
 
     if ($ctx.sa) { $ctx.sa.Dispose() }

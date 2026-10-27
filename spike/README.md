@@ -51,15 +51,15 @@ Run scripts with `powershell -ExecutionPolicy Bypass -File C:\aras_installations
 | 4 | `10-baseline-install.ps1 -Apply` | yes | `sa`, Aras root password; licence only with `-WithLicence` | ticket 05 steps 2 to 4: unattended install, install directory outside Program Files, what the MSI created, version check |
 | 4b | `10-baseline-install.ps1 -Suffix c -DatabaseMode None -Apply` | yes | Aras root password | ticket 05 step 3: does `INSTALL_DATABASE=0` work (then restore the `.bak` by hand or with 20) |
 | 5 | `20-clone-slot.ps1 -Apply` | yes | `sa`, Aras root password | ticket 05 step 5: second instance side by side |
-| 6 | `30-licence-reuse.ps1 -Apply` | yes | Aras root password, licence key, activation key | ticket 05 step 6: one key for both slots, key needed for login |
+| 6 | `30-licence-reuse.ps1 -Apply [-LicenceSourceConfig '<cfg>[\|<cfg>...]']` | yes | Aras root password; licence key and activation key unless read from installed configs | ticket 05 step 6: one key for both slots, key needed for login; several sources are tried in turn (ticket 07: a 12.x key against 14.0.9) |
 | 7 | `40-measure.ps1 -Apply [-TestDefenderExclusion]` | yes | `sa` (none with `-SqlAuth Windows`), Aras root password | ticket 06 checks 2, 3(a), 6, 7 and sizes |
 | 8 | `50-quiesce.ps1 -Apply` | yes | Aras root password | ticket 06 checks 1 and 5 (a stand-in service of the slot's name is used when the clone has no agent) |
 | 9 | `60-sql-restore-owner.ps1 -Apply` | yes | `sa` (none with `-SqlAuth Windows`), Aras root password | ticket 06 checks 3(b), 4: owner restore (also over an open connection), stored-procedure fallback, fix-ups, per-lease password routes |
 | 10 | `90-teardown.ps1 -Apply` | yes | `sa` | removes everything with a spike prefix |
 | 11 | `00-preflight.ps1 -Apply` | no | none | `denyListUnchangedSinceBaseline` must be `true` |
 
-Steps 3b to 6 are ticket 05, steps 7 to 9 are ticket 06 and may share its sitting. Ticket 07 repeats steps 3, 3b, 4, 5 and 10 with
-`-Flavor 23`; ticket 08 with `-Flavor 35` when its media exists.
+Steps 3b to 6 are ticket 05, steps 7 to 9 are ticket 06 and may share its sitting. Ticket 07 repeats steps 3 to 6, 10 and 11 with
+`-Flavor 23` (4b after 6, with a fresh 3b in between: the first install's product code is then registered); ticket 08 with `-Flavor 35`.
 
 ## The ticket 06 sitting
 

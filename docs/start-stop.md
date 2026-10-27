@@ -85,6 +85,21 @@ After the `12sp9` golden was rebuilt with the agent and a broker built from tick
 - `stopSlot`: 7.5 s; the service is stopped. `destroySlot`: 12.1 s (agent 1.0 s); the service and the slot folder are
   gone; the provision's and the destroy's deny-list checks found every object unchanged.
 
+The same on `23-97` and `35-97` after their rebuilds (the 14.x agent: Kestrel, `/health`):
+
+| | `23-97` | `35-97` |
+|---|---|---|
+| `provisionSlot` | 33.5 s; 9 files, 21 edits; agent on 8997 | 27.5 s; 7 files, 18 edits; agent on 9097 |
+| the service | stopped, `DEMAND_START`, `LocalSystem`, `"...\slots\23\97\AgentService\bin\Aras.Server.Agent.Service.exe" --service` | the same under `slots\35\97` |
+| rendered | `appsettings.json` `Url` `http://localhost:8997/`, `InnovatorServerUrl` the slot's server; `InnovatorToServiceAddress="http://localhost:8997/"` | the same with 9097 |
+| `startSlot` without the agent | 25.8 s, all warm, agent stopped | 25.4 s, all warm, agent stopped |
+| `stopSlot` | 10.6 s | 11.6 s |
+| `startSlot` with the agent | 16.7 s, `http://localhost:8997/health` 200, service running | 15.8 s, `http://localhost:9097/health` 200 |
+| `stopSlot`, `destroySlot` | 11.1 s, 12.5 s; service gone, deny-list unchanged | 11.1 s, 12.1 s; the same |
+
+The broker these ran on was built from the first commit of ticket 33b; the fix that leaves the builds' own agent
+services out of a slot's deny-list fingerprints came after, and matters only when a provision overlaps a build (none did).
+
 ## Not here
 
 - `sc sdset` with `(A;;LCRPWP;;;<user SID>)` would let a non-admin start and stop a slot's service without the broker

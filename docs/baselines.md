@@ -107,7 +107,7 @@ from their tables and shipped files (non-elevated, read-only, 2026-10-28):
 | | 12.0 (`12sp9`) | 14.x (`23`, `35`: the same components) |
 |---|---|---|
 | Service | a `ServiceInstall` row: `ArasInnovatorAgent_[AS_FOLDER]`, own process, automatic start, LocalSystem; `ServiceControl` starts it at install and stops and deletes it at uninstall | no `ServiceInstall` row: the custom action `StartAgentService` makes and starts it, `RemoveAgentService` removes it at uninstall; `CheckAgentServiceExists` aborts the install when `ArasInnovatorAgent_<AS_FOLDER>` exists |
-| Executable | `AgentService\Aras.Server.Agent.Service.exe` (.NET Framework 4.7.2) | `AgentService\bin\Aras.Server.Agent.Service.exe` (.NET 6 or 8) |
+| Executable | `AgentService\Aras.Server.Agent.Service.exe` (.NET Framework 4.7.2), no arguments | `AgentService\bin\Aras.Server.Agent.Service.exe --service` (.NET 6 in `23`, 8 in `35`) |
 | Host | WCF, `basicHttpBinding`, base address `http://[AS_HOST]:[AS_PORT]/[AS_FOLDER]`, WSDL by HTTP GET | Kestrel, `Kestrel:Endpoints:HTTP:Url`, a `/health` route |
 | Config the MSI writes | `Aras.Server.Agent.Service.exe.config` (XML table): the base address and `appSettings` `InnovatorServer` | `appsettings.json` (search and replace): `http://0.0.0.0:8734/` becomes `INNOVATOR_TO_SERVICE_ADDRESS`, the server URL `ARAS_AGENTSERVICE_TO_INNOVATORSERVER_URL` |
 | Server config | `<AgentService InnovatorToServiceAddress="http://[AS_HOST]:[AS_PORT]/[AS_FOLDER]">` | `<AgentService InnovatorToServiceAddress="http://[AS_HOST]:[AS_PORT]/">`; `AS_PORT` is parsed from `INNOVATOR_TO_SERVICE_ADDRESS`, and `ValidateAgentServicePort` refuses an occupied port |
@@ -343,6 +343,26 @@ http://localhost:8800/ah-build-12sp9?wsdl with 200". Tree 23,818 files, 560.7 MB
 `d30c857941e3dc815e3e881a33ca7581a30618d6cf68cc6a2c413f58a9dfff3a`** (55 files and 3.3 MB more than the golden without the agent). `ootb.bak`
 77.1 MB. `service.json`: `installed: true`, `binaryPath` `AgentService\Aras.Server.Agent.Service.exe`, `startMode`
 `Auto`, `arguments: null`. The manifest leaves out the same 3 runtime files as before: the agent writes nothing into its tree.
+
+**`23`**: one run, 997 s, `leftovers: []`. preflight 3.0, snapshot 1.4, msi-copy 1.4, msi-cost 17.4, **install 191.6**
+(the custom action made and started the service), pools 94.4, database 3.2, configure 0, verify 25.2, stop 11.4,
+blank-secrets 0, capture-tree 33.5, capture-db 2.0, metadata 0, **manifest 294.0**, promote 5.9, **remove 241.6**,
+deny-list 1.6 (all 35 unchanged), seal 69.1. `verify`: "agent ArasInnovatorAgent_ah-build-23
+(AgentService\bin\Aras.Server.Agent.Service.exe, Auto) answers http://localhost:8900/health with 200". Tree 26,390
+files, 755.0 MB; **manifest 26,387 files, 754.9 MB, hash `eaa409f71c1e8959a4592172e25601ba8ec98aac4d81a1e1e28c673df004b395`**
+(107 files and 10.3 MB more than without the agent). `ootb.bak` 74.1 MB.
+
+**`35`**: one run, 835 s, `leftovers: []`. preflight 2.3, snapshot 1.4, msi-copy 1.4, msi-cost 11.7, **install 155.6**,
+pools 53.9, database 1.8, configure 0, verify 33.4, stop 10.3, blank-secrets 0, capture-tree 19.3, capture-db 0.9,
+metadata 0, **manifest 233.9**, promote 5.0, **remove 244.5**, deny-list 1.5 (all 35 unchanged), seal 57.9. `verify`:
+`http://localhost:9000/health` answered 200. Tree 23,652 files, 1,117.9 MB; **manifest 23,649 files, 1,117.8 MB, hash
+`03fb2ba2c5d252fcd90312478f76fb220715c5b1bcfb5c7d444d27c494ef2417`** (113 files and 11.1 MB more). `ootb.bak` 109.1 MB.
+
+The 14.x service runs `"<tree>\AgentService\bin\Aras.Server.Agent.Service.exe" --service`: `service.json` records
+`arguments: "--service"`, and a slot's service carries it (below, `docs/start-stop.md`). Neither 14.x agent wrote into
+its tree while it ran (no `logs\` folder; the manifests leave out the same 3 runtime files), so no runtime directory is
+added. These rebuilds ran without the login and engine checks (no licence in a gate run); the earlier builds of the
+same media proved both (above). The `12sp9` rebuild likewise.
 
 ## For later tickets
 

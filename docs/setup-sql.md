@@ -146,10 +146,11 @@ self-test's throw-away login gets a password made the same way. A slot login's p
 ## Rehearsed on LocalDB (2026-10-27)
 
 Before it ran on the host, the whole script ran against a throw-away LocalDB instance of the worker's own (SQL
-Server 2025 Express 17.0.4025.3), with a scratch root, never the host's instance: `-Apply -SelfTest` from nothing,
+Server 2025 Express 17.0.4025.3), with a scratch root of its own, never the host's instance: `-Apply -SelfTest` from nothing,
 then again (nothing to change), then with one procedure altered (rebuilt and re-signed), then with the broker's
 login put in `dbcreator` (the run failed, as it must). `test/setup-sql.test.ts` repeats the first two with
-`ARASHOUSE_TEST_LOCALDB=1` (about 10 s); by default it only parses the script.
+`ARASHOUSE_TEST_LOCALDB=1` (about 10 s; its scratch root is a folder of its own under `staging\`, which it removes
+with the instance); by default it only parses the script.
 
 One finding: on Express, where a new database has `AUTO_CLOSE ON`, a `DROP DATABASE` by the impersonated owner
 after any `CREATE LOGIN` failed with the fatal error 615. With `AUTO_CLOSE OFF` it works, so

@@ -40,14 +40,15 @@ describeWithPs(`setup-sql.ps1 under ${ps}`, { timeout: 60_000 }, () => {
 });
 
 // The whole script against a throw-away LocalDB instance of the test's own (never the host's SQL Server):
-// -Apply -SelfTest from nothing, then again with nothing to change. Opt-in, since it takes about a minute.
+// -Apply -SelfTest from nothing, then again with nothing to change. Opt-in. Its scratch root is a folder of
+// its own under the install root's staging\ (which the worker may change), never the drive root.
 const localDb = windows && process.env.ARASHOUSE_TEST_LOCALDB === "1" && spawnSync("sqllocaldb.exe", ["info"], { cwd }).status === 0;
 const describeWithLocalDb = localDb ? describe : describe.skip;
 
 describeWithLocalDb("setup-sql.ps1 on a throw-away LocalDB instance", { timeout: 600_000 }, () => {
   const instance = `ahsqltest${process.pid}`;
-  const root = `C:\\arashouse_sqltest_${process.pid}`;
-  const rootOnWsl = `/mnt/c/arashouse_sqltest_${process.pid}`;
+  const root = `C:\\aras_installations\\staging\\arashouse-sqltest-${process.pid}`;
+  const rootOnWsl = `/mnt/c/aras_installations/staging/arashouse-sqltest-${process.pid}`;
   const script = join(dir, "setup-sql-localdb.ps1");
   afterAll(() => {
     spawnSync("sqllocaldb.exe", ["stop", instance, "-k"], { cwd });

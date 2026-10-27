@@ -165,7 +165,12 @@ try {
         Invoke-SpikeStep "cost the MSI without installing it and refuse if any folder it would write resolves inside an existing Aras root (the first retry wrote into the captain's Aras 14.0.9 root)" {
             $costProps = [ordered]@{}
             $costProps[$InstallDirProperty] = $InstallDir
+            $costProps['VAULT_ROOT'] = $vaultRoot
             $targets = Get-MsiTargetPaths $state.msi $costProps $InstallDirProperty
+            $vaultTargets = Get-MsiTargetPaths $state.msi $costProps 'VAULT_ROOT'
+            $vaultTarget = $vaultTargets['VAULT_ROOT']
+            Add-SpikeFact 'costedVaultRoot' $vaultTarget
+            if (-not $vaultTarget -or -not (Test-SpikeUnder ($vaultTarget.TrimEnd('\')) $vaultRoot)) { throw "PRECONDITION: costing resolved VAULT_ROOT to '$vaultTarget', not $vaultRoot; nothing was installed." }
             $mine = $targets[$InstallDirProperty]
             Add-SpikeFact 'costedInstallDir' $mine
             if (-not $mine -or -not (Test-SpikeUnder ($mine.TrimEnd('\')) $InstallDir)) { throw "PRECONDITION: costing resolved $InstallDirProperty to '$mine', not $InstallDir; nothing was installed." }

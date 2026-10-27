@@ -236,11 +236,13 @@ function Read-SpikeSecret {
     # Hidden prompt. Never echoed. Registered so the end-of-run scan looks for it.
     param([Parameter(Mandatory)][string]$Prompt, [switch]$AllowEmpty, [switch]$ContextOnly)
     # A worker that was authorised to supply the local sa password leaves it as a DPAPI blob (ConvertFrom-SecureString, bound to this
-    # Windows user) in spike\handoff\sa.dpapi and deletes it afterwards; it is never on a command line. Only the sa prompt has a handoff.
+    # Windows user) in spike\handoff\sa.dpapi; it is never on a command line. The blob is one-shot: deleted as soon as it is read.
     $handoff = Join-Path $script:SpikeRoot 'handoff\sa.dpapi'
     if ($Prompt -like 'SQL sa password*' -and (Test-Path -LiteralPath $handoff)) {
         $fromFile = ConvertTo-SecureString -String ([IO.File]::ReadAllText($handoff).Trim())
+        Remove-Item -LiteralPath $handoff -Force
         Register-SpikeSecret $fromFile
+        Add-SpikeFact 'saHandoffUsed' $true
         return $fromFile
     }
     $secure = Read-Host -Prompt $Prompt -AsSecureString

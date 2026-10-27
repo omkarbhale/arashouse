@@ -230,7 +230,9 @@ try {
                 if (-not $state.props.Contains($k)) { throw "PARAM: the MSI has no property '$k'." }
                 $p[$k] = [string]$MsiProperty[$k]
             }
-            $hidden = @($state.props.Keys | Where-Object { $_ -match $sensitiveKeyPattern })
+            # Plus the secrets the custom actions set or read that are not rows of the Property table: the SQL passwords, and the OAuth signing
+            # certificates' password, which a silent install generates when it is empty (SetGeneratedOAuthCertificatesPassword, 12.0 and 14.0).
+            $hidden = @(@($state.props.Keys | Where-Object { $_ -match $sensitiveKeyPattern }) + @('IS_SQLSERVER_PASSWORD', 'SQL_SERVER_LOGIN_PASSWORD', 'SQL_SERVER_LOGIN_REGULAR_PASSWORD', 'OAUTH_CERTIFICATES_PASSWORD') | Select-Object -Unique)
             if ($hidden.Count -gt 0) { $p['MsiHiddenProperties'] = ($hidden -join ';') }
             Add-SpikeFact 'propertiesSet' @($p.Keys)
             Add-SpikeFact 'propertiesMissingFromMsi' @($want.Keys | Where-Object { -not $state.props.Contains($_) -and $_ -notin $builtIn })

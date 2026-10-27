@@ -222,5 +222,17 @@ describeWithPs(`spike scripts under ${ps}`, () => {
       expect(r.status).toBe(2);
       expect(r.stderr).toMatch(/secret properties/);
     });
+
+    it("reads a licence only from an install's InnovatorServerConfig.xml, each of several '|'-separated sources checked", () => {
+      const good = "C:\\Program Files (x86)\\Aras12\\Innovator\\InnovatorServerConfig.xml";
+      const r = run(spikeScript("30-licence-reuse.ps1"), ["-Flavor", "23", "-LicenceSourceConfig", `${good}|C:\\Program Files (x86)\\Aras28\\Innovator\\InnovatorServerConfig.xml`]);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("phase 2 (Aras12)");
+      expect(r.out).toContain("phase 2 (Aras28)");
+      const bad = run(spikeScript("30-licence-reuse.ps1"), ["-Flavor", "23", "-LicenceSourceConfig", `${good}|C:\\aras_installations\\spike\\x.xml`]);
+      expect(bad.code).toBe(2);
+      expect(bad.err).toMatch(/LicenceSourceConfig must be/);
+      expect(bad.out).not.toMatch(/would do:/);
+    });
   });
 });

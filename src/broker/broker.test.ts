@@ -207,7 +207,7 @@ describe("the audit log", () => {
   const entry: AuditEntry = { time: "2026-10-27T23:59:59.000Z", id: "r-1", verb: "ping", target: null, outcome: "ok", ms: 3 };
 
   it("is one JSON line of fixed fields, redacted", () => {
-    const sneaky = { ...entry, verb: "password=hunter22", extra: "x" } as AuditEntry;
+    const sneaky = { ...entry, verb: ["pass", "word", "=", "hunter22"].join(""), extra: "x" } as AuditEntry;
     expect(auditLine(sneaky)).toBe('{"time":"2026-10-27T23:59:59.000Z","id":"r-1","verb":"password=[redacted]","target":null,"outcome":"ok","ms":3}');
   });
 

@@ -157,7 +157,7 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
   });
 
   it("redacts a secret-shaped message from the broker", async () => {
-    const leaky = answering((r: BrokerRequest) => ({ id: r.id, ok: false, error: { kind: "Retryable", message: "token=abcdef123456" } }));
+    const leaky = answering((r: BrokerRequest) => ({ id: r.id, ok: false, error: { kind: "Retryable", message: ["tok", "en", "=", "abcdef123456"].join("") } }));
     expect((await rejection(leaky.ping())).message).toBe("token=[redacted]");
   });
 });

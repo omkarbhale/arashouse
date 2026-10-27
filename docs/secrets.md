@@ -8,7 +8,7 @@ One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `s
 - A `Secret` prints, serialises and inspects as `[redacted]`. `reveal()` is the only way to read it, and `test/reveal-allowlist.test.ts` resolves every reference to `Secret.reveal` in non-test source with the TypeScript type checker and fails when a file that is not listed there references it, or does so more often than listed. Adding a reference means adding the file to that list in the same PR.
 - Everything that is logged goes through `redact` (`redactingSink` wraps a writer so it cannot be bypassed). `redact` replaces the value of every `Secret` created in the process, in the forms it travels in (as typed, URL-encoded, JSON-escaped, base64), and these shapes: a key named `lic_key`, `act_key`, `LICENSEKEY`, `password`, `passwd`, `pwd`, `secret` or `token` followed by `=` or `:` and a value (bare, quoted, or in JSON); `Authorization: ...`; `Bearer ...`; `Basic ...`; `-P <x>`; `--password <x>`. Values shorter than four characters are caught only by their shape.
 - Errors are printed through `redactError`, never as raw `message` and `stack`.
-- Host-side storage, when something must persist: machine-scope DPAPI blobs at `<root>\secrets\<name>.bin` (`secretFile` in `src/core/names.ts`), ACL'd to SYSTEM and the broker account (the broker, tickets 20 and 21). The WSL side persists nothing secret except the per-lease password file for `run --lease` (ticket 34). The `SecretStore` interface in `secret-store.ts` is the contract; `MemorySecretStore` is the test double.
+- Host-side storage, when something must persist: machine-scope DPAPI blobs at `<root>\secrets\<name>.bin` (`secretFile` in `src/core/names.ts`), ACL'd to SYSTEM and the broker account (the broker, tickets 20 and 21). The WSL side persists nothing secret except the per-lease password file for `run --lease`: `LeaseFileStore` (`src/core/lease-files.ts`) keeps it at `$ARASHOUSE_HOME/leases/<lease_id>` (mode 0600, folder 0700), written by `get` and deleted by `return`. The `SecretStore` interface in `secret-store.ts` is the contract; `MemorySecretStore` is the test double.
 
 ## Licence keys
 
@@ -25,4 +25,4 @@ One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `s
 
 ## Not here
 
-The CLI commands (`licence forget`, `doctor`, exit-code table) are ticket 15 and 16; the DPAPI store and its ACLs are tickets 20 and 21; the `sa` prompt is ticket 22; the lease password and its 0600 file are ticket 34.
+The worker commands and the exit-code table are in `docs/cli.md`; `licence forget` and `doctor` are ticket 16; the DPAPI store and its ACLs are tickets 20 and 21; the `sa` prompt is ticket 22; setting the lease password in the slot's database and forgetting it at reset is ticket 34.

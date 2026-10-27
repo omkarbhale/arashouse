@@ -132,7 +132,7 @@ export function maxActiveGovernor(limit: number = DEFAULT_MAX_ACTIVE): Governor 
 export interface LeaseDeps {
   readonly store: StateStore;
   readonly host: LeaseHost;
-  /** Where the per-lease password is kept for `run --lease` (ticket 34); deleted on return. */
+  /** Where the per-lease password is kept for `run --lease` (the CLI's `LeaseFileStore`); deleted on return. */
   readonly secrets: SecretStore;
   /** The URL of a slot as seen from WSL, from its web alias. Defaults to the discovered host address (ticket 29). */
   readonly resolveUrl?: (alias: string) => Promise<string>;

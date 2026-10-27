@@ -8,11 +8,14 @@ import { repoRoot } from "./helpers.js";
  * Where Secret.reveal (the one way to read a Secret) may be referenced in non-test source, and how
  * many times, not counting its declaration. Adding a reference fails this test; the fix is to add
  * the file here, in the same PR that needs it, where a reviewer sees it. The host-side DPAPI store
- * (ticket 21) and the lease-file writer (ticket 34) are the expected additions. `renderGetJson`
- * (src/core/lease.ts) is where `get --json` shows the lease password, once.
+ * (ticket 21) is the expected addition. `renderGetJson` (src/core/lease.ts) is where `get --json`
+ * shows the lease password, once; the lease-file store writes it to its 0600 file; `run` puts it in
+ * its child's environment.
  */
 const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/lease.ts": 1,
+  "src/core/lease-files.ts": 1,
+  "src/cli/run.ts": 1,
 };
 
 const REVEAL_MODULE = "src/core/secret.ts";

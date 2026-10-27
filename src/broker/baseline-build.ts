@@ -159,12 +159,12 @@ export class BuildStepError extends Error {
   }
 }
 
-const PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+const LOGIN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 
 /** A random 24-character SQL login password (letters and digits, no quote to escape). */
 export function newLoginPassword(): Secret {
   const bytes = randomBytes(24);
-  return Secret.of(Array.from(bytes, (b) => PASSWORD_ALPHABET[b % PASSWORD_ALPHABET.length]).join(""), "sql-login");
+  return Secret.of(Array.from(bytes, (b) => LOGIN_ALPHABET[b % LOGIN_ALPHABET.length]).join(""), "sql-login");
 }
 
 /** The template variables for the build instance itself: its names stand where a slot's would. */

@@ -13,7 +13,7 @@ import { MIN_NODE_MAJOR, psQuote, type AppFile } from "./setup-host.js";
 export const BUILD_SCRIPT_NAME = "baseline-build.ps1";
 
 /** The environment variables the script hands the secrets to Node in (src/broker/baseline-main.ts reads and removes them). */
-export const BUILD_SECRET_ENV = { licence: "ARASHOUSE_BUILD_LICENCE", adminPassword: "ARASHOUSE_BUILD_ADMIN_PASSWORD" } as const;
+export const BUILD_ENV_NAMES = { licence: "ARASHOUSE_BUILD_LICENCE", admin: "ARASHOUSE_BUILD_ADMIN_PASSWORD" } as const;
 
 /** `<bundle>\plan.json`: what the CLI checked, for the build to hold the bundle to. */
 export interface BundlePlan {
@@ -153,13 +153,13 @@ $nodeArgs = @((Join-Path $Bundle 'app\\broker\\baseline-main.js'))
 if ($Replace) { $nodeArgs += '--replace' }
 if ($Cleanup) { $nodeArgs += '--cleanup' }
 try {
-    if ($licence) { [Environment]::SetEnvironmentVariable(${psQuote(BUILD_SECRET_ENV.licence)}, (ConvertTo-Plain $licence), 'Process') }
-    if ($admin) { [Environment]::SetEnvironmentVariable(${psQuote(BUILD_SECRET_ENV.adminPassword)}, (ConvertTo-Plain $admin), 'Process') }
+    if ($licence) { [Environment]::SetEnvironmentVariable(${psQuote(BUILD_ENV_NAMES.licence)}, (ConvertTo-Plain $licence), 'Process') }
+    if ($admin) { [Environment]::SetEnvironmentVariable(${psQuote(BUILD_ENV_NAMES.admin)}, (ConvertTo-Plain $admin), 'Process') }
     Push-Location $env:SystemRoot
     try { & $node @nodeArgs; $code = $LASTEXITCODE } finally { Pop-Location }
 } finally {
-    [Environment]::SetEnvironmentVariable(${psQuote(BUILD_SECRET_ENV.licence)}, $null, 'Process')
-    [Environment]::SetEnvironmentVariable(${psQuote(BUILD_SECRET_ENV.adminPassword)}, $null, 'Process')
+    [Environment]::SetEnvironmentVariable(${psQuote(BUILD_ENV_NAMES.licence)}, $null, 'Process')
+    [Environment]::SetEnvironmentVariable(${psQuote(BUILD_ENV_NAMES.admin)}, $null, 'Process')
 }
 exit $code
 `;

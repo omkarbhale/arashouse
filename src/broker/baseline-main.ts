@@ -13,7 +13,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { baselinePlan, goldenJson, type BuildReport, type StepRecord } from "../core/baseline.js";
-import { BUILD_SECRET_ENV, PLAN_FILE, RESULT_FILE, type BundlePlan } from "../core/baseline-script.js";
+import { BUILD_ENV_NAMES, PLAN_FILE, RESULT_FILE, type BundlePlan } from "../core/baseline-script.js";
 import { isFlavorKey } from "../core/flavors.js";
 import { buildScratch } from "../core/names.js";
 import { redactError } from "../core/redact.js";
@@ -34,9 +34,9 @@ async function main(): Promise<number> {
     return 2;
   }
   // Set by baseline-build.ps1 for this process only; read once and removed.
-  const licenceText = secretFromEnv(BUILD_SECRET_ENV.licence, "licence");
+  const licenceText = secretFromEnv(BUILD_ENV_NAMES.licence, "licence");
   const licence = licenceText ? parseLicenceInput(licenceText) : undefined;
-  const adminPassword = secretFromEnv(BUILD_SECRET_ENV.adminPassword, "aras-login");
+  const adminPassword = secretFromEnv(BUILD_ENV_NAMES.admin, "aras-login");
   const bundle = fileURLToPath(new URL("../../", import.meta.url));
   const bundlePlan = JSON.parse(await readFile(win32.join(bundle, PLAN_FILE), "utf8")) as BundlePlan;
   if (bundlePlan.schema !== 1 || !isFlavorKey(bundlePlan.flavor)) throw new Error("plan.json names no registered flavor");

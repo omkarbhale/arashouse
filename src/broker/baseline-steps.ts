@@ -426,7 +426,7 @@ switch ($Step) {
         $c = New-Sql
         try {
             foreach ($pair in @(@($LoginDbo, $dbo), @($LoginReg, $reg))) {
-                Invoke-Sql $c ("CREATE LOGIN " + (Format-Ident $pair[0]) + " WITH PASSWORD = " + (Format-Str $pair[1]) + ", CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF, DEFAULT_DATABASE = master") | Out-Null
+                Invoke-Sql $c ("CREATE LOGIN {0} WITH PASSWORD = {1}, CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF, DEFAULT_DATABASE = master" -f (Format-Ident $pair[0]), (Format-Str $pair[1])) | Out-Null
             }
             $dbo = $null; $reg = $null; $request = $null
             $files = Invoke-Sql $c ("RESTORE FILELISTONLY FROM DISK = " + (Format-Str $bak))

@@ -478,6 +478,8 @@ export interface DoctorRequest {
   readonly fix?: boolean;
   /** Rebuild the state from the slot stamps (ticket 11's recovery); a dry run without `yes`. */
   readonly rebuildState?: boolean;
+  /** Verify each baseline at the full level (every file's SHA-256, `docs/manifest.md`) instead of fast. */
+  readonly deep?: boolean;
   readonly yes?: boolean;
 }
 
@@ -566,7 +568,7 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
       else add("warn", `media ${flavor}`, present === false ? "missing or incomplete (`arashouse media check`)" : "the media folder cannot be found");
     }
     try {
-      const verified = await host.baselineVerify(flavor, { level: "fast" });
+      const verified = await host.baselineVerify(flavor, { level: request.deep === true ? "full" : "fast" });
       if (verified.ok) add("ok", `baseline ${flavor}`, verified.detail);
       else add(inPool ? "fail" : "warn", `baseline ${flavor}`, `${verified.detail}${inPool ? ": its slots cannot be reset" : ""}`);
     } catch (err) {

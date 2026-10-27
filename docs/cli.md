@@ -19,7 +19,7 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 | `arashouse run --lease <lease_id> -- <command ...>` | Runs a command with the lease's connection in its environment. |
 | `arashouse media check [<flavor>...] [--json] [--write-sums]` | Checks the installers (`docs/media-check.md`). |
 | `arashouse reset-worker [--slot <slot>]` | Resets returned slots; `return` starts it detached (`docs/reset.md`). |
-| `arashouse doctor [--fix] [--rebuild-state] [--yes]` | Checks the pool against the host; see [Operator commands](#operator-commands). |
+| `arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes]` | Checks the pool against the host; see [Operator commands](#operator-commands). |
 | `arashouse repair <slot> [--rebuild]` | Resets a quarantined slot from golden; the way out of `quarantined`. |
 | `arashouse destroy <slot> [--yes] [--include-leased]` | Removes a slot from the host and the pool. |
 | `arashouse prune [--yes]` | Destroys the `disabled` and orphaned slots. |
@@ -119,7 +119,7 @@ What a person, or firstmate, uses when something is wrong. Source: `src/core/ope
 - A command refused because of the slot's status (destroying a leased slot, disabling one being
   reset, repairing one that is not quarantined) exits 7 and changes nothing.
 
-### `doctor [--fix] [--rebuild-state] [--yes]`
+### `doctor [--fix] [--rebuild-state] [--deep] [--yes]`
 
 One line per check, `ok`, `warn` or `fail`, then a summary; it exits 1 when a check failed and was
 not fixed, else 0. It checks:
@@ -131,7 +131,7 @@ not fixed, else 0. It checks:
 | `sql` | the broker cannot connect to SQL Server with its login |
 | `disk`, `ram` | free disk is under `min_free_disk_gb`, free RAM under `min_free_ram_mb` (warn; `docs/governor.md`) |
 | `media <flavor>` | the flavor's media is missing or its folder cannot be found (warn; `media check` is the full check) |
-| `baseline <flavor>` | the golden does not verify at the fast level: fail if the pool has slots of the flavor, else warn |
+| `baseline <flavor>` | the golden does not verify at the fast level (the full level, every file's SHA-256, with `--deep`): fail if the pool has slots of the flavor, else warn |
 | `slot <id>` | a record whose slot is not on the host; a stamp that belongs to another slot; a `free` slot that is not clean on the host (its stamp, tree, database marker or health; the same check `get` makes); a `resetting` slot whose worker has ended; a `dirty` slot with no reset running (warn); a `quarantined` slot (warn); a lease 24 hours old or more (warn); a lease the stamp does not name (warn) |
 | `orphan <id>` | a slot on the host with no record (`arashouse_*` database, `ah-*` application) |
 

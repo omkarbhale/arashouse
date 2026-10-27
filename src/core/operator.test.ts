@@ -494,6 +494,12 @@ describe("doctor", () => {
     expect(r.lines).toContain("warn  baseline 35: the 35 baseline is not built");
   });
 
+  it("verifies the baselines at the full level with --deep", async () => {
+    const p = await pool({ "23": 1 });
+    expect((await doctor(p.deps, {})).lines).toContain("ok    baseline 23: the 23 baseline verifies (fast)");
+    expect((await doctor(p.deps, { deep: true })).lines).toContain("ok    baseline 23: the 23 baseline verifies (full)");
+  });
+
   it("finds a reset with no live worker, a dirty slot nobody resets and an old lease", async () => {
     const p = await pool({ "23": 3 });
     const grant = await take(p, "23");

@@ -98,13 +98,14 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "Exit 5 if the named slot was quarantined, 6 if the host did not answer (docs/reset.md).",
   ],
   doctor: [
-    "usage: arashouse doctor [--fix] [--rebuild-state] [--yes]",
+    "usage: arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes]",
     "",
     "Checks the state file against the slot stamps, the broker, the SQL login, free disk and RAM,",
     "the media and baselines, orphaned slots (on the host with no record) and resets with no live",
     "worker. Exits 1 when a check fails and was not fixed. --fix re-starts stalled resets, marks a",
     "free slot that is not clean dirty, and with --yes removes orphans. --rebuild-state rebuilds the",
-    "state from the slot stamps (a dry run without --yes; the old file is set aside).",
+    "state from the slot stamps (a dry run without --yes; the old file is set aside). --deep verifies",
+    "each baseline at the full level (every file's SHA-256) instead of the fast level.",
   ],
   repair: [
     "usage: arashouse repair <slot> [--rebuild]",
@@ -156,7 +157,7 @@ const OVERVIEW: readonly string[] = [
   "  reset-worker [--slot <slot>]                               reset returned slots (return starts it)",
   "",
   "Operator commands (destructive ones are dry runs without --yes):",
-  "  doctor [--fix] [--rebuild-state] [--yes]                   check the pool against the host",
+  "  doctor [--fix] [--rebuild-state] [--deep] [--yes]          check the pool against the host",
   "  repair <slot> [--rebuild]                                  reset a quarantined slot from golden",
   "  destroy <slot> [--yes] [--include-leased]                  remove a slot from the host and the pool",
   "  prune [--yes]                                              destroy disabled and orphaned slots",
@@ -395,10 +396,10 @@ function oneSlot(parsed: ParsedArgs, command: string): string {
 }
 
 async function cmdDoctor(ctx: Context, args: readonly string[]): Promise<number> {
-  const parsed = parseArgs(args, { fix: "flag", "rebuild-state": "flag", yes: "flag" });
+  const parsed = parseArgs(args, { fix: "flag", "rebuild-state": "flag", deep: "flag", yes: "flag" });
   noPositionals(parsed, "doctor");
   const o = parsed.options;
-  return printResult(ctx, await doctor(await operatorDeps(ctx), { fix: o.fix === true, rebuildState: o["rebuild-state"] === true, yes: o.yes === true }));
+  return printResult(ctx, await doctor(await operatorDeps(ctx), { fix: o.fix === true, rebuildState: o["rebuild-state"] === true, deep: o.deep === true, yes: o.yes === true }));
 }
 
 async function cmdRepair(ctx: Context, args: readonly string[]): Promise<number> {

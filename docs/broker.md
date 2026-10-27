@@ -30,14 +30,16 @@ WSL side first, so a refused name is never sent.
 | `listSlots` | none | every `slots\<key>\<NN>` folder whose name is the tool's and that is not a junction, with its stamp | 20 |
 | `provisionSlot` | slot | makes the slot from its flavor's golden: folders, IIS application and pools, agent, database and logins, rendered configs, stamp; refuses a slot with a stamp; a failure is rolled back (`docs/provision.md`) | 25 |
 | `destroySlot` | slot | removes everything the slot's names derive (stopped first), and fails while anything is left | 25 |
-| `quiesce`, `resetTree`, `writeStamp` | slot | | 30 |
+| `quiesce` | slot | stops the slot's pools and agent and waits, bounded, for its processes to end; `Retryable` when anything still runs (`docs/reset.md`) | 30 |
+| `resetTree` | slot | on a quiesced slot, to the golden manifest hash in `args.hash`: the mirror, the runtime state cleared, the configs rendered, the `fast` verify (a mismatch is `Quarantine`), then a fresh stamp (`docs/reset.md`) | 30 |
+| `writeStamp` | slot | writes `args.stamp` to `<slot folder>\.arashouse-slot.json`; a stamp of another slot, or a slot with no folder, is `Refused` | 30 |
 | `resetDatabase` | slot | | 31 |
 | `healthCheck` | slot | | 32 |
 | `startSlot` | slot | starts the slot's pools, its agent service only with `args.agent` (`Refused` when the slot has none), then warms three URLs; `ok: false` when one does not answer (`docs/start-stop.md`) | 33 |
 | `stopSlot` | slot | stops the slot's agent, then its pools, and waits for its worker processes to end; the reset's quiesce (`docs/start-stop.md`) | 33 |
 | `setLeaseCredentials` | slot | | 34 |
 | `restoreDatabase`, `deployCode`, `backupDatabase` | slot | | 39, 40, 43 |
-| `baselineVerify` | flavor | checks `golden\<key>` against its manifest at `args.level` (`golden`, the default; `fast`; `full`): `ok`, `level` and the diff (counts and paths only); "not built" when there is no manifest | 28, 24 |
+| `baselineVerify` | flavor | checks `golden\<key>` against its manifest at `args.level` (`golden`, the default; `fast`; `full`): `ok`, `level`, the diff (counts and paths only) and `goldenHash` (the manifest hash a reset mirrors to); "not built" when there is no manifest | 28, 24, 30 |
 | `baselineBuild` | flavor | never served: the build runs in the captain's elevated session, since the broker's SQL login may not create its database (`docs/baselines.md`); `BrokerHost` refuses it without asking | 24 |
 
 The broker answers a verb it does not have `Refused`. Until a verb's ticket lands, `BrokerHost` fails that
@@ -58,7 +60,7 @@ of quarantining it. A ticket that adds a verb registers it in `src/broker/` the 
   sent: `BrokerHost` measures the round trip on its own clock.
 - Limits: a request line of 64 KiB, a response line of 1 MiB; the broker drops a connection that has not
   sent its line within 5 s; each verb has a time bound (`VERB_TIMEOUT_MS`: `ping` 5 s, `readStamp` 10 s,
-  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot` and `destroySlot` 30 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
+  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot`, `destroySlot` and `resetTree` 30 minutes, `quiesce` 10 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
   the bound plus 5 s, and `BrokerHost` the bound plus 10 s, killing the client after that.
 
 | failure | kind |

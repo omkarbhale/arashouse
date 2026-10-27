@@ -86,7 +86,27 @@ describe("slot-steps.ps1 (static)", () => {
       "& icacls.exe $SlotDir /grant '*S-1-5-32-568:(OI)(CI)M' '*S-1-5-17:(OI)(CI)RX' /Q | Out-Null",
       "& icacls.exe $VaultDir /grant '*S-1-5-32-568:(OI)(CI)M' /Q | Out-Null",
     ]);
-    expect(steps).toContain("& robocopy.exe $tree $SlotDir /MIR /XJ /R:2 /W:1 /MT:16 /XF $StampName /NFL /NDL /NJH /NJS /NP | Out-Null");
+    // One mirror for the provision and the reset, with no /XF: robocopy matches it on the source side (spike 06).
+    expect([...steps.matchAll(/& robocopy\.exe [^\n]*/g)].map((m) => m[0])).toEqual(["& robocopy.exe $tree $SlotDir /MIR /XJ /R:2 /W:1 /MT:16 /NFL /NDL /NJH /NJS /NP | Out-Null"]);
+  });
+
+  it("resets the tree of a quiesced slot only, and clears without following a junction", () => {
+    for (const key of FLAVOR_KEYS) {
+      const dirs = FLAVORS[key].runtimeDirs.filter((r) => r.files === undefined).map((r) => `'${r.dir.replace(/\//g, "\\")}'`);
+      expect(steps).toContain(`    '${key}' = @(${dirs.join(", ")})`);
+    }
+    expect(steps).toContain("'Innovator\\Server\\temp', 'Innovator\\Server\\dll', 'Innovator\\Server\\logs'");
+    const reset = steps.slice(steps.indexOf("    'reset-tree' {"), steps.indexOf("    'remove-agent' {"));
+    expect(reset.indexOf("$serving = @(Get-Serving)")).toBeLessThan(reset.indexOf("$rc = Invoke-Mirror"));
+    expect(reset).toContain("Write-Result @{ provisioned = $true; quiesced = $false; serving = $serving }");
+    expect(reset).toContain("foreach ($rel in $RuntimeDirs[$Flavor]) { $runtime += Clear-Folder (Join-Path $SlotDir $rel) }");
+    expect(reset).toContain("$vault = Clear-Folder $VaultDir");
+    // A link or junction is removed itself; only real folders are walked.
+    expect(steps).toContain("if ($Item.PSIsContainer) { [IO.Directory]::Delete($Item.FullName, $false) } else { [IO.File]::Delete($Item.FullName) }");
+    expect(steps).toContain('if ((Get-Item -LiteralPath $Dir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { Stop-Step "$Dir is a junction or link" }');
+    expect(steps).toContain('if ((Get-Item -LiteralPath $SlotDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { Stop-Step "$SlotDir is a junction or link" }');
+    expect(steps.match(/Remove-Item -LiteralPath [^\n]*-Recurse/g)).toEqual(["Remove-Item -LiteralPath $d.FullName -Recurse"]);
+    expect(steps).toContain('if ($left.Count -gt 0) { Stop-Step "the slot still runs after the wait: $($left -join \', \')" }');
   });
 
   it("keeps a secret out of everything but the DPAPI blob and the one result line that answers a get", () => {

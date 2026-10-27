@@ -49,10 +49,10 @@ path, and in `repair` (`docs/cli.md`).
 
 | step | host call | notes |
 |---|---|---|
-| `golden` | (none) | Resolves the flavor's golden tree and backup (tickets 28, 30, 31). Both must be the slot's flavor and carry the same hash. |
-| `quiesce` | `quiesce` | Stops the agent and the application pools (spike 06: the pool stop releases every lock and closes Aras's SQL sessions). |
+| `golden` | (none) | Resolves the flavor's golden tree and backup (tickets 28, 30, 31). Both must be the slot's flavor and carry the same hash. On the real host: `baselineVerify` at the `golden` level, its `goldenHash`, and `golden\<key>\db\ootb.bak`; a golden that does not verify gives the slot back as `dirty`. |
+| `quiesce` | `quiesce` | Stops the agent and the application pools and waits for the slot's processes (spike 06: the pool stop releases every lock and closes Aras's SQL sessions). Below. |
 | `database` | `resetDatabase` | Restores the golden backup and fixes it up (ticket 31). |
-| `tree` | `resetTree` | Mirrors the golden tree and writes a fresh stamp (ticket 30). |
+| `tree` | `resetTree` | Mirrors the golden tree, clears the runtime state, renders the configs, verifies, and writes a fresh stamp (ticket 30). Below. |
 | `start` | `startSlot` | Starts the slot's pools and warms them, without the agent (`docs/start-stop.md`; `get --agent` starts it). |
 | `health` | `healthCheck`, `readStamp` | The health check must pass, and the stamp must carry the golden hash, no lease and a reset time (ticket 32). |
 
@@ -66,6 +66,60 @@ the flavor and number the record carries (ticket 10). The host driver runs its o
 slot reference (`assertSlotOwned`). A worker that finds the slot is no longer its own (it was judged
 dead and the slot was recovered, or an operator moved it) stops with outcome `lost` and calls the
 host no more.
+
+## The tree step on the broker (ticket 30)
+
+`src/broker/reset-tree.ts`, through the same `SlotSystem` as provisioning (`docs/provision.md`); the Windows parts are
+`slot-steps.ps1`'s `quiesce` and `reset-tree` steps, which derive every path from the flavor and slot number.
+
+**`quiesce`** stops the slot's seven (12.x) or six (14.x) pools, each waited on until IIS reports it stopped, and its
+agent service if it has one, then waits up to a minute for the slot's processes to end: its `w3wp.exe` (by pool name)
+and anything started from the slot folder. From 14.0 the applications run out of process (`Aras.Server.exe` and the
+like next to `w3wp.exe`; spike 07) and a pool stop does not wait for them, so after 30 s those are ended (they are the
+slot's own). Anything still running after the wait fails the step `Retryable`, naming it. `app_offline.htm` is not
+used: it frees the files but not the SQL sessions (spike 06). No per-file lock check: one took 390 to 725 s.
+
+**`resetTree(slot, golden)`**, in order, the slot folder and its golden named by the slot record only:
+
+| part | what it does | failure |
+|---|---|---|
+| `golden` | reads `golden\<key>\manifest.json`; its hash must be the `golden.hash` the reset began with | promoting, missing, unusable or another hash: `Retryable`; no slot folder: `Refused`; the slot's stored SQL login passwords gone: `Quarantine` (a reset never makes new ones; `repair --rebuild`) |
+| `mirror` | refuses a slot that still runs anything (`Refused`: not quiesced); then `robocopy <golden>\tree <slot> /MIR /XJ /R:2 /W:1 /MT:16`. No `/XF`: robocopy matches it on the source side, so it cannot protect the slot's configs (spike 06), and the mirror takes the old stamp away with everything else golden lacks. Then the runtime state the mirror leaves: the whole runtime folders (`Innovator\Server\temp`, `dll`, `logs`) emptied, the vault folder `vaults\<key>-<NN>` emptied, and ASP.NET's temporary files of the alias removed. A link or junction is removed itself, never followed; a runtime folder or slot folder that is one fails the step. The runtime files golden itself holds (`jsBundles\data.json`, OAuth's SQLite file and keys) are golden's again after the mirror | robocopy 8 or more, a junction, no vault folder: `Retryable` |
+| `configs` | the edit list rendered from golden's bytes with the slot's names, its stored login passwords and the stored licence (`docs/edits.md`), as a provision does | `Retryable` |
+| `verify` | the `fast` verify of the slot tree against the golden manifest (`docs/manifest.md`), with the eight rendered files required present and each read back and compared with its rendering, byte for byte | any difference: `Quarantine`, with the counts and the first paths |
+| `stamp` | `.arashouse-slot.json`: the slot id, flavor, golden manifest hash, the reset time, no lease. Only after the four parts before it succeed | `Retryable` |
+
+Every part is idempotent, so the policy's retry runs the whole step again. A reset that fails before the stamp
+leaves the slot with none, so neither `checkClean` nor `listSlots` can take it for clean. The quiesce is not lifted
+here: the database step runs on the stopped slot, and the start (ticket 33) brings the pools up. The result's detail
+gives the robocopy and clearing seconds, the counts cleared, the configs and each part's seconds.
+
+The broker runs one provision, destroy, quiesce, tree reset or stamp write per slot at a time (`SlotLocks`); a second
+is `Retryable`.
+
+### Measured on the host (2026-10-27, `12sp9`)
+
+Through firstmate's elevated gate: `setup-host.ps1 -Apply -UpdateBroker` installed a broker built from this ticket (exit
+0), then a one-off proof script (exit 0) drove that broker through its Windows client on the throw-away slot `12sp9-30`,
+golden `8668e889d5e4`, Defender on:
+
+- `provisionSlot` 29.1 s; the slot served (`/Server/DBList.aspx` 200 listing only `arashouse_12sp9_30`).
+- Dirtied as a lease would: a new file under `Innovator\Client`, a line appended to
+  `Innovator\Client\BrowserCode\common\javascript\BrowserHelper.js`, 200 files in `Innovator\Server\temp`, a DLL
+  deployed into `Innovator\Server\bin` (a copy of `Aras.Server.Core.dll` under a new name, after which `DBList.aspx`
+  answered 500), and a vault file.
+- `quiesce` **6.1 s** with the slot serving (1.3 s on a stopped slot); `resetTree` **4.2 s** on the broker, 4.4 s round
+  trip: golden 0.1, mirror 1.6 (robocopy 0.2, clearing 0.2), configs 0.4 (8 files, 19 edits), the `fast` verify 1.1
+  (23,760 files, green), stamp 0.0. Over the clean slot again: 3.7 s. So the tree half of a reset is about 10 s with the
+  quiesce, most of it the pool stop and the verify.
+- After it: every piece of dirt gone, the edited file equal to golden's, the stamp carrying the golden hash and no lease,
+  all seven pools still stopped. Once the proof started them, `DBList.aspx` answered 200 in 8.3 s (the first request
+  after the ASP.NET temporary files were cleared) listing only the slot's own database, and `/Client/` 200 in 2.1 s.
+- The deny-list fingerprints (35 objects) were unchanged after the resets and again after the slot was destroyed
+  (`destroySlot` 17.8 s, nothing left).
+
+Not measured here: the same calls from WSL through `BrokerHost` (the next lane's broker build went on straight after),
+and the database step (ticket 31).
 
 ## Failure
 

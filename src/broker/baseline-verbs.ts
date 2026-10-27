@@ -8,7 +8,7 @@ import { goldenLayout } from "../core/names.js";
 import { ManifestError, VERIFY_LEVELS, summarizeDiff, type VerifyLevel } from "../core/manifest.js";
 import type { FlavorKey } from "../core/flavors.js";
 import type { Broker, VerbContext } from "./broker.js";
-import { verifyGolden } from "./manifest-fs.js";
+import { readManifest, verifyGolden } from "./manifest-fs.js";
 import { ProtocolError, type WireResult } from "./protocol.js";
 import type { BrokerSystem } from "./verbs.js";
 
@@ -32,7 +32,9 @@ export function registerBaselineVerbs(broker: Broker, system: BrokerSystem): Bro
       const golden = goldenLayout(flavor, ctx.root);
       try {
         const diff = await verifyGolden(system.fs.localPath(golden.dir), flavor, { level });
-        return { ok: diff.ok, level, detail: `the ${flavor} baseline ${diff.ok ? "verifies" : "does not verify"} (${level}): ${summarizeDiff(diff)}`, diff };
+        // The manifest hash names the golden a reset mirrors from (ticket 30); verifyGolden has just read the manifest.
+        const goldenHash = (await readManifest(system.fs.localPath(golden.manifest))).manifestHash;
+        return { ok: diff.ok, level, detail: `the ${flavor} baseline ${diff.ok ? "verifies" : "does not verify"} (${level}): ${summarizeDiff(diff)}`, diff, goldenHash };
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return { ok: false, level, detail: `the ${flavor} baseline is not built` };
         if (!(err instanceof ManifestError)) throw err;

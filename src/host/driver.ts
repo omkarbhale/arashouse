@@ -126,6 +126,8 @@ export interface BaselineVerifyOptions {
 
 export interface BaselineVerifyResult extends HostResult {
   readonly level: VerifyLevel;
+  /** The golden manifest hash, when the manifest could be read: the hash a reset mirrors to (ticket 30). */
+  readonly goldenHash?: string;
   /** What differs: paths and counts, never contents. Absent when the baseline is not built. */
   readonly diff?: ManifestDiff;
 }

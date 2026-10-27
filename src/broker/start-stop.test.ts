@@ -132,7 +132,7 @@ describe("the start and stop verbs' guards", () => {
     const first = broker.handle({ id: "b1", verb: "startSlot", slot: s1, args: { agent: false } });
     await new Promise((r) => setTimeout(r, 10));
     const second = await broker.handle({ id: "b2", verb: "destroySlot", slot: s1 });
-    expect(second).toMatchObject({ ok: false, error: { kind: "Retryable", message: "slot 12sp9-01 is being provisioned, destroyed, started or stopped already" } });
+    expect(second).toMatchObject({ ok: false, error: { kind: "Retryable", message: "slot 12sp9-01 is being provisioned, destroyed, started, stopped or reset already" } });
     release();
     expect(await first).toMatchObject({ ok: true });
   });

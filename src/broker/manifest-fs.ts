@@ -146,6 +146,8 @@ export interface VerifyTreeOptions {
   readonly limit?: number;
   /** The golden hash the caller expects the manifest to carry (a stamp's `goldenHash`). */
   readonly expectedHash?: string;
+  /** A slot's rendered config files: present, but checked against their rendering by the caller (`CompareOptions`). */
+  readonly rendered?: readonly string[];
 }
 
 /**
@@ -175,13 +177,14 @@ export async function verifyTree(root: string, manifest: Manifest, options: Veri
     problems.push("the tree folder does not exist");
   }
   const hashLevel = options.level === "full" ? "full" : "fast";
-  const hashes = await hashAll(root, pathsToHash(manifest, scan.files, hashLevel, flavor.runtimeDirs));
+  const hashes = await hashAll(root, pathsToHash(manifest, scan.files, hashLevel, flavor.runtimeDirs, options.rendered));
   const compare: CompareOptions = {
     level: options.level,
     runtimeDirs: flavor.runtimeDirs,
     limit: options.limit ?? DEFAULT_DIFF_LIMIT,
     skippedRuntime: scan.skippedRuntime,
     problems,
+    rendered: options.rendered,
   };
   return compareTree(manifest, scan.files, hashes, compare);
 }

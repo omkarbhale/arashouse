@@ -52,7 +52,7 @@ reads `manifest.json` and checks `tree` against it.
 
 | level | used by | checks |
 |---|---|---|
-| `fast` | the reset path (ticket 32), against a slot tree | size and time of every entry; SHA-256 of configs (`*.config`) and `Innovator/Server/bin/*.dll`; no extra file outside the runtime directories |
+| `fast` | the reset path (tickets 30 and 32), against a slot tree | size and time of every entry; SHA-256 of configs (`*.config`) and `Innovator/Server/bin/*.dll`; no extra file outside the runtime directories. A slot's rendered config files (`rendered`, its edit list's files) must be present, but their size, time and content are the rendering's: the caller compares them with it (`docs/reset.md`) |
 | `full` | `arashouse baseline verify <flavor> --full`, `doctor --deep` | everything `fast` checks, with every SHA-256 |
 | `golden` | before each provision and each baseline-based reset | `fast` on the golden folder against its own manifest; also fails if the manifest hash is not the expected golden hash (`expectedHash`), or if the manifest's `serverBuild` differs from the registry's (when the registry knows it) |
 

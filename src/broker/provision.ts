@@ -13,6 +13,7 @@ import { OOTB_OWNER, compareDenyList, goldenJson, type DenyListDiff, type DenyLi
 import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type EditSecrets } from "../core/edits.js";
 import { FLAVORS, type FlavorKey } from "../core/flavors.js";
 import { licenceSecretName } from "../core/licence.js";
+import type { Manifest, ManifestDiff } from "../core/manifest.js";
 import { goldenLayout, slotId, slotLoginSecretName, stampFile, type LoginRole, type SlotNames, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { Secret } from "../core/secret.js";
@@ -66,6 +67,21 @@ export interface WarmAnswer {
   readonly error?: string;
 }
 
+/** What the reset's `reset-tree` step did on a quiesced slot: the mirror, then the runtime state it leaves. */
+export type TreeReset =
+  | { readonly state: "not-provisioned" }
+  /** The slot still runs something (its pools, agent or processes): it was not quiesced. Names only. */
+  | { readonly state: "serving"; readonly serving: readonly string[] }
+  | {
+      readonly state: "reset";
+      readonly mirrorMs: number;
+      readonly clearMs: number;
+      /** Entries removed from the whole runtime folders, the vault folder, and ASP.NET temporary folders of the alias. */
+      readonly runtimeEntries: number;
+      readonly vaultEntries: number;
+      readonly aspnetFolders: number;
+    };
+
 /** Every effect the slot verbs have on the host. The slot's names and paths are derived on both sides of this seam. */
 export interface SlotSystem {
   now(): number;
@@ -90,11 +106,19 @@ export interface SlotSystem {
   stop(slot: SlotRef): Promise<StopInfo>;
   /** One anonymous GET of a slot URL on this machine, for the warm-up after a start. */
   warm(url: string, timeoutMs: number): Promise<WarmAnswer>;
+  /** The same stop, failing when anything of the slot still runs after the wait; false when the slot has no folder. */
+  quiesce(slot: SlotRef): Promise<boolean>;
+  /** On a quiesced slot: the mirror from golden, then the runtime folders, the vault folder and ASP.NET's temporary files cleared. */
+  resetTree(slot: SlotRef): Promise<TreeReset>;
+  /** The slot's tree against the golden manifest at the `fast` level, the rendered config files left to the caller. */
+  verifyTree(slot: SlotRef, manifest: Manifest, rendered: readonly string[]): Promise<ManifestDiff>;
   /** True when there was a service to remove. */
   removeAgent(slot: SlotRef): Promise<boolean>;
   /** Drops the database and the two logins; answers 1 (dropped) or 0 (absent) for each name. */
   removeDatabase(slot: SlotRef): Promise<Readonly<Record<string, number>>>;
   removeIis(slot: SlotRef): Promise<void>;
+  /** Whether `path` is a folder. */
+  isDirectory(path: string): Promise<boolean>;
   /** A file's bytes, or null when it does not exist. */
   readFile(path: string): Promise<Uint8Array | null>;
   writeFile(path: string, data: Uint8Array | string): Promise<void>;
@@ -144,6 +168,17 @@ export class Timings {
   }
 }
 
+/** The slot's stored login passwords, or undefined when either is missing or unusable (a reset never makes new ones). */
+export async function storedLogins(store: SecretStore, slot: SlotRef): Promise<SlotLogins | undefined> {
+  const out: Partial<Record<LoginRole, Secret>> = {};
+  for (const role of LOGIN_ROLES) {
+    const secret = await store.get(slotLoginSecretName(slot, role));
+    if (secret === undefined || secret.kind !== "sql-login" || secret.length < 16) return undefined;
+    out[role] = secret;
+  }
+  return out as SlotLogins;
+}
+
 /** The slot's stored login passwords, made and stored on the first provision and reused by the next. */
 async function loginPasswords(store: SecretStore, slot: SlotRef): Promise<SlotLogins> {
   const out: Partial<Record<LoginRole, Secret>> = {};
@@ -159,11 +194,17 @@ async function loginPasswords(store: SecretStore, slot: SlotRef): Promise<SlotLo
   return out as SlotLogins;
 }
 
+/** The config files a render wrote: each one's tree-relative path (`/`-separated, as the edit list names it) and bytes. */
+export interface RenderedConfigs {
+  readonly detail: string;
+  readonly files: readonly { readonly file: string; readonly bytes: Uint8Array }[];
+}
+
 /**
  * Renders the golden's edit list into the slot's config files, from the golden's bytes. The licence comes from the
  * host's store (`licence-<line>`); without one the key stays blank, as in golden, and the detail says so.
  */
-async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, logins: SlotLogins): Promise<string> {
+export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, logins: SlotLogins): Promise<RenderedConfigs> {
   const layout = goldenLayout(slot.flavor, root);
   const listBytes = await system.readFile(layout.edits);
   if (listBytes === null) throw new Error(`${layout.edits} does not exist`);
@@ -185,6 +226,7 @@ async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, lo
   const slotDir = win32.dirname(stampFile(slot, root));
   let applied = 0;
   const files = editListFiles(list);
+  const written: { file: string; bytes: Uint8Array }[] = [];
   for (const file of files) {
     const parts = file.split("/");
     const golden = await system.readFile(win32.join(layout.tree, ...parts));
@@ -192,9 +234,10 @@ async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, lo
     const rendered = renderFile(file, golden, list, editVars(slot, root), secrets);
     applied += rendered.outcomes.filter((o) => o.status === "applied").length;
     await system.writeFile(win32.join(slotDir, ...parts), rendered.bytes);
+    written.push({ file, bytes: rendered.bytes });
   }
   const note = needed.includes("licence") && licence === undefined ? `; no licence key is stored for line ${FLAVORS[slot.flavor].licence.line}, so the slot cannot log in yet` : "";
-  return `${files.length} files, ${applied} edits${note}`;
+  return { detail: `${files.length} files, ${applied} edits${note}`, files: written };
 }
 
 /**
@@ -292,7 +335,7 @@ export async function provisionSlotOnHost(system: SlotSystem, slot: SlotRef, nam
     step = "deny-list";
     const deny = compareDenyList(before, await timings.run(step, () => system.snapshotDenyList()));
     if (!deny.ok) throw new HostError("Quarantine", denyListText(deny));
-    notes = [`${apps} IIS applications`, agent.installed ? `agent on port ${agent.port}` : "no agent", `configs: ${configs}`];
+    notes = [`${apps} IIS applications`, agent.installed ? `agent on port ${agent.port}` : "no agent", `configs: ${configs.detail}`];
   } catch (err) {
     const left = await removeSlot(system, slot, names, new Timings(system));
     let deny: DenyListDiff | undefined;
@@ -327,23 +370,26 @@ export async function destroySlotOnHost(system: SlotSystem, slot: SlotRef, names
   return { ok: true, detail: `destroyed ${id} in ${seconds(system.now() - started)} s (${timings})` };
 }
 
-/**
- * Registers `provisionSlot`, `destroySlot`, `startSlot` and `stopSlot` on `broker`. One of them runs per slot at a time;
- * a second is `Retryable`.
- */
-export function registerSlotVerbs(broker: Broker, system: SlotSystem): Broker {
-  const busy = new Set<string>();
-  const exclusive = async (ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>): Promise<WireResult> => {
+/** One slot verb that changes the slot (a provision, a destroy, a reset step, a stamp write) runs per slot at a time. */
+export class SlotLocks {
+  private readonly busy = new Set<string>();
+
+  async run(ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>): Promise<WireResult> {
     const slot = ctx.slot as SlotRef;
     const id = slotId(slot);
-    if (busy.has(id)) throw new HostError("Retryable", `slot ${id} is being provisioned, destroyed, started or stopped already`);
-    busy.add(id);
+    if (this.busy.has(id)) throw new HostError("Retryable", `slot ${id} is being provisioned, destroyed, started, stopped or reset already`);
+    this.busy.add(id);
     try {
       return await fn(slot, ctx.names as SlotNames);
     } finally {
-      busy.delete(id);
+      this.busy.delete(id);
     }
-  };
+  }
+}
+
+/** Registers `provisionSlot`, `destroySlot`, `startSlot` and `stopSlot` on `broker`, under `locks` (shared with the reset verbs, reset-tree.ts). */
+export function registerSlotVerbs(broker: Broker, system: SlotSystem, locks: SlotLocks = new SlotLocks()): Broker {
+  const exclusive = (ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>) => locks.run(ctx, fn);
   return broker
     .register("provisionSlot", {
       target: "slot",

@@ -6,6 +6,7 @@
 // (with the broker missing, a slot stays dirty until it is there).
 
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
+import { goldenLayout } from "../core/names.js";
 import { UsageError, type LeaseHost } from "../core/lease.js";
 import type { OperatorHost } from "../core/operator.js";
 import type { GoldenSet } from "../core/reset.js";
@@ -75,18 +76,25 @@ async function fakeHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<Sele
   };
 }
 
-/** The golden tree and backup refs come from the broker's baseline verbs (tickets 28, 30 and 31). */
-function noGolden(): Promise<never> {
-  return Promise.reject(new HostError("Unreachable", "the broker cannot name a flavor's golden tree and backup yet (tickets 28, 30 and 31)"));
+/**
+ * The flavor's golden as the broker names it (tickets 28, 30 and 31): the golden folder verified against its own manifest
+ * (`golden` level), its manifest hash for the tree, and `db\ootb.bak` for the backup. A golden that does not verify, or is
+ * not built, is `Retryable`, so the reset gives the slot back as dirty rather than quarantining it.
+ */
+async function brokerGolden(host: BrokerHost, flavor: FlavorKey): Promise<GoldenSet> {
+  const verified = await host.baselineVerify(flavor, { level: "golden" });
+  if (!verified.ok || verified.goldenHash === undefined) throw new HostError("Retryable", verified.detail);
+  return { tree: { flavor, hash: verified.goldenHash }, backup: { flavor, file: goldenLayout(flavor).ootbBackup, hash: verified.goldenHash } };
 }
 
 export async function selectHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {
   if (hostKind(env) === "fake") return fakeHost(env, store);
   const node = env[WINDOWS_NODE_ENV]?.trim() || DEFAULT_WINDOWS_NODE;
+  const host = new BrokerHost(interopTransport({ node }));
   return {
     kind: "broker",
-    host: new BrokerHost(interopTransport({ node })),
+    host,
     resolveUrl: async (alias) => slotUrl(await hostAddress(alias, { env }), alias),
-    golden: noGolden,
+    golden: (flavor) => brokerGolden(host, flavor),
   };
 }

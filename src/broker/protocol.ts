@@ -39,6 +39,10 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
   // A start waits for each pool and the agent, then warms three URLs (up to 2 minutes each, in parallel); a stop waits for them to end.
   startSlot: 10 * 60_000,
   stopSlot: 5 * 60_000,
+  // The pool stop waits up to a minute per pool and a minute for the slot's processes (slot-steps.ts).
+  quiesce: 10 * 60_000,
+  // The reset's mirror is under a second over a used slot (spike 06), but a cold cache or a lease that filled the tree costs more.
+  resetTree: 30 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

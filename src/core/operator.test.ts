@@ -456,7 +456,7 @@ describe("doctor", () => {
     const ok = await doctor(p.deps, {});
     expect(ok.exitCode).toBe(0);
     expect(ok.lines).toEqual(
-      expect.arrayContaining(["ok    broker: answers (pong)", "ok    sql: the broker's SQL login connects", "ok    disk: 200 GB free at the install root", "ok    ram: 16384 MB free", "ok    media 23: present"]),
+      expect.arrayContaining(["ok    broker: answers (pong)", "ok    sql: the broker's SQL login connects", "ok    sql login: NT SERVICE\\ArasHouseBroker is neither sysadmin nor dbcreator, and executes the 5 arashouse_admin procedures", "ok    disk: 200 GB free at the install root", "ok    ram: 16384 MB free", "ok    media 23: present"]),
     );
     expect(ok.lines.at(-1)).toBe("doctor: every check passed");
 
@@ -471,7 +471,7 @@ describe("doctor", () => {
     expect(bad.exitCode).toBe(1);
     expect(bad.lines).toEqual(
       expect.arrayContaining([
-        "fail  sql: the broker cannot connect to SQL Server with its login",
+        "fail  sql: the broker cannot connect to SQL Server with its login; run `arashouse setup-sql` and the script it writes (docs/setup-sql.md)",
         "warn  disk: 3 GB free at the install root, under min_free_disk_gb 10: no provision or baseline build starts",
         "warn  ram: 100 MB free, under min_free_ram_mb 2048: get hands out no slot",
         "warn  media 23: missing or incomplete (`arashouse media check`)",
@@ -483,6 +483,28 @@ describe("doctor", () => {
     const down = await doctor(p.deps, {});
     expect(down.exitCode).toBe(1);
     expect(down.lines[1]).toBe("fail  broker: did not answer: the host did not answer; the host checks were skipped");
+  });
+
+  it("fails a broker SQL login in sysadmin or dbcreator, or one that cannot execute the procedures (ticket 22)", async () => {
+    const p = await pool({ "23": 1 });
+    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 };
+    const lineOf = async () => (await doctor(p.deps, {})).lines.find((l) => l.includes("sql login:"));
+
+    p.host.setHostInfo({ sqlLogin: { ...login, sysadmin: true, dbcreator: true } });
+    expect((await doctor(p.deps, {})).exitCode).toBe(1);
+    expect(await lineOf()).toBe("fail  sql login: NT SERVICE\\ArasHouseBroker is in sysadmin and dbcreator, so it could restore over any database on the server; take it out (docs/setup-sql.md)");
+    p.host.setHostInfo({ sqlLogin: { ...login, dbcreator: true } });
+    expect(await lineOf()).toMatch(/^fail {2}sql login: .* is in dbcreator, so it could restore over any database/);
+    p.host.setHostInfo({ sqlLogin: { ...login, procedures: 0 } });
+    expect(await lineOf()).toBe("fail  sql login: NT SERVICE\\ArasHouseBroker is neither sysadmin nor dbcreator, but executes 0 of the 5 arashouse_admin procedures; run `arashouse setup-sql` and the script it writes (docs/setup-sql.md)");
+
+    p.host.setHostInfo({ sqlLogin: undefined });
+    const old = await doctor(p.deps, {});
+    expect(old.exitCode).toBe(0);
+    expect(old.lines).toContain("warn  sql login: the broker does not report its SQL login's roles (it predates ticket 22); install this build with setup-host.ps1 -UpdateBroker (docs/setup.md)");
+
+    p.host.setHostInfo({ sqlReachable: true, sqlLogin: null });
+    expect((await doctor(p.deps, {})).lines).toContain("fail  sql: the broker cannot connect to SQL Server with its login; run `arashouse setup-sql` and the script it writes (docs/setup-sql.md)");
   });
 
   it("reports the host setup before the broker, from what the worker sees", async () => {

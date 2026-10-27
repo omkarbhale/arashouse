@@ -9,6 +9,7 @@ import { FLAVOR_KEYS, isFlavorKey, type FlavorKey } from "../core/flavors.js";
 import { assertValidRoot } from "../core/guards.js";
 import { VERIFY_LEVELS } from "../core/manifest.js";
 import { DEFAULT_INSTALL_ROOT, goldenDir, slotId, type SlotRef } from "../core/names.js";
+import { ADMIN_PROCEDURES, POOL_LOGIN } from "../core/setup-sql.js";
 import { FakeClock } from "./clock.js";
 import {
   HOST_METHODS,
@@ -148,6 +149,7 @@ const DEFAULT_INFO: HostInfo = {
   freeDiskGb: 200,
   brokerVersion: "0.0.0-fake",
   sqlReachable: true,
+  sqlLogin: { login: POOL_LOGIN, sysadmin: false, dbcreator: false, procedures: ADMIN_PROCEDURES.length },
 };
 
 interface CallTarget {

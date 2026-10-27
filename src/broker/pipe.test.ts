@@ -44,7 +44,7 @@ function makeBroker(): Broker {
     brokerVersion: "1.2.3",
     os: () => "Windows_NT 10",
     freeRamBytes: () => 0,
-    sqlReachable: async () => false,
+    sqlLogin: async () => null,
   });
 }
 
@@ -147,7 +147,7 @@ describe("the Windows-side client", () => {
       fs: root.fs,
       tokenPath: join(root.dir, "client.token"),
       audit,
-      system: { brokerVersion: "4.5.6", sqlReachable: async () => false },
+      system: { brokerVersion: "4.5.6", sqlLogin: async () => null },
     });
     const run = io(JSON.stringify({ id: "c-1", verb: "ping" }));
     const code = await runClient([], run.io, { pipePath: socket, tokenFile: join(root.dir, "client.token") });
@@ -181,7 +181,7 @@ describe("the Windows-side client", () => {
 describe("startBroker", () => {
   it("writes a fresh token readable by its owner only, and refuses a root on the deny-list", async () => {
     const tokenPath = join(root.dir, "client.token");
-    running = await startBroker({ root: ROOT, pipePath: socket, fs: root.fs, tokenPath, audit, system: { sqlReachable: async () => false } });
+    running = await startBroker({ root: ROOT, pipePath: socket, fs: root.fs, tokenPath, audit, system: { sqlLogin: async () => null } });
     expect(readFileSync(tokenPath, "utf8")).toMatch(/^[0-9a-f]{64}$/);
     expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
     await expect(startBroker({ root: "C:\\Program Files\\Aras", pipePath: join(root.dir, "b.sock"), fs: root.fs, tokenPath })).rejects.toMatchObject({

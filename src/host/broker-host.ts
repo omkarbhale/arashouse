@@ -29,6 +29,7 @@ import type {
   ListedSlot,
   SecretRef,
   SlotStamp,
+  SqlLoginInfo,
   StampResult,
   StartOptions,
 } from "./driver.js";
@@ -68,6 +69,16 @@ function malformed(verb: HostMethod, why: string): HostError {
   return new HostError("Unreachable", `the broker's answer to ${verb} is malformed: ${why}`);
 }
 
+function parseSqlLogin(value: unknown): SqlLoginInfo | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (!isRecord(value)) throw new ProtocolError("info.sqlLogin is not an object");
+  const { login, sysadmin, dbcreator, procedures } = value;
+  if (typeof login !== "string" || typeof sysadmin !== "boolean" || typeof dbcreator !== "boolean" || !Number.isInteger(procedures) || (procedures as number) < 0) {
+    throw new ProtocolError("info.sqlLogin has the wrong fields");
+  }
+  return { login, sysadmin, dbcreator, procedures: procedures as number };
+}
+
 function parseHostInfo(value: unknown): HostInfo {
   if (!isRecord(value)) throw new ProtocolError("info is missing");
   const { os, freeRamMb, freeDiskGb, brokerVersion, sqlReachable } = value;
@@ -75,7 +86,10 @@ function parseHostInfo(value: unknown): HostInfo {
   if (typeof os !== "string" || !count(freeRamMb) || !count(freeDiskGb) || typeof brokerVersion !== "string" || typeof sqlReachable !== "boolean") {
     throw new ProtocolError("info has the wrong fields");
   }
-  return { os, freeRamMb: freeRamMb as number, freeDiskGb: freeDiskGb as number, brokerVersion, sqlReachable };
+  // A broker older than ticket 22 sends no sqlLogin; the doctor says so instead of guessing.
+  const sqlLogin = parseSqlLogin(value.sqlLogin);
+  const info: HostInfo = { os, freeRamMb: freeRamMb as number, freeDiskGb: freeDiskGb as number, brokerVersion, sqlReachable };
+  return sqlLogin === undefined ? info : { ...info, sqlLogin };
 }
 
 export class BrokerHost implements HostDriver {

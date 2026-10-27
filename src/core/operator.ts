@@ -35,6 +35,7 @@ import { rebuildState } from "./recovery.js";
 import { redact } from "./redact.js";
 import { type ResetDeps, type ResetHost, describeOutcome, recoverDeadResets, resetSlot } from "./reset.js";
 import { type SetupObservation, checkSetup } from "./setup-host.js";
+import { checkSqlLogin } from "./setup-sql.js";
 import type { SecretStore } from "./secret-store.js";
 import { type Lease, RECOVERED_HOLDER, type Slot, type State, StateCorruptError, isLeaseId } from "./state.js";
 import type { StateStore } from "./store.js";
@@ -559,8 +560,7 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
 
   try {
     const { info } = await host.hostInfo();
-    if (info.sqlReachable) add("ok", "sql", "the broker's SQL login connects");
-    else add("fail", "sql", "the broker cannot connect to SQL Server with its login");
+    for (const f of checkSqlLogin(info)) add(f.level, f.check, f.message);
     if (info.freeDiskGb >= config.min_free_disk_gb) add("ok", "disk", `${info.freeDiskGb} GB free at the install root`);
     else add("warn", "disk", `${info.freeDiskGb} GB free at the install root, under min_free_disk_gb ${config.min_free_disk_gb}: no provision or baseline build starts`);
     if (info.freeRamMb >= config.min_free_ram_mb) add("ok", "ram", `${info.freeRamMb} MB free`);

@@ -29,7 +29,7 @@ beforeEach(() => {
     brokerVersion: "0.1.0",
     os: () => "Windows_NT 10.0.26100",
     freeRamBytes: () => 8 * 1024 * 1024 * 1024,
-    sqlReachable: async () => true,
+    sqlLogin: async () => ({ login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 }),
   });
   const inner = inProcessTransport(broker);
   const requests: BrokerRequest[] = [];
@@ -62,7 +62,13 @@ describe("BrokerHost against an in-process broker", () => {
   it("ping and hostInfo work", async () => {
     expect(await host.ping()).toMatchObject({ ok: true, detail: "arashouse-broker 0.1.0" });
     const { info } = await host.hostInfo();
-    expect(info).toMatchObject({ os: "Windows_NT 10.0.26100", freeRamMb: 8192, brokerVersion: "0.1.0", sqlReachable: true });
+    expect(info).toMatchObject({
+      os: "Windows_NT 10.0.26100",
+      freeRamMb: 8192,
+      brokerVersion: "0.1.0",
+      sqlReachable: true,
+      sqlLogin: { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 },
+    });
   });
 
   it("measures ms on its own clock", async () => {
@@ -144,6 +150,12 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
   it("hostInfo without its fields, or a stamp for another slot", async () => {
     const info = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: { os: "x" } } }));
     expect((await rejection(info.hostInfo())).message).toMatch(/hostInfo is malformed: info has the wrong fields/);
+    const base = { os: "x", freeRamMb: 1, freeDiskGb: 1, brokerVersion: "0", sqlReachable: true };
+    const withLogin = (sqlLogin: unknown) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: { ...base, sqlLogin } } }));
+    expect((await rejection(withLogin({ login: "x", sysadmin: "no", dbcreator: false, procedures: 5 }).hostInfo())).message).toMatch(/info.sqlLogin has the wrong fields/);
+    expect((await withLogin(null).hostInfo()).info.sqlLogin).toBeNull();
+    const before22 = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: base } }));
+    expect("sqlLogin" in (await before22.hostInfo()).info).toBe(false);
     const stamp = { slotId: "23-01", flavor: "23", goldenHash: null, lastResetAt: null };
     const other = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", stamp } }));
     expect((await rejection(other.readStamp(s1))).message).toMatch(/readStamp is malformed/);

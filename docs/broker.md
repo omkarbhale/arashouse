@@ -25,7 +25,7 @@ WSL side first, so a refused name is never sent.
 | verb | target | what it does | ticket |
 |---|---|---|---|
 | `ping` | none | answers with the broker's version | 20 |
-| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects | 20 |
+| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute | 20, 22 |
 | `readStamp` | slot | reads `<slot folder>\.arashouse-slot.json`; a slot with no folder is `Refused`, an unusable stamp `Quarantine` | 20 |
 | `listSlots` | none | every `slots\<key>\<NN>` folder whose name is the tool's and that is not a junction, with its stamp | 20 |
 | `provisionSlot`, `destroySlot` | slot | | 25 |
@@ -127,8 +127,16 @@ written does not stop the answer; the service reports it on stderr.
 
 TCP is off on the host's SQL Server, and turning it on would restart the service the captain's other
 databases use. So the broker reaches SQL through PowerShell and `System.Data.SqlClient` on shared memory
-(`Data Source=lpc:.`) with Windows authentication as its own account (`src/broker/sql-probe.ts`; ticket 22
-creates its login). It never opens a TCP port to SQL. `hostInfo` runs a fixed `SELECT 1` against `master`.
+(`Data Source=lpc:.`) with Windows authentication as its own account (`src/broker/sql-probe.ts`). It never opens
+a TCP port to SQL. `hostInfo` runs one fixed query against `master` that reads the login itself: its name,
+`IS_SRVROLEMEMBER('sysadmin')` and `('dbcreator')`, and `HAS_PERMS_BY_NAME` on each `arashouse_admin`
+procedure. `arashouse doctor` fails a login in either role (`sql login`).
+
+Its login is `[NT SERVICE\ArasHouseBroker]`, created by `arashouse setup-sql` (ticket 22, `docs/setup-sql.md`)
+in no server role. It owns the slot databases it creates, so it restores them itself; creating and dropping a
+slot database or login, and ending a session that blocks a restore, go through the signed, name-checked
+procedures in `arashouse_admin`. **The broker keeps no `sa` credential** (map question Q2): `sa` is rejected on
+this host, setup runs under the captain's Windows login, and the `--keep-sa` option the plan offered is not built.
 
 ## Running it
 

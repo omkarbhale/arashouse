@@ -1,7 +1,8 @@
 // `arashouse setup`: writes `setup-host.ps1` (src/core/setup-host.ts) and the broker build it installs to
 // a folder on the Windows side, and says how to run it; the captain runs it once, elevated (ticket 21).
 // Also what `arashouse doctor` reads back from WSL: the script's record, and which folders under the
-// root the worker can list. See docs/setup.md.
+// root the worker can list. See docs/setup.md. `arashouse setup-sql` writes `setup-sql.ps1`
+// (src/core/setup-sql.ts) the same way (ticket 22, docs/setup-sql.md).
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -21,6 +22,7 @@ import {
   type SetupObservation,
   type WorkerIdentity,
 } from "../core/setup-host.js";
+import { renderSetupSqlScript } from "../core/setup-sql.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -137,6 +139,26 @@ export async function writeSetupBundle(options: BundleOptions): Promise<Bundle> 
   const scriptPath = join(options.outDir, SETUP_SCRIPT_NAME);
   await writeFile(scriptPath, script.replace(/\r?\n/g, "\r\n"), "ascii");
   return { script: scriptPath, files: appFiles.length };
+}
+
+/** The SQL setup script's file name. */
+export const SETUP_SQL_SCRIPT_NAME = "setup-sql.ps1";
+
+/**
+ * Writes `setup-sql.ps1` to `outDir` (CRLF, ASCII), replacing an earlier one there. Refuses a folder
+ * that holds anything else. Returns the script's path.
+ */
+export async function writeSetupSqlScript(options: { readonly outDir: string; readonly version: string; readonly root?: string }): Promise<string> {
+  if (existsSync(options.outDir)) {
+    const foreign = (await readdir(options.outDir)).filter((name) => name !== SETUP_SQL_SCRIPT_NAME);
+    if (foreign.length > 0) throw new UsageError(`${options.outDir} holds ${foreign.slice(0, 3).join(", ")}, which the SQL setup folder does not; choose an empty folder with --out`);
+  }
+  const script = renderSetupSqlScript({ version: options.version, root: options.root });
+  if (!/^[\x00-\x7f]*$/.test(script)) throw new Error("the generated script is not plain ASCII, which Windows PowerShell 5.1 would misread");
+  await mkdir(options.outDir, { recursive: true });
+  const path = join(options.outDir, SETUP_SQL_SCRIPT_NAME);
+  await writeFile(path, script.replace(/\r?\n/g, "\r\n"), "ascii");
+  return path;
 }
 
 /** The WSL path of a Windows drive path under the default automount (`C:\x` is `/mnt/c/x`). */

@@ -29,6 +29,16 @@ export interface SecretRef {
   readonly secretRef: string;
 }
 
+/** The broker's SQL login as it reads itself (ticket 22): the doctor needs it in neither `sysadmin` nor `dbcreator`. */
+export interface SqlLoginInfo {
+  /** `SUSER_SNAME()`: `NT SERVICE\ArasHouseBroker` once `setup-sql.ps1` has run. */
+  readonly login: string;
+  readonly sysadmin: boolean;
+  readonly dbcreator: boolean;
+  /** How many of the `arashouse_admin` procedures it may execute (all five once `setup-sql.ps1` has run). */
+  readonly procedures: number;
+}
+
 export interface HostInfo {
   readonly os: string;
   readonly freeRamMb: number;
@@ -36,6 +46,8 @@ export interface HostInfo {
   readonly freeDiskGb: number;
   readonly brokerVersion: string;
   readonly sqlReachable: boolean;
+  /** The broker's SQL login; null when it cannot connect, absent from a broker older than ticket 22. */
+  readonly sqlLogin?: SqlLoginInfo | null;
 }
 
 export interface HostInfoResult extends HostResult {

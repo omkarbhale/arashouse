@@ -163,6 +163,15 @@ export function sqlDataDir(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(root, "sqldata");
 }
 
+/**
+ * A database's two files: `<root>\sqldata\<database>.mdf` and `<database>_log.ldf`. `create_slot_database`
+ * (ticket 22) creates a slot database with these, and a restore moves the backup's files to them.
+ */
+export function databaseFiles(database: string, root: string = DEFAULT_INSTALL_ROOT): { readonly data: string; readonly log: string } {
+  if (!/^arashouse_[a-z0-9_]+$/.test(database)) throw new Error(`"${database}" is not one of the tool's database names`);
+  return { data: win32.join(sqlDataDir(root), `${database}.mdf`), log: win32.join(sqlDataDir(root), `${database}_log.ldf`) };
+}
+
 /** `<root>\logs`: the broker's audit log and the reset workers' logs. */
 export function logsDir(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(root, "logs");

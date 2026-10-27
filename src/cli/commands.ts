@@ -47,7 +47,7 @@ import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
 import { selectHost, type SelectedHost } from "./host.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { runWithLease } from "./run.js";
-import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle } from "./setup.js";
+import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
 
 export const DEBUG_ENV = "ARASHOUSE_DEBUG";
 
@@ -106,6 +106,15 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "Windows temp folder) and prints how to run it. The captain runs it once, in an elevated PowerShell:",
     "without -Apply it only prints what it would change. It creates the install root's folders and their",
     "ACLs, lists missing prerequisites, and installs the ArasHouseBroker service (docs/setup.md).",
+  ],
+  "setup-sql": [
+    "usage: arashouse setup-sql [--out <dir>]",
+    "",
+    "Writes setup-sql.ps1 to <dir> (default: arashouse-setup-sql in the Windows temp folder) and prints how",
+    "to run it, once, as a Windows user whose login is a SQL Server sysadmin (Windows authentication; no `sa`,",
+    "no password). Without -Apply it only prints the facts and what it would change. It creates arashouse_admin",
+    "and its name-checked procedures, and the broker's SQL login in no server role, then checks them as that",
+    "login; -SelfTest also creates and drops a throw-away slot database as the broker (docs/setup-sql.md).",
   ],
   doctor: [
     "usage: arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]",
@@ -169,6 +178,7 @@ const OVERVIEW: readonly string[] = [
   "",
   "Operator commands (destructive ones are dry runs without --yes):",
   "  setup [--out <dir>]                                        write the one-time, elevated host setup script",
+  "  setup-sql [--out <dir>]                                    write the one-time SQL Server setup script",
   "  doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json] check the pool against the host",
   "  repair <slot> [--rebuild]                                  reset a quarantined slot from golden",
   "  destroy <slot> [--yes] [--include-leased]                  remove a slot from the host and the pool",
@@ -446,6 +456,27 @@ async function cmdSetup(ctx: Context, args: readonly string[]): Promise<number> 
   return EXIT_CODES.ok;
 }
 
+async function cmdSetupSql(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { out: "value" });
+  noPositionals(parsed, "setup-sql");
+  const outDir = stringOption(parsed, "out") ?? join(await windowsTempDir(), "arashouse-setup-sql");
+  const written = await writeSetupSqlScript({ outDir, version: version() });
+  const script = (await defaultRun("wslpath", ["-w", written]).catch(() => written)).trim();
+  for (const line of [
+    `wrote ${script}`,
+    "it connects to the default SQL Server instance by shared memory with your Windows login, which must be a sysadmin",
+    "(no `sa`, no password), and changes nothing without -Apply; in Windows PowerShell:",
+    `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}"                     # the facts and the plan`,
+    `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}" -Apply              # make the changes, then check them`,
+    `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}" -Apply -SelfTest    # ... and a round trip as the broker`,
+    "then, from WSL: arashouse doctor (docs/setup-sql.md)",
+  ]) {
+    ctx.io.out(line);
+  }
+  if (!/^[A-Za-z]:\\/.test(script)) ctx.io.err(`arashouse: ${script} is not on a Windows drive; copy it to one before running it`);
+  return EXIT_CODES.ok;
+}
+
 async function cmdRepair(ctx: Context, args: readonly string[]): Promise<number> {
   const parsed = parseArgs(args, { rebuild: "flag" });
   const slot = oneSlot(parsed, "repair");
@@ -489,6 +520,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   media: cmdMedia,
   "reset-worker": cmdResetWorker,
   setup: cmdSetup,
+  "setup-sql": cmdSetupSql,
   doctor: cmdDoctor,
   repair: cmdRepair,
   destroy: cmdDestroy,

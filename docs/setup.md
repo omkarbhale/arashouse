@@ -22,7 +22,8 @@ ticket 44 (`docs/host-tuning.md`).
    ```
 
 3. From WSL: `arashouse doctor` (or `doctor --json`). The `setup`, `prerequisites`, `setup acl` and `broker` checks
-   should pass. The `sql` check fails until ticket 22 creates the broker's SQL login.
+   should pass. The `sql` check fails until `arashouse setup-sql` creates the broker's SQL login (ticket 22,
+   `docs/setup-sql.md`).
 
 `arashouse setup` must run as the worker user, the Windows user WSL interop runs as. It reads that user's name and
 SID with `whoami.exe /user` and writes them into the script, so the ACLs name the user whose workers lease slots.

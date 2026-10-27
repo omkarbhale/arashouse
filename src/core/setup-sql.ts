@@ -275,7 +275,7 @@ export function renderAdminProcedures(root: string = DEFAULT_INSTALL_ROOT): Reco
         `    DECLARE @sql nvarchar(max);`,
         `    IF EXISTS (SELECT 1 FROM sys.server_principals WHERE name = @login)`,
         `    BEGIN`,
-        `        SET @sql = N'ALTER LOGIN ' + QUOTENAME(@login) + N' WITH PASSWORD = ' + @secret + N';';`,
+        `        SET @sql = N'ALTER LOGIN ' + QUOTENAME(@login) + N' WITH PASSWORD = ' + @secret;`,
         `        EXEC (@sql);`,
         `        SET @sql = N'ALTER LOGIN ' + QUOTENAME(@login) + N' ENABLE;';`,
         `        EXEC (@sql);`,
@@ -405,7 +405,8 @@ function asPool(body: string): string {
 
 /** One refused call: the procedure's error number, 0 when it did not refuse. */
 function negativeCall(procedure: AdminProcedure): string {
-  const args = procedure.endsWith("_login") ? (procedure === "create_slot_login" ? "@login = @name, @password = @password" : "@login = @name") : "@database = @name";
+  let args = procedure.endsWith("_login") ? "@login = @name" : "@database = @name";
+  if (procedure === "create_slot_login") args += ", @password = @password";
   return asPool(
     [
       `DECLARE @n int = 0;`,

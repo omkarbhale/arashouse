@@ -8,7 +8,7 @@ import { FakeHost, fakeGoldenHash } from "../host/fake.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
 import type { FlavorKey } from "./flavors.js";
-import { type LeaseDeps, type LeaseGrant, NoSlotAvailableError, exitCodeFor, getLease, returnLease } from "./lease.js";
+import { type LeaseDeps, type LeaseGrant, NoSlotAvailableError, checkClean, exitCodeFor, getLease, returnLease } from "./lease.js";
 import { parseSlotId } from "./names.js";
 import {
   MAX_RESET_ATTEMPTS,
@@ -444,6 +444,34 @@ describe("dirty detection before handing out", () => {
     await getLease(p.deps, { flavor: "23", holder: "b", waitSeconds: 60 });
     expect(p.host.callLog).toContain("resetDatabase");
     expect(atGolden(p, "23-01")).toBe(true);
+  });
+});
+
+describe("a replaced golden", () => {
+  it("does not hand out a free slot reset from an older golden", async () => {
+    const p = await pool({ "23": 1 });
+    const slot = (await p.status("23-01"))!;
+    expect((await checkClean(p.host, slot, fakeGoldenHash("23"))).clean).toBe(true);
+    expect(await checkClean(p.host, slot, "new-golden")).toEqual({ clean: false, reason: "the slot was reset from an older golden" });
+    const newer = async (flavor: FlavorKey) => ({ tree: { flavor, hash: "new-golden" }, backup: { ...p.host.backup(flavor), hash: "new-golden" } });
+    await expect(getLease({ ...p.deps, reset: undefined, golden: newer }, { flavor: "23", holder: "b" })).rejects.toBeInstanceOf(NoSlotAvailableError);
+    expect((await p.status("23-01"))?.status).toBe("dirty");
+  });
+
+  it("leaves a slot dirty when the golden changes while it is reset", async () => {
+    const p = await pool({ "23": 1 });
+    const grant = await getLease(p.deps, { flavor: "23", holder: "a" });
+    use(p, grant);
+    await returnLease(p.deps, { target: grant.lease_id });
+    let reads = 0;
+    const golden = async (flavor: FlavorKey) => {
+      reads++;
+      const hash = reads === 1 ? fakeGoldenHash(flavor) : "new-golden";
+      return { tree: { flavor, hash }, backup: { ...p.host.backup(flavor), hash } };
+    };
+    const outcome = await resetSlot({ ...p.reset, golden }, "23-01");
+    expect(outcome).toEqual({ kind: "dirty", slot: "23-01", reason: "the golden changed during the reset" });
+    expect((await p.status("23-01"))?.status).toBe("dirty");
   });
 });
 

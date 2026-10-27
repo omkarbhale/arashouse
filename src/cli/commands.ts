@@ -292,6 +292,7 @@ async function leaseDeps(ctx: Context): Promise<LeaseDeps> {
     resolveUrl: selected.resolveUrl,
     config: reset.config,
     reset: resetHooks(reset, (slot) => spawnResetWorker(ctx.env, slot)),
+    golden: selected.golden,
   };
 }
 

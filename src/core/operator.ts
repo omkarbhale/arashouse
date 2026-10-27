@@ -647,7 +647,7 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
       case "free": {
         let verdict;
         try {
-          verdict = await checkClean(host, slot);
+          verdict = await checkClean(host, slot, (await deps.reset.golden(slot.flavor)).tree.hash);
         } catch (err) {
           if (!isHostError(err)) throw err;
           add("warn", check, `free, but could not be checked: ${errorText(err)}`);

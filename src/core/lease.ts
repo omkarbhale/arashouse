@@ -16,6 +16,7 @@ import { isHostError } from "../host/errors.js";
 import { hostAddress, slotUrl } from "../host/url.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
 import { FLAVOR_KEYS, type FlavorKey, getFlavor, isFlavorKey } from "./flavors.js";
+import type { GoldenSet } from "./reset.js";
 import { databaseName, parseSlotId, slotId, webAlias } from "./names.js";
 import { redact } from "./redact.js";
 import { Secret } from "./secret.js";
@@ -127,6 +128,8 @@ export interface LeaseDeps {
   readonly config?: ArashouseConfig;
   /** The reset policy: `return` starts a worker, `get` resets lazily. Without it nothing here starts a reset. */
   readonly reset?: ResetHooks;
+  /** The flavor's golden now; a free slot reset from an older golden is dirty. Absent: not compared. */
+  readonly golden?: (flavor: FlavorKey) => Promise<GoldenSet>;
   /** Defaults to `poolGovernor(config)`. */
   readonly governor?: Governor;
   /** Whether a queued caller still runs; defaults to a process check. A dead caller's ticket is dropped. */
@@ -251,9 +254,13 @@ export type Clean = { readonly clean: true; readonly stamp: SlotStamp } | { read
 /**
  * The dirty check that runs before a free slot is handed out (ticket 32 owns the markers): the
  * stamp must carry the golden hash the state recorded and no lease, and the host's health check
- * (tree, database marker and applications against that stamp) must pass.
+ * (tree, database marker and applications against that stamp) must pass. With `currentGolden`, the
+ * flavor's golden manifest hash now, a slot reset from an older golden is not clean.
  */
-export async function checkClean(host: Pick<LeaseHost, "readStamp" | "healthCheck">, slot: Slot): Promise<Clean> {
+export async function checkClean(host: Pick<LeaseHost, "readStamp" | "healthCheck">, slot: Slot, currentGolden?: string): Promise<Clean> {
+  if (currentGolden !== undefined && slot.golden_hash !== currentGolden) {
+    return { clean: false, reason: "the slot was reset from an older golden" };
+  }
   const ref = { flavor: slot.flavor, slot: slot.number };
   const { stamp } = await host.readStamp(ref);
   if (stamp === null) return { clean: false, reason: "the slot has no stamp" };
@@ -383,7 +390,8 @@ async function attemptGet(
   // Verify outside the lock: it asks the host, and a free slot is touched by nothing else.
   let stamp: SlotStamp;
   try {
-    const verdict = await checkClean(host, candidate);
+    const current = deps.golden ? (await deps.golden(flavor)).tree.hash : undefined;
+    const verdict = await checkClean(host, candidate, current);
     if (!verdict.clean) {
       await moveIfStillFree(store, candidate, { to: "dirty" }, verdict.reason);
       return { kind: "retry" };

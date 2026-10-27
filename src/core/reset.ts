@@ -254,6 +254,17 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
     if (!result.ok) return result.outcome;
   }
   const ms = Math.max(0, now().getTime() - started);
+  const hash = (golden as GoldenSet).tree.hash;
+  let after: string | null = null;
+  try {
+    after = (await deps.golden(slot.flavor)).tree.hash;
+  } catch {
+    after = null;
+  }
+  if (after !== hash) {
+    const reason = "the golden changed during the reset";
+    return settle({ to: "dirty" }, reason, { kind: "dirty", slot: slot.id, reason });
+  }
   return settle({ to: "free", golden_hash: (golden as GoldenSet).tree.hash, reset_ms: ms }, "reset", { kind: "free", slot: slot.id, ms });
 }
 

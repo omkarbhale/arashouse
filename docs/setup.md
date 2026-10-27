@@ -116,7 +116,7 @@ folder's ACL as planned, no prerequisite missing for `12sp9`, `23` or `35`, and 
 WSL as the worker:
 
 - `arashouse doctor --json`: `setup`, `prerequisites`, `setup acl`, `broker` (`arashouse-broker 0.0.0`), `disk`
-  and `ram` ok. `sql` fails until ticket 22 creates the broker's login; the baselines warn until ticket 28 adds
+  and `ram` ok. `sql` failed until ticket 22 created the broker's login (`docs/setup-sql.md`); the baselines warn until ticket 28 adds
   `baselineVerify`.
 - `ls /mnt/c/aras_installations/secrets`: `Permission denied`.
 - `ping` through `node.exe <root>\broker\app\broker\client.js` from WSL: about 0.27 s.

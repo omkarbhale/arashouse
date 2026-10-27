@@ -158,7 +158,18 @@ after any `CREATE LOGIN` failed with the fatal error 615. With `AUTO_CLOSE OFF` 
 
 ## Installed on the host
 
-Pending: the `-Apply -SelfTest` run on the host's instance, and `arashouse doctor` read back from WSL.
+On 2026-10-27, after `setup-host.ps1 -Apply -UpdateBroker` (exit 0) installed a broker built from this branch,
+`setup-sql.ps1 -Apply -SelfTest`, run through firstmate's gate as `SG\omkarb`, exited 0 with `"ok": true` and no
+errors. It made the four changes above. Then, as the broker's login: not in `sysadmin`, `dbcreator` or `securityadmin`, no `CONTROL SERVER`,
+none of the certificate's rights of its own, all 5 procedures executable; 59 of 59 made-up-name calls refused with
+50001; the direct `RESTORE` and `CREATE DATABASE` of `arashouse_negative_madeup` failed (3013 and 262) and it does not
+exist; the `arashouse_35_99` round trip passed, including ending a `sysadmin` session in it. Read back afterwards
+by the worker, non-elevated:
+
+- the dry run (the worker-run negative test) found nothing to change and repeated both checks: 59 of 59 refused,
+  the direct restore and create refused, exit 0;
+- `arashouse doctor`: `sql` ok, and `sql login`: `NT SERVICE\ArasHouseBroker is neither sysadmin nor dbcreator,
+  and executes the 5 arashouse_admin procedures`.
 
 ## Not here
 

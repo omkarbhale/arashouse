@@ -32,6 +32,16 @@ Each item has its own parameter and its own undo. Items 4 and 6 are settings to 
 | 5 | Inbound port 80 from the WSL range only | `-FirewallWslOnly` (`-FirewallWslRange`, default `172.16.0.0/12`) | yes | **off** | Port 80 serves every IIS site, the captain's existing installs included, so narrowing it also cuts LAN access to those. Exposure is low: an idle slot has a random, unknown password (ticket 31). Turning it on is hardening only |
 | 6 | Power | none | n/a | **keep as measured** (no sleep) | A slot left `resetting` by sleep is recovered by the state machine (ticket 14) |
 
+## Decisions (2026-10-27)
+
+- **Accepted as recommended:** 3 (no Defender exclusion), 4 (20 minutes, for ticket 25), 5 (no firewall narrowing) and 6 (power as
+  measured). None of them changes the host.
+- **Left to the captain:** 1 (the WSL cap) and 2 (SQL `max server memory`). Each changes the whole machine or the shared SQL
+  instance, the captain's work databases included, so neither has been applied. Both stay opt-in: the values in the table are
+  suggestions, and the commands below apply them and undo them.
+
+Nothing has been applied to the host for this ticket.
+
 ## The script: `scripts/host-tuning.ps1`
 
 Windows PowerShell 5.1, plain ASCII. Copy it to a Windows path (for example `%LOCALAPPDATA%\arashouse\host-tuning\`) and run it with
@@ -65,9 +75,9 @@ What it touches, and nothing else:
 - **Power:** read only.
 
 ```powershell
-# the recommended set: elevated for the SQL item
+# the suggested SQL cap, if the captain chooses it: elevated
 powershell -ExecutionPolicy Bypass -File host-tuning.ps1 -SqlMaxServerMemoryMB 4096 -Apply
-# the WSL cap: no elevation; then `wsl --shutdown` when no session is running
+# the suggested WSL cap, if the captain chooses it: no elevation; then `wsl --shutdown` when no session is running
 powershell -ExecutionPolicy Bypass -File host-tuning.ps1 -WslMemoryGB 12 -WslAutoMemoryReclaim gradual -Apply
 # undo
 powershell -ExecutionPolicy Bypass -File host-tuning.ps1 -Undo Sql -Apply

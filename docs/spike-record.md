@@ -1,12 +1,12 @@
-# Spike record: slice 0 exit (tickets 05, 06, 07; 08 to follow as an addendum)
+# Spike record: slice 0 exit (tickets 05, 06, 07; 08 recorded separately)
 
 Written 2026-10-27 for ticket 09. It condenses the three spike records in this folder into the answers the later tickets build on:
 [spike 05](spike-05-12sp9-baseline-and-clone.md) (12 SP9 install, clone, licence), [spike 06](spike-06-reset-mechanics.md) (reset mechanics
 and times) and [spike 07](spike-07-release-23.md) (Release 23). Those records carry the raw numbers; this one carries the decisions. Only the
 transport check (section 5) was measured for this record. No secret, licence value or password is in this file.
 
-Flavor `35` (Release 35, 14.35) is ticket 08. Its CD image is in the main checkout's `media/35/`, so it is not blocked on media and not
-deferred; its answers are added below as an addendum when ticket 08 lands. Nothing in this record waits for it.
+Flavor `35` (Release 35, 14.35) is ticket 08, recorded in [spike 08](spike-08-release-35.md): a native slot is built the same way as a
+Release 23 slot, and the 14.0 key serves it. Nothing in this record waits for it.
 
 ## 1. Per flavor: install, layout, prerequisites
 
@@ -71,8 +71,8 @@ copied with the tree, so the slots of a flavor share them.
 | Does one key serve two slots? | **Yes**, also after recycles and a full stop/start | **Yes**, the same |
 | Other keys | n/a | **The 12.x key is refused** (`License Key is invalid.`). **A 14.0 SP18 key is accepted** by both 14.0.9 slots. |
 
-**Key map:** `12sp9` → line `12`; `23` → line `14`; `35` → line `14` if ticket 08 finds the 14.0 key accepted by 14.35, otherwise its own
-line `35`. So the tool asks for **two keys** (12 and 14), or three if 35 has its own. A key is needed for **login**, not for install.
+**Key map:** `12sp9` → line `12`; `23` → line `14`; `35` → line `14` (ticket 08 found the 14.0 key accepted by 14.35). So the tool asks
+for **two keys** (12 and 14). A key is needed for **login**, not for install.
 
 **The captain's "single key" belief held in part.** One key serves every slot of its release line on this machine (tested with two slots per
 line), but one key does not cover 12 and 14: a key belongs to a release line, not to a service pack and not to all of Aras. Not tested:

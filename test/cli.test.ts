@@ -420,6 +420,19 @@ describe("operator commands (ticket 16)", () => {
     expect(existsSync(join(home, "leases", grant.lease_id))).toBe(false);
   });
 
+  it("provision makes the missing slots of a flavor, in order, and leaves the pool's own alone (ticket 25)", async () => {
+    const first = await cli(["provision", "23", "2"]);
+    expect(first.code).toBe(0);
+    expect(first.stdout.trim().split("\n")).toEqual(["provisioned 23-01 (provisioned 23-01); free", "provisioned 23-02 (provisioned 23-02); free"]);
+    const again = await cli(["provision", "23", "2"]);
+    expect(again.stdout.trim().split("\n")).toEqual(["23-01 is in the pool already (free)", "23-02 is in the pool already (free)"]);
+    expect(JSON.parse((await cli(["status", "--json"])).stdout).slots.map((s: { slot: string; status: string }) => `${s.slot} ${s.status}`)).toEqual(["23-01 free", "23-02 free"]);
+    expect((await cli(["provision", "OLM_Local"])).code).toBe(EXIT_CODES.refused);
+    for (const args of [["provision"], ["provision", "23", "x"], ["provision", "23", "0"], ["provision", "23", "1", "2"], ["provision", "14sp18"]]) {
+      expect((await cli(args)).code, args.join(" ")).toBe(EXIT_CODES.usage);
+    }
+  });
+
   it("force-return takes the lease as status shows it, exits 4 on another, and needs --yes", async () => {
     await seed({ "23": 1 });
     const grant = await lease("23");
@@ -492,7 +505,7 @@ describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
-    const commands = ["get", "return", "status", "flavors", "run", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
+    const commands = ["get", "return", "status", "flavors", "run", "setup", "setup-sql", "doctor", "provision", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
     for (const command of commands) expect(overview.stdout).toContain(`  ${command}`);
     for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable"]) {
       const r = await cli([command, "--help"]);

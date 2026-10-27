@@ -13,9 +13,10 @@
 import { BUILD_SCRATCH_SUFFIXES, DEFAULT_INSTALL_ROOT, buildNames } from "../core/names.js";
 import { FLAVORS, FLAVOR_KEYS } from "../core/flavors.js";
 import { DENIED_ALIASES, DENIED_INSTALL_ROOTS, DENIED_SERVICE_PREFIXES, assertValidRoot } from "../core/guards.js";
-import { MSI_HIDDEN_PROPERTIES, SHIPPED_DATABASE_USERS } from "../core/baseline.js";
+import { MSI_HIDDEN_PROPERTIES, OOTB_OWNER, SHIPPED_DATABASE_USERS } from "../core/baseline.js";
 import { BROKER_SERVICE_NAME } from "../core/names.js";
 import { psQuote, serviceSid } from "../core/setup-host.js";
+import { PS_DENY_LIST_PRINTS, PS_IIS, PS_PATHS_AND_PRINTS, psSql } from "./ps-common.js";
 
 /** The steps the script answers. */
 export const PS_STEPS = [
@@ -70,6 +71,7 @@ $DeniedServicePrefixes = ${list(DENIED_SERVICE_PREFIXES)}
 $HiddenProperties = ${list(MSI_HIDDEN_PROPERTIES)}
 $ShippedUsers = [ordered]@{ dbo = ${psQuote(SHIPPED_DATABASE_USERS.dbo)}; reg = ${psQuote(SHIPPED_DATABASE_USERS.reg)} }
 $BrokerSid = ${psQuote(serviceSid(BROKER_SERVICE_NAME))}
+$BrokerLogin = ${psQuote(OOTB_OWNER)}
 $Site = 'Default Web Site'
 
 function Stop-Step([string]$Message) { [Console]::Error.WriteLine("error: $Message"); exit 1 }
@@ -98,56 +100,14 @@ $DataFile = Join-Path $SqlData "$Database.mdf"
 $LogFile = Join-Path $SqlData "$($Database)_log.ldf"
 $BackupScratch = Join-Path $SqlData "$Database-ootb.bak"
 
-function Test-Under([string]$Path, [string]$Parent) {
-    $p = $Path.TrimEnd('\\') + '\\'
-    $q = $Parent.TrimEnd('\\') + '\\'
-    return $p.StartsWith($q, [StringComparison]::OrdinalIgnoreCase)
-}
-function Get-Print([string]$Text) {
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { return -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) } finally { $sha.Dispose() }
-}
+${PS_PATHS_AND_PRINTS}
 
 # ---- SQL Server: shared memory, Windows authentication (the elevated user's own login), no pooled session left behind ----
-function Format-Ident([string]$Name) { return '[' + $Name.Replace(']', ']]') + ']' }
-function Format-Str([string]$Text) { return "N'" + $Text.Replace("'", "''") + "'" }
-function New-Sql {
-    Add-Type -AssemblyName System.Data
-    $c = New-Object System.Data.SqlClient.SqlConnection 'Data Source=lpc:.;Initial Catalog=master;Integrated Security=SSPI;Connect Timeout=15;Pooling=False;Application Name=arashouse-baseline'
-    $c.Open()
-    return $c
-}
-function Invoke-Sql($Connection, [string]$Query, [hashtable]$Parameters = @{}, [int]$TimeoutSeconds = 900) {
-    $cmd = $Connection.CreateCommand()
-    $cmd.CommandText = $Query
-    $cmd.CommandTimeout = $TimeoutSeconds
-    foreach ($k in $Parameters.Keys) { [void]$cmd.Parameters.AddWithValue($k, $Parameters[$k]) }
-    $reader = $cmd.ExecuteReader()
-    $rows = New-Object System.Collections.ArrayList
-    try {
-        do {
-            while ($reader.Read()) {
-                $row = [ordered]@{}
-                for ($i = 0; $i -lt $reader.FieldCount; $i++) { $v = $reader.GetValue($i); $row[$reader.GetName($i)] = if ($v -is [DBNull]) { $null } else { $v } }
-                [void]$rows.Add([pscustomobject]$row)
-            }
-        } while ($reader.NextResult())
-    } finally { $reader.Dispose(); $cmd.Dispose() }
-    return @($rows)
-}
+${psSql("arashouse-baseline")}
 
 # ---- IIS ----
-function Get-Iis {
-    $dll = Join-Path $env:windir 'System32\\inetsrv\\Microsoft.Web.Administration.dll'
-    if (-not (Test-Path -LiteralPath $dll)) { Stop-Step 'IIS is not installed (no Microsoft.Web.Administration.dll)' }
-    Add-Type -Path $dll
-    $mgr = New-Object Microsoft.Web.Administration.ServerManager
-    # Without elevation the configuration reads as empty rather than failing; an empty read would make the checks pass on nothing.
-    $readable = $false
-    try { $readable = ($null -ne $mgr.Sites) -and (@($mgr.ApplicationPools).Count -gt 0) } catch { }
-    if (-not $readable) { $mgr.Dispose(); Stop-Step 'the IIS configuration is not readable (run elevated)' }
-    return $mgr
-}
+${PS_IIS}
+${PS_DENY_LIST_PRINTS}
 function Test-BuildApp([string]$Path) { return ($Path -ieq "/$Alias") -or $Path.StartsWith("/$Alias/", [StringComparison]::OrdinalIgnoreCase) }
 # From 14.0 the Innovator, Client, OAuth and Vault applications run out of process (the ASP.NET Core Module starts Aras.Server.exe,
 # Aras.Client.exe and the like next to w3wp.exe; spike 07), and stopping a pool does not wait for them. Wait for every process started
@@ -231,44 +191,8 @@ switch ($Step) {
         Write-Result @{ present = @(Get-Present) }
     }
     'snapshot' {
-        # Fingerprints of what is not arashouse's and that a build could disturb: the captain's install roots (their config's SHA-256),
-        # every IIS application and pool not named ah-* (settings and members), the agent services of the deny-list, and the Aras
-        # products registered outside the root. Names and hashes only; databases are not listed (the build creates and drops only its own).
-        $prints = [ordered]@{}
-        foreach ($r in $DeniedRoots) {
-            $cfg = Join-Path $r 'InnovatorServerConfig.xml'
-            $prints["install root $r"] = if (Test-Path -LiteralPath $cfg) { (Get-FileHash -LiteralPath $cfg -Algorithm SHA256).Hash.ToLowerInvariant() } elseif (Test-Path -LiteralPath $r) { 'no config' } else { 'absent' }
-        }
-        $mgr = Get-Iis
-        try {
-            $apps = @()
-            foreach ($s in $mgr.Sites) {
-                foreach ($app in $s.Applications) {
-                    $first = $app.Path.TrimStart('/').Split('/')[0]
-                    if ($first -like 'ah-*') { continue }
-                    $apps += $app
-                    $prints["IIS application $($s.Name)$($app.Path)"] = Get-Print ($app.ApplicationPoolName + '|' + $app.VirtualDirectories['/'].PhysicalPath)
-                }
-            }
-            foreach ($pool in $mgr.ApplicationPools) {
-                if ($pool.Name -like 'ah-*') { continue }
-                $members = @($apps | Where-Object { $_.ApplicationPoolName -eq $pool.Name } | ForEach-Object { $_.Path } | Sort-Object) -join ','
-                $prints["IIS pool $($pool.Name)"] = Get-Print (@($pool.ManagedRuntimeVersion, $pool.ManagedPipelineMode, $pool.Enable32BitAppOnWin64, $pool.ProcessModel.IdentityType, $pool.ProcessModel.UserName, $pool.ProcessModel.IdleTimeout, $pool.StartMode, $members) -join '|')
-            }
-        } finally { $mgr.Dispose() }
-        foreach ($svc in @(Get-CimInstance Win32_Service)) {
-            if (@($DeniedServicePrefixes | Where-Object { $svc.Name.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) { continue }
-            $prints["service $($svc.Name)"] = Get-Print (@($svc.PathName, $svc.StartMode, $svc.StartName) -join '|')
-        }
-        foreach ($hive in @('HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall')) {
-            foreach ($k in @(Get-ChildItem $hive -ErrorAction SilentlyContinue)) {
-                $e = Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction SilentlyContinue
-                if (-not $e -or -not ($e.DisplayName -like 'Aras*')) { continue }
-                if ($e.InstallLocation -and (Test-Under $e.InstallLocation $Root)) { continue }
-                $prints["product $($k.PSChildName)"] = Get-Print (@($e.DisplayName, $e.DisplayVersion, $e.InstallLocation) -join '|')
-            }
-        }
-        Write-Result @{ prints = $prints }
+        # The deny-list fingerprints (names and hashes only), before the build changes anything and again after it removed the throw-away instance.
+        Write-Result @{ prints = (Get-DenyListPrints) }
     }
     'msi-copy' {
         # A copy of the MSI with a new ProductCode, ProductID, UpgradeCode and package code (what Aras's ChangeGUID does to the MSI, without
@@ -495,9 +419,16 @@ switch ($Step) {
     }
     'backup' {
         # SQL Server may write sqldata\\, not golden\\: the backup lands there and the build copies it into the new golden.
+        # The database is first handed to the broker's login, so the dbo inside ootb.bak is the broker: a slot restored from it
+        # (ticket 25, and every reset) is the broker's inside as well as in sys.databases. With the build's own owner inside,
+        # the broker could neither use, map the users of, nor drop the database it restored (measured 2026-10-28).
         if (Test-Path -LiteralPath $BackupScratch) { Remove-Item -LiteralPath $BackupScratch -Force }
         $c = New-Sql
-        try { Invoke-Sql $c ("BACKUP DATABASE " + (Format-Ident $Database) + " TO DISK = " + (Format-Str $BackupScratch) + " WITH COPY_ONLY, INIT, FORMAT, CHECKSUM") | Out-Null } finally { $c.Dispose() }
+        try {
+            if (@(Invoke-Sql $c 'SELECT name FROM sys.server_principals WHERE name = @n' @{ '@n' = $BrokerLogin }).Count -eq 0) { Stop-Step "SQL Server has no login $BrokerLogin (run arashouse setup-sql)" }
+            Invoke-Sql $c ("ALTER AUTHORIZATION ON DATABASE::" + (Format-Ident $Database) + " TO " + (Format-Ident $BrokerLogin)) | Out-Null
+            Invoke-Sql $c ("BACKUP DATABASE " + (Format-Ident $Database) + " TO DISK = " + (Format-Str $BackupScratch) + " WITH COPY_ONLY, INIT, FORMAT, CHECKSUM") | Out-Null
+        } finally { $c.Dispose() }
         Write-Result @{ file = $BackupScratch }
     }
     'remove' {

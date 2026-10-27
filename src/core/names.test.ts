@@ -20,6 +20,8 @@ import {
   parseSlotId,
   secretFile,
   secretsDir,
+  slotLoginSecretName,
+  slotStepsScript,
   slotDir,
   slotId,
   slotNames,
@@ -166,5 +168,21 @@ describe("slot ids", () => {
 
   it.each(["", "23", "23-2", "23-002", "23-00", "99-01", "23-01 ", "../23-01", "OLM_Local"])("refuses %j", (id) => {
     expect(() => parseSlotId(id)).toThrow();
+  });
+});
+
+describe("the names ticket 25 adds", () => {
+  it("has one pool role per IIS application the baselines record, as the build's Get-Role names them", () => {
+    // `iis.json`'s role is the sub-path under the alias, lower case, `root` for the alias (src/broker/baseline-steps.ts).
+    const measured = ["", "/Client", "/Server", "/NotificationServer", "/OAuthServer", "/SelfServiceReporting", "/Vault"];
+    expect(measured.map((sub) => sub.replace(/^\//, "").toLowerCase() || "root")).toEqual([...APP_POOL_ROLES]);
+    expect(appPoolName({ flavor: "12sp9", slot: 1 }, "oauthserver")).toBe("ah-12sp9-01-oauthserver");
+  });
+
+  it("names a slot's stored login passwords and the broker's slot script", () => {
+    expect(slotLoginSecretName({ flavor: "23", slot: 2 }, "dbo")).toBe("slot-23-02-dbo");
+    expect(isSecretName(slotLoginSecretName({ flavor: "12sp9", slot: 99 }, "reg"))).toBe(true);
+    expect(() => slotLoginSecretName({ flavor: "23", slot: 2 }, "sa" as never)).toThrow(/role/);
+    expect(slotStepsScript()).toBe("C:\\aras_installations\\broker\\slot-steps.ps1");
   });
 });

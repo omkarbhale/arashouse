@@ -26,6 +26,7 @@ import {
 import { LeaseFileStore } from "../core/lease-files.js";
 import { LicenceRequiredError, SECRET_REQUIRED_EXIT_CODE } from "../core/licence.js";
 import { loadConfig } from "../core/config.js";
+import { LockTimeoutError, acquireLock } from "../core/lock.js";
 import {
   type OperatorDeps,
   type OperatorResult,
@@ -34,6 +35,7 @@ import {
   doctor,
   enableSlot,
   forceReturn,
+  provisionPool,
   prune,
   repairSlot,
 } from "../core/operator.js";
@@ -142,6 +144,14 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "each baseline at the full level (every file's SHA-256) instead of the fast level. --json prints",
     "{ ok, exitCode, findings } instead of the lines.",
   ],
+  provision: [
+    "usage: arashouse provision <flavor> [<count>]",
+    "",
+    "Makes sure the pool holds slots 01 to <count> of <flavor> (default: slots_per_flavor in the config),",
+    "making each missing one on the host from the flavor's golden: its folders, IIS application and pools,",
+    "database and logins, rendered configs and stamp. A slot is free once its health check passes; dirty",
+    "if the check cannot run. A failed provision is rolled back on the host. See docs/provision.md.",
+  ],
   repair: [
     "usage: arashouse repair <slot> [--rebuild]",
     "",
@@ -197,6 +207,7 @@ const OVERVIEW: readonly string[] = [
   "  setup-sql [--out <dir>]                                    write the one-time SQL Server setup script",
   "  baseline build <flavor> [--replace]                        write the elevated script that builds a golden",
   "  doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json] check the pool against the host",
+  "  provision <flavor> [<count>]                               make the flavor's slots 01 to <count> from golden",
   "  repair <slot> [--rebuild]                                  reset a quarantined slot from golden",
   "  destroy <slot> [--yes] [--include-leased]                  remove a slot from the host and the pool",
   "  prune [--yes]                                              destroy disabled and orphaned slots",
@@ -520,6 +531,25 @@ async function cmdSetupSql(ctx: Context, args: readonly string[]): Promise<numbe
   return EXIT_CODES.ok;
 }
 
+async function cmdProvision(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, {});
+  const [flavor, count, extra] = parsed.positionals;
+  if (flavor === undefined) throw new UsageError(`provision needs a flavor: ${FLAVOR_KEYS.join(", ")}`);
+  if (extra !== undefined) throw new UsageError(`provision takes a flavor and a count, not "${extra}" too`);
+  if (count !== undefined && !/^\d{1,2}$/.test(count)) throw new UsageError(`the slot count must be a whole number from 1 to 99, not "${count}"`);
+  const deps = await operatorDeps(ctx);
+  const lockPath = join(ctx.store.paths.home, "provision.lock");
+  const provisionLock = async () => {
+    try {
+      return await acquireLock(lockPath, { timeoutMs: 2_000 });
+    } catch (err) {
+      if (err instanceof LockTimeoutError) throw new Error(`another provision is running${err.heldBy === null ? "" : ` (pid ${err.heldBy})`}; wait for it to finish`);
+      throw err;
+    }
+  };
+  return printResult(ctx, await provisionPool({ ...deps, provisionLock }, { flavor, ...(count === undefined ? {} : { count: Number(count) }) }));
+}
+
 async function cmdRepair(ctx: Context, args: readonly string[]): Promise<number> {
   const parsed = parseArgs(args, { rebuild: "flag" });
   const slot = oneSlot(parsed, "repair");
@@ -566,6 +596,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   setup: cmdSetup,
   "setup-sql": cmdSetupSql,
   doctor: cmdDoctor,
+  provision: cmdProvision,
   repair: cmdRepair,
   destroy: cmdDestroy,
   prune: cmdPrune,

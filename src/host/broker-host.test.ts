@@ -5,6 +5,8 @@ import { Broker, inProcessTransport } from "../broker/broker.js";
 import { mappedRoot, type MappedRoot } from "../broker/mapped-fs.fixture.js";
 import type { BrokerRequest } from "../broker/protocol.js";
 import { registerBaselineVerbs } from "../broker/baseline-verbs.js";
+import { registerSlotVerbs } from "../broker/provision.js";
+import { FakeSlotSystem } from "../broker/slot-system.fixture.js";
 import { registerCoreVerbs, type BrokerSystem } from "../broker/verbs.js";
 import { buildManifest, writeManifestOnce } from "../broker/manifest-fs.js";
 import { makeSampleTree } from "../../test/sample-tree.js";
@@ -24,6 +26,7 @@ let root: MappedRoot;
 let broker: Broker;
 let transport: BrokerTransport & { requests: BrokerRequest[] };
 let host: BrokerHost;
+let slots: FakeSlotSystem;
 
 beforeEach(() => {
   root = mappedRoot(ROOT);
@@ -34,7 +37,11 @@ beforeEach(() => {
     freeRamBytes: () => 8 * 1024 * 1024 * 1024,
     sqlLogin: async () => ({ login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 }),
   };
-  broker = registerBaselineVerbs(registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), system), system);
+  slots = new FakeSlotSystem(ROOT);
+  broker = registerSlotVerbs(
+    registerBaselineVerbs(registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), system), system),
+    slots,
+  );
   const inner = inProcessTransport(broker);
   const requests: BrokerRequest[] = [];
   transport = {
@@ -111,9 +118,10 @@ describe("BrokerHost against an in-process broker", () => {
   });
 
   it("every method the broker does not have yet is Unreachable, naming its ticket, after the guards", async () => {
-    const calls: Record<Exclude<keyof HostDriver, "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify">, () => Promise<unknown>> = {
-      provisionSlot: () => host.provisionSlot(s1),
-      destroySlot: () => host.destroySlot(s1),
+    const calls: Record<
+      Exclude<keyof HostDriver, "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot">,
+      () => Promise<unknown>
+    > = {
       quiesce: () => host.quiesce(s1),
       resetTree: () => host.resetTree(s1, { flavor: "12sp9", hash: "h" }),
       resetDatabase: () => host.resetDatabase(s1, { flavor: "12sp9", file: `${ROOT}\\golden\\12sp9\\db.bak`, hash: "h" }),
@@ -126,7 +134,7 @@ describe("BrokerHost against an in-process broker", () => {
       writeStamp: () => host.writeStamp(s1, { slotId: "12sp9-01", flavor: "12sp9", goldenHash: null, lastResetAt: null }),
       setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: LEASE_REF }),
     };
-    expect(Object.keys(calls).length + 6).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 8).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -142,6 +150,23 @@ describe("BrokerHost against an in-process broker", () => {
     expect(err.kind).toBe("Refused");
     expect(err.message).toContain("arashouse baseline build 12sp9");
     expect(transport.requests).toEqual([]);
+  });
+
+  it("provisions and destroys a slot through the broker's verbs, guarded on both sides", async () => {
+    const made = await host.provisionSlot(s1);
+    expect(made).toMatchObject({ ok: true, detail: expect.stringMatching(/^provisioned 12sp9-01 from golden /) });
+    expect(slots.objects.has(`${ROOT}\\slots\\12sp9\\01`)).toBe(true);
+    expect(await rejection(host.provisionSlot(s1))).toMatchObject({ kind: "Refused", message: "slot 12sp9-01 is already provisioned" });
+    expect(await host.destroySlot(s1)).toMatchObject({ ok: true, detail: expect.stringMatching(/^destroyed 12sp9-01 in /) });
+    expect(await slots.leftovers(s1)).toEqual([]);
+    expect(transport.requests.map((r) => [r.verb, r.slot, r.args])).toEqual([
+      ["provisionSlot", s1, undefined],
+      ["provisionSlot", s1, undefined],
+      ["destroySlot", s1, undefined],
+    ]);
+    expect((await rejection(host.provisionSlot({ flavor: "OLM_Local" as never, slot: 1 }))).kind).toBe("Refused");
+    expect((await rejection(host.destroySlot({ flavor: "12sp9", slot: 100 }))).kind).toBe("Refused");
+    expect(transport.requests).toHaveLength(3);
   });
 
   it("verifies a golden through the broker's baselineVerify verb", async () => {

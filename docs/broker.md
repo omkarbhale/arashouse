@@ -28,7 +28,8 @@ WSL side first, so a refused name is never sent.
 | `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute | 20, 22 |
 | `readStamp` | slot | reads `<slot folder>\.arashouse-slot.json`; a slot with no folder is `Refused`, an unusable stamp `Quarantine` | 20 |
 | `listSlots` | none | every `slots\<key>\<NN>` folder whose name is the tool's and that is not a junction, with its stamp | 20 |
-| `provisionSlot`, `destroySlot` | slot | | 25 |
+| `provisionSlot` | slot | makes the slot from its flavor's golden: folders, IIS application and pools, agent, database and logins, rendered configs, stamp; refuses a slot with a stamp; a failure is rolled back (`docs/provision.md`) | 25 |
+| `destroySlot` | slot | removes everything the slot's names derive (stopped first), and fails while anything is left | 25 |
 | `quiesce`, `resetTree`, `writeStamp` | slot | | 30 |
 | `resetDatabase` | slot | | 31 |
 | `healthCheck` | slot | | 32 |
@@ -56,7 +57,7 @@ of quarantining it. A ticket that adds a verb registers it in `src/broker/` the 
   sent: `BrokerHost` measures the round trip on its own clock.
 - Limits: a request line of 64 KiB, a response line of 1 MiB; the broker drops a connection that has not
   sent its line within 5 s; each verb has a time bound (`VERB_TIMEOUT_MS`: `ping` 5 s, `readStamp` 10 s,
-  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), otherwise 30 s) past which it is answered `Retryable`. The client waits
+  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot` and `destroySlot` 30 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
   the bound plus 5 s, and `BrokerHost` the bound plus 10 s, killing the client after that.
 
 | failure | kind |
@@ -136,7 +137,8 @@ procedure. `arashouse doctor` fails a login in either role (`sql login`).
 Its login is `[NT SERVICE\ArasHouseBroker]`, created by `arashouse setup-sql` (ticket 22, `docs/setup-sql.md`)
 in no server role. It owns the slot databases it creates, so it restores them itself; creating and dropping a
 slot database or login, and ending a session that blocks a restore, go through the signed, name-checked
-procedures in `arashouse_admin`. **The broker keeps no `sa` credential** (map question Q2): `sa` is rejected on
+procedures in `arashouse_admin`. A slot database it restores is its own inside too only because the golden's
+`ootb.bak` was taken with the broker as its owner (`docs/provision.md`). **The broker keeps no `sa` credential** (map question Q2): `sa` is rejected on
 this host, setup runs under the captain's Windows login, and the `--keep-sa` option the plan offered is not built.
 
 ## Running it

@@ -16,7 +16,9 @@ import { repoRoot } from "./helpers.js";
  * hands its own SQL login passwords to the restore step's stdin and the admin password's MD5 to its
  * OAuth request, reads a licence given as a whole <License> element, and looks for any of its
  * secrets in the configs it copied to golden. Its engine check (ticket 26) writes the admin password
- * to the libs-js CLI's stdin (`--password-stdin`).
+ * to the libs-js CLI's stdin (`--password-stdin`). The broker's DPAPI store hands a stored secret to its
+ * PowerShell step's stdin, and the provision hands a slot's two SQL login passwords to the `database`
+ * step's stdin (ticket 25).
  */
 const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/edits.ts": 1,
@@ -26,6 +28,8 @@ const ALLOWED: Readonly<Record<string, number>> = {
   "src/broker/token.ts": 3,
   "src/broker/build-system.ts": 4,
   "src/broker/baseline-build.ts": 2,
+  "src/broker/dpapi-store.ts": 1,
+  "src/broker/slot-system.ts": 2,
 };
 
 const REVEAL_MODULE = "src/core/secret.ts";

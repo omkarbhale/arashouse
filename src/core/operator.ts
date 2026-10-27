@@ -13,7 +13,7 @@ import type { HostDriver, ListedSlot } from "../host/driver.js";
 import { isHostError } from "../host/errors.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
-import { FLAVOR_KEYS, type FlavorKey } from "./flavors.js";
+import { FLAVOR_KEYS, type FlavorKey, isFlavorKey } from "./flavors.js";
 import { GuardError, assertOwned, nameDenial } from "./guards.js";
 import { type ResetWorkerAlive, checkDiskForBuild, isResetWorkerAlive, runningResets } from "./governor.js";
 import {
@@ -30,7 +30,7 @@ import {
   leaseSecretName,
 } from "./lease.js";
 import { licenceStatus } from "./licence.js";
-import { type SlotRef, parseSlotId, slotId, slotNames, slotNumber } from "./names.js";
+import { MAX_SLOT, type SlotRef, parseSlotId, slotId, slotNames, slotNumber } from "./names.js";
 import { rebuildState } from "./recovery.js";
 import { redact } from "./redact.js";
 import { type ResetDeps, type ResetHost, currentGoldenHash, describeOutcome, recoverDeadResets, resetSlot } from "./reset.js";
@@ -42,7 +42,7 @@ import type { StateStore } from "./store.js";
 
 /** The host calls the operator commands make. */
 export type OperatorHost = ResetHost &
-  Pick<HostDriver, "ping" | "hostInfo" | "listSlots" | "provisionSlot" | "destroySlot" | "stopSlot" | "baselineVerify">;
+  Pick<HostDriver, "ping" | "hostInfo" | "listSlots" | "provisionSlot" | "destroySlot" | "stopSlot" | "baselineVerify" | "healthCheck" | "readStamp">;
 
 export interface OperatorDeps {
   readonly store: StateStore;
@@ -59,6 +59,8 @@ export interface OperatorDeps {
   readonly licences?: SecretStore;
   /** What the worker sees of `arashouse setup` on the host (ticket 21). Absent: `doctor` skips the setup checks. */
   readonly setup?: () => Promise<SetupObservation>;
+  /** Held while `provision` runs, so two provisions never work on one slot (the CLI's `provision.lock`). Absent: none. */
+  readonly provisionLock?: () => Promise<{ release(): Promise<void> }>;
   readonly now?: () => Date;
 }
 
@@ -475,6 +477,122 @@ export async function repairSlot(deps: OperatorDeps, request: RepairRequest): Pr
     case "lost":
       return { exitCode: EXIT_CODES.ok, lines };
   }
+}
+
+// ---- provision -----------------------------------------------------------------------------------
+
+export interface ProvisionRequest {
+  readonly flavor: string;
+  /** The pool should hold slots 01 to `count` of the flavor; default `slots_per_flavor` (ticket 37). */
+  readonly count?: number;
+}
+
+/** Where a slot that was just provisioned on the host goes: `free` after a passing health check. */
+async function admitProvisioned(deps: OperatorDeps, ref: SlotRef, provisionMs: number): Promise<string> {
+  const id = slotId(ref);
+  type Outcome = { to: "free"; golden: string } | { to: "dirty"; why: string } | { to: "quarantined"; why: string };
+  let outcome: Outcome;
+  try {
+    const health = await deps.host.healthCheck(ref);
+    const golden = health.ok ? (await deps.host.readStamp(ref)).stamp?.goldenHash : undefined;
+    if (!health.ok) {
+      const failed = health.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`);
+      outcome = { to: "quarantined", why: clip(redact(`the health check after its provision failed: ${failed.join("; ") || health.detail}`)) };
+    } else outcome = golden ? { to: "free", golden } : { to: "dirty", why: "its stamp names no golden hash" };
+  } catch (err) {
+    const why = redact(errorText(err));
+    outcome = isHostError(err, "Refused") || isHostError(err, "Quarantine") ? { to: "quarantined", why: clip(`the health check after its provision failed: ${why}`) } : { to: "dirty", why: `the health check could not run (${why})` };
+  }
+  await deps.store.update((tx) => {
+    if (tx.slot(id)?.status !== "provisioning") throw new Error(`${id} was moved to ${tx.slot(id)?.status ?? "nothing"} by another process during its provision`);
+    if (outcome.to === "free") tx.transition(id, { to: "free", golden_hash: outcome.golden, reset_ms: provisionMs }, "provisioned");
+    else if (outcome.to === "dirty") tx.transition(id, { to: "dirty" }, "provisioned; reset before use");
+    else tx.transition(id, { to: "quarantined", reason: outcome.why });
+  });
+  switch (outcome.to) {
+    case "free":
+      return "free";
+    case "dirty":
+      startWorker(deps, id);
+      return `dirty: ${outcome.why}; a reset makes it free`;
+    case "quarantined":
+      return `quarantined: ${outcome.why}`;
+  }
+}
+
+/**
+ * `arashouse provision <flavor> [<count>]`: makes sure the pool holds slots 01 to `count` of the flavor, provisioning
+ * each that is missing on the host from golden (ticket 25), in order. A slot already in the pool is left alone, and one
+ * left `provisioning` by an earlier run is finished. A slot whose provision fails is rolled back by the host and its
+ * record removed (quarantined instead if the host still lists it), and the run stops there.
+ */
+export async function provisionPool(deps: OperatorDeps, request: ProvisionRequest): Promise<OperatorResult> {
+  // A flavor key first: `12sp9` is also the name of one of the captain's databases, which the deny-list holds.
+  if (!isFlavorKey(request.flavor)) {
+    const why = denial(request.flavor);
+    if (why) throw new GuardRefusedError(`refused "${request.flavor}": ${why}; arashouse acts only on its own slots`);
+    throw new UsageError(`unknown flavor "${request.flavor}"; the flavors are ${FLAVOR_KEYS.join(", ")}`);
+  }
+  const flavor = request.flavor;
+  const count = request.count ?? poolConfig(deps).slots_per_flavor[flavor];
+  if (!Number.isInteger(count) || count < 1 || count > MAX_SLOT) throw new UsageError(`the slot count must be a whole number from 1 to ${MAX_SLOT}`);
+
+  const disk = await checkDiskForBuild(deps.host, poolConfig(deps));
+  if (!disk.ok) throw new GuardRefusedError(`provision of ${flavor} cannot start: ${disk.reason}`);
+  const lock = await deps.provisionLock?.();
+  const lines: string[] = [];
+  try {
+    for (let n = 1; n <= count; n++) {
+      const ref: SlotRef = { flavor, slot: n };
+      const id = slotId(ref);
+      const existing = await deps.store.update((tx) => {
+        const slot = tx.slot(id);
+        if (!slot) tx.addSlot(ref);
+        return slot?.status;
+      });
+      if (existing !== undefined && existing !== "provisioning") {
+        lines.push(`${id} is in the pool already (${existing})`);
+        continue;
+      }
+      const started = Date.now();
+      let detail = "it was on the host already";
+      if (!(await hostSlots(deps.host)).slots.get(id)?.stamp) {
+        try {
+          detail = (await deps.host.provisionSlot(ref)).detail;
+        } catch (err) {
+          throw await provisionFailed(deps, ref, err, lines);
+        }
+      }
+      lines.push(`provisioned ${id} (${detail}); ${await admitProvisioned(deps, ref, Date.now() - started)}`);
+    }
+    return { exitCode: EXIT_CODES.ok, lines };
+  } finally {
+    await lock?.release();
+  }
+}
+
+/** A provision that threw: the host rolled its part back; the record goes, or is quarantined if the slot is still listed. */
+async function provisionFailed(deps: OperatorDeps, ref: SlotRef, err: unknown, done: readonly string[]): Promise<unknown> {
+  const id = slotId(ref);
+  const why = clip(redact(`provision failed: ${errorText(err)}`));
+  let note: string;
+  if (isHostError(err, "Unreachable")) {
+    note = `${id} stays provisioning: the host did not answer, so run \`arashouse provision ${ref.flavor}\` again to finish it`;
+  } else {
+    const listed = await hostSlots(deps.host).then(
+      (h) => h.slots.has(id),
+      () => true,
+    );
+    await deps.store.update((tx) => {
+      if (tx.slot(id)?.status !== "provisioning") return;
+      if (listed) tx.transition(id, { to: "quarantined", reason: why });
+      else tx.removeSlot(id, why);
+    });
+    note = listed ? `${id} is quarantined: the host still lists it (\`arashouse destroy ${id} --yes\` removes it)` : `${id} was rolled back and its record removed`;
+  }
+  const message = [...done, `${redact(errorText(err))}; ${note}`].join("\n");
+  const mapped = asLeaseError(err);
+  return mapped instanceof LeaseError ? new LeaseError(mapped.exitCode, message, { cause: err }) : new Error(message, { cause: err });
 }
 
 // ---- doctor --------------------------------------------------------------------------------------

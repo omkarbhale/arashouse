@@ -73,7 +73,8 @@ The steps, in order:
    `NT Service\MSSQLSERVER`). If there is no such service, its grants are left out and the run reports an error.
    When two principals share a SID (a SQL Server running as LocalSystem is SYSTEM), the folder grants that SID
    the union of their rights once, so a re-run finds no deviation.
-   Ticket 25 adds each slot's app-pool identities inside `slots\` and `vaults\` when it provisions a slot.
+   A provision (ticket 25) grants `IIS_IUSRS` (every app-pool identity) modify and `IUSR` read on each slot's own
+   folder inside `slots\`, and `IIS_IUSRS` modify on its folder inside `vaults\` (`docs/provision.md`).
 4. **Prerequisites.** For each flavor with media in `media/` (every flavor if none can be told), it checks what
    `hostPrerequisites` in `src/core/flavors.ts` names and prints a `missing:` line for each one absent. It installs
    nothing.
@@ -105,7 +106,8 @@ The steps, in order:
    - `-DefenderExclusion` adds a Defender exclusion for the root. The spike measured a reset at about 10 s with
      Defender on, so speed does not need it (map Q9).
    - `-SlotIdleTimeoutMinutes <1..1440>` records a short idle timeout for slot app pools in the result's
-     `options`. No pool exists yet: ticket 25 applies it when it creates them. It is kept across runs.
+     `options`. A provision applies it to the pools it creates (default 10 minutes; `docs/provision.md`). It is kept
+     across runs.
 
 ## Installed on the host (2026-10-27)
 

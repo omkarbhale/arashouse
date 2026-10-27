@@ -87,6 +87,13 @@ export interface Flavor {
   readonly msiVersionIdentifiesRelease: boolean;
   /** The shipped OOTB backups inside the CD image. */
   readonly backups: { readonly core: string; readonly coreAndSolutions: string };
+  /**
+   * The logical file names inside the shipped `CoreAndSolutions*.bak`, and so inside the golden's `ootb.bak`, which is a
+   * backup of a restore of it. A slot's restore moves them to its own files (ticket 25), and the broker's SQL login may
+   * not read them from the backup (`RESTORE FILELISTONLY` needs `CREATE DATABASE`), so they are recorded here. Measured
+   * with `RESTORE FILELISTONLY` on the CD backups, 2026-10-27.
+   */
+  readonly backupFiles: { readonly data: string; readonly log: string };
   /** How many slots the v1 pool holds (the design's option 5(a)). */
   readonly defaultSlots: number;
   /** Runtime state inside the code tree: outside the golden manifest, cleared by a reset, never flagged. */
@@ -108,6 +115,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     msiProductVersion: "12.0",
     msiVersionIdentifiesRelease: false,
     backups: { core: "Core120.bak", coreAndSolutions: "CoreAndSolutions120.bak" },
+    backupFiles: { data: "Solutions.S12-0-SP9.12.0.24090.ConvertSqlToBackup", log: "Solutions.S12-0-SP9.12.0.24090.ConvertSqlToBackup_log" },
     defaultSlots: 3,
     runtimeDirs: RUNTIME_DIRS,
     // OAuth and Vault are netcoreapp2.1 under `AspNetCoreModule` (V1); the rest is .NET Framework 4.x.
@@ -125,6 +133,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     msiProductVersion: "14.0.9",
     msiVersionIdentifiesRelease: true,
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
+    backupFiles: { data: "Solutions.S14-0-SP9.14.0.36073.ConvertSqlToBackup", log: "Solutions.S14-0-SP9.14.0.36073.ConvertSqlToBackup_log" },
     defaultSlots: 2,
     runtimeDirs: RUNTIME_DIRS,
     // net6.0 throughout, out of process (spike 07).
@@ -143,6 +152,7 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     msiProductVersion: "14.35",
     msiVersionIdentifiesRelease: true,
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
+    backupFiles: { data: "Solutions.S14.35.0.14.35.0.43890.ConvertSqlToBackup", log: "Solutions.S14.35.0.14.35.0.43890.ConvertSqlToBackup_log" },
     defaultSlots: 2,
     runtimeDirs: RUNTIME_DIRS,
     // ASP.NET Core 8 and the VC++ 14.x runtime (spike 08, the Release 35 Installation Guide).

@@ -17,7 +17,8 @@ import { redact } from "../core/redact.js";
 import type { Secret } from "../core/secret.js";
 import { anonymousGet } from "../host/http.js";
 import type { BuildLogins, BuildSystem, CopyResult, EngineExport } from "./baseline-build.js";
-import { RESULT_MARKER, type PsStep } from "./baseline-steps.js";
+import type { PsStep } from "./baseline-steps.js";
+import { runPsScript } from "./ps-step.js";
 import { buildManifest, writeManifestOnce } from "./manifest-fs.js";
 
 /** How long a step may take: the MSI took 126 to 642 s in the spike; the rest are seconds to minutes. */
@@ -38,39 +39,7 @@ export interface WindowsBuildSystemOptions {
 
 /** One step: the request on stdin, the marked result line from stdout; a non-zero exit is the step's error line. */
 export function runPsStep(script: string, step: PsStep, request: object, onLog?: (line: string) => void): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Step", step], {
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => child.kill(), STEP_TIMEOUT_MS[step] ?? DEFAULT_STEP_TIMEOUT_MS);
-    child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
-    child.stderr.setEncoding("utf8").on("data", (d: string) => {
-      err += d;
-      for (const line of d.split(/\r?\n/)) if (line.trim()) onLog?.(redact(line.trim()));
-    });
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      const line = out.split(/\r?\n/).find((l) => l.startsWith(RESULT_MARKER));
-      if (code !== 0 || line === undefined) {
-        const why = err.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-3).join(" / ");
-        reject(new Error(redact(`${step} failed (exit ${code ?? "killed"})${why ? `: ${why}` : ""}`)));
-        return;
-      }
-      try {
-        resolve(JSON.parse(line.slice(RESULT_MARKER.length)) as Record<string, unknown>);
-      } catch {
-        reject(new Error(`${step} answered something that is not JSON`));
-      }
-    });
-    child.stdin.end(JSON.stringify(request));
-  });
+  return runPsScript(script, step, request, { timeoutMs: STEP_TIMEOUT_MS[step] ?? DEFAULT_STEP_TIMEOUT_MS, onLog });
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);

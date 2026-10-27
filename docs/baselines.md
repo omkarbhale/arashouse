@@ -73,9 +73,9 @@ else from the request but the restore step's two generated passwords.
 | `stop` | stops the build's pools and waits for their worker processes to exit, then for every process started from the build folder (from 14.0 the applications run out of process: `Aras.Server.exe`, `Aras.Client.exe`, spike 07), ending any still there after 30 s; `remove` does the same after it removes the pools |
 | `blank-secrets` | blanks `dbo_pwd`, `regular_pwd` and `lic_key` in the build's config, before anything is copied |
 | `capture-tree` | `robocopy /E /XJ /COPY:DAT /DCOPY:T` of the install directory (without a `DB\` folder) to the new golden's `tree\`, then checks that no secret of this build is in its config files |
-| `capture-db` | the shipped `Core*.bak` and `CoreAndSolutions*.bak`, and a `COPY_ONLY, CHECKSUM` backup of the build database as `ootb.bak` (SQL Server writes it to `sqldata\`, since it may not write `golden\`; the build copies it in) |
+| `capture-db` | the shipped `Core*.bak` and `CoreAndSolutions*.bak`, and a `COPY_ONLY, CHECKSUM` backup of the build database as `ootb.bak` (SQL Server writes it to `sqldata\`, since it may not write `golden\`; the build copies it in), taken after the database is handed to the broker's login (`ALTER AUTHORIZATION`), so the `dbo` inside `ootb.bak` is the broker and a slot restored from it is the broker's inside too (ticket 25, `docs/provision.md`) |
 | `metadata` | `edits.json` (the flavor's edit list, `docs/edits.md`), `iis.json` (the applications: sub-path, physical path, role, pool settings), `service.json` (no agent: `INSTALL_AGENT_SERVICE=0`) |
-| `manifest` | `manifest.json` (`docs/manifest.md`) of `tree\`, and `flavor.json`: release, server build, MSI SHA-256 and version, build time and seconds, host prerequisites, tree counts, each backup's size and SHA-256, the manifest hash |
+| `manifest` | `manifest.json` (`docs/manifest.md`) of `tree\`, and `flavor.json`: release, server build, MSI SHA-256 and version, build time and seconds, host prerequisites, tree counts, each backup's size and SHA-256, the manifest hash, and `ootbOwner` (the broker's login, above; a golden without it is refused by `provision`) |
 | `promote` | moves the new golden (assembled in `golden-build\<key>.golden`) into `golden\<key>`; with `-Replace` the old one is set aside in `golden-build\<key>.old` first and removed after |
 | `remove` | removes the throw-away instance: its IIS applications and pools, its product registration (`msiexec /x`, after the applications, as spike 90 did), the database, the two logins and their `master` users, any service whose binary is in the build folder, ASP.NET's temporary files of the alias, and the folders `golden-build\<key>*` |
 | `deny-list` | the fingerprints again; any difference fails the build |
@@ -289,6 +289,7 @@ files), `--full` in 28.0 s the first time and 8.0 s warm, and `arashouse doctor`
 - **Slots (ticket 25)** are mirrored from golden by robocopy, which copies no ACL, into `slots\`, whose ACL names no
   IIS account either: a slot needs the same grant as the build (`IIS_IUSRS`, or its own pool identities, modify on
   its tree and vault, including the files of `OAuthServer\App_Data`), or its OAuth server cannot open its SQLite file.
+  Done: a provision grants `IIS_IUSRS` on the slot folder before the mirror, so every file inherits it (`docs/provision.md`).
 - **`DBList.aspx` lives at `/<alias>/Server/DBList.aspx`** in `12sp9` and `35` (the MSI's File table; `/<alias>/DBList.aspx`
   answered 404 on the build). The WSL probe (`src/host/probe.ts`, `docs/slot-url.md`, ticket 29) asks
   `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, which `23` shares (ticket 26).

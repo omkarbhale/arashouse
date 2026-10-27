@@ -203,13 +203,41 @@ From WSL as the worker, through the broker (built from this ticket): `arashouse 
 1.7 s (golden level, 23,760 files), `--full` in 23.8 s the first time and 6.5 s warm (every SHA-256), and
 `arashouse doctor` reports `ok baseline 12sp9`.
 
+## Measured: the `35` golden (2026-10-27, ticket 27)
+
+Built on the laptop through firstmate's elevated gate in one run, with no change to the builder, from
+`media/35/Release 35 CD Image.zip` (MSI SHA-256 `88505cad727c...`, 558.4 MB, `ProductVersion` 14.35.0). The login check
+ran: the whole `<License>` element of the 14.x line came, as for `12sp9`'s run 6, from a one-off gate wrapper
+(captain-approved, outside the repo) that read it read-only from the captain's Aras28 config, the 14.0 SP18 key that
+spike 08 showed serves 14.35. No patch is part of the baseline (spike 08: `Aras Innovator 35 Patch.zip` upgrades an
+older 14.x to the build the MSI already installs).
+
+Step by step (seconds): preflight 7.3, snapshot 4.7 (35 objects fingerprinted), msi-copy 4.4, msi-cost 18.3,
+**install 175.6** (MSI exit 0), pools 57.9, database 1.5, configure 0, verify 43.4 (cold start included), stop 9.8,
+blank-secrets 0, capture-tree 22.5, capture-db 1.3, metadata 0, **manifest 236.9** (hashing 1.1 GB), promote 0.1,
+**remove 276.8**, deny-list 1.3 (all 35 unchanged), seal 56.8. **Total 919 s (15.3 minutes)**; `leftovers: []`.
+
+| | |
+|---|---|
+| Server build | `14.35.0.43890` (`Aras.Server.Core.dll`), as the registry says |
+| Tree | 23,539 files, 1,106.8 MB copied; **23,536 files, 1,106.7 MB in the manifest** (3 runtime files left out): twice `12sp9`'s size with about as many files |
+| Manifest hash | `54e65725cf594ee4b42b8af9ec79ef95440282f6d95aa78ada275fa429364598` |
+| IIS | 5 applications (`/ah-build-35` and `/Client`, `/Server`, `/OAuthServer`, `/Vault`; no `/SelfServiceReporting`, spike 08), each on its own pool |
+| Databases | `Core140.bak` 11.8 MB and `CoreAndSolutions140.bak` 14.2 MB (shipped; Release 35's own, not Release 23's files); `ootb.bak` 117.1 MB (after the checks and the login, `COPY_ONLY`, no compression) |
+| Agent | none (`INSTALL_AGENT_SERVICE=0`) |
+| Login check | passed: an OAuth password grant as `root` with the shipped password |
+| Engine check | not run against the build (the builder removes its instance in the same run, and no `35` slot exists before ticket 25). Spike 08 ran `aras-pkg export --engine 14.35` of one item against two instances of this same MSI and server build: the 14.35 engine's login gate and version probe accepted `14.35.0.43890` and the item was written (`docs/spike-08-release-35.md`, question 5). Ticket 52 proves it again on a lease |
+
+From WSL as the worker, through the broker: `arashouse baseline verify 35` passed in 1.9 s (golden level, 23,536
+files), `--full` in 28.0 s the first time and 8.0 s warm, and `arashouse doctor` reports `ok baseline 35`.
+
 ## For later tickets
 
 - **Slots (ticket 25)** are mirrored from golden by robocopy, which copies no ACL, into `slots\`, whose ACL names no
   IIS account either: a slot needs the same grant as the build (`IIS_IUSRS`, or its own pool identities, modify on
   its tree and vault, including the files of `OAuthServer\App_Data`), or its OAuth server cannot open its SQLite file.
-- **`DBList.aspx` lives at `/<alias>/Server/DBList.aspx`** in `12sp9` (the MSI's File table; `/<alias>/DBList.aspx`
+- **`DBList.aspx` lives at `/<alias>/Server/DBList.aspx`** in `12sp9` and `35` (the MSI's File table; `/<alias>/DBList.aspx`
   answered 404 on the build). The WSL probe (`src/host/probe.ts`, `docs/slot-url.md`, ticket 29) asks
-  `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, after checking `23` and `35`.
+  `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, after checking `23`.
 - A slot's licence needs the whole `<License>` element, not `lic_key` alone (run 5): ticket 25's edit list adds
   `act_key` (`{{secret:licence_act_key}}`), `lic_type` and `company`, and the secret store keeps the four together.

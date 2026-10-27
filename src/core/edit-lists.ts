@@ -3,9 +3,9 @@
 //
 // 12sp9 and 23: the eight files ticket 09's spike record lists, the same for both (spikes 05 and 07,
 // `spike/20-clone-slot.ps1`), with the attribute names read from the spike installs' configs and,
-// for `SelfServiceReportConfig.xml`, from the 12.0 MSI's own script that writes it. 35: provisional,
-// from the spike install of Release 35 (`spike\golden-build\35`, 2026-10-27); it has no
-// SelfServiceReporting, so six files. Ticket 08 settles it.
+// for `SelfServiceReportConfig.xml`, from the 12.0 MSI's own script that writes it. 35: six files,
+// Release 23's eight without the two SelfServiceReporting ones, which the 14.35 installer no longer
+// ships (spike 08, docs/spike-08-release-35.md).
 
 import { type FlavorKey } from "./flavors.js";
 import { EDIT_LIST_SCHEMA, type Edit, type EditList, parseEditList } from "./edits.js";

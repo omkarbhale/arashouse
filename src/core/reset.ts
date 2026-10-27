@@ -96,7 +96,7 @@ export async function recoverDeadResets(store: StateStore, isAlive: ResetWorkerA
     const moved: string[] = [];
     for (const slot of Object.values(tx.snapshot())) {
       if (!isDeadReset(slot, isAlive)) continue;
-      tx.transition(slot.id, { to: "dirty" }, `reset worker ${slot.reset?.pid ?? "?"} ended before the reset finished`);
+      tx.transition(slot.id, { to: "dirty", crashed: true }, `reset worker ${slot.reset?.pid ?? "?"} ended before the reset finished`);
       moved.push(slot.id);
     }
     return moved;

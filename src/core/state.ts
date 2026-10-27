@@ -154,7 +154,8 @@ export function canTransition(from: SlotStatus, to: SlotStatus): boolean {
 
 /** What a transition needs beyond its target status. */
 export type TransitionRequest =
-  | { readonly to: "provisioning" | "dirty" | "disabled" }
+  | { readonly to: "provisioning" | "disabled" }
+  | { readonly to: "dirty"; readonly crashed?: boolean }
   | { readonly to: "free"; readonly golden_hash: string; readonly reset_ms: number }
   | { readonly to: "leased"; readonly holder: string; readonly bootstrap?: BootstrapInfo }
   | { readonly to: "resetting"; readonly pid: number; readonly start_time?: string | null }
@@ -176,7 +177,7 @@ function requireText(label: string, value: unknown): string {
  * The slot after moving to `request.to`; throws `IllegalTransitionError` for a move the table does
  * not allow. The fields that belong to a status come and go with it: the lease exists only while
  * `leased`, the quarantine reason only while `quarantined`, and the reset record only from
- * `resetting` until the slot is next clean.
+ * `resetting` until the slot is next clean (kept through `dirty` only when the reset's worker crashed).
  */
 export function transitionSlot(slot: Slot, request: TransitionRequest, context: TransitionContext = {}): Slot {
   const from = slot.status;
@@ -190,7 +191,7 @@ export function transitionSlot(slot: Slot, request: TransitionRequest, context: 
     case "disabled":
       return base;
     case "dirty":
-      return slot.reset && from === "resetting" ? { ...base, reset: slot.reset } : base;
+      return slot.reset && from === "resetting" && request.crashed ? { ...base, reset: slot.reset } : base;
     case "free": {
       requireText("golden_hash", request.golden_hash);
       if (!Number.isFinite(request.reset_ms) || request.reset_ms < 0) throw new Error("reset_ms must be a non-negative number");

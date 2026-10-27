@@ -262,6 +262,18 @@ describe("the reset worker", () => {
     expect(await resetSlot(p.reset, "23-01")).toMatchObject({ kind: "free" });
   });
 
+  it("never quarantines a slot for resets the host did not answer, however many", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    p.host.setReachable(false);
+    for (let i = 0; i < MAX_RESET_ATTEMPTS + 3; i++) {
+      expect(await resetSlot(p.reset, "23-01")).toMatchObject({ kind: "dirty", slot: "23-01" });
+      expect((await p.status("23-01"))?.reset).toBeUndefined();
+    }
+    p.host.setReachable(true);
+    expect(await resetSlot(p.reset, "23-01")).toMatchObject({ kind: "free" });
+  });
+
   it("refuses a golden of another flavor or with mismatched hashes", async () => {
     const p = await pool({ "23": 1 });
     await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));

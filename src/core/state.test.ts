@@ -118,8 +118,9 @@ describe("what a transition records", () => {
   it("counts reset attempts until the slot is clean", () => {
     const first = transitionSlot(slotIn("dirty"), { to: "resetting", pid: 11 }, ctx);
     expect(first.reset).toEqual({ started_at: NOW.toISOString(), pid: 11, attempt: 1 });
-    const interrupted = transitionSlot(first, { to: "dirty" }, ctx);
+    const interrupted = transitionSlot(first, { to: "dirty", crashed: true }, ctx);
     expect(interrupted.reset?.attempt).toBe(1);
+    expect(transitionSlot(first, { to: "dirty" }, ctx).reset).toBeUndefined();
     const second = transitionSlot(interrupted, { to: "resetting", pid: 12 }, ctx);
     expect(second.reset?.attempt).toBe(2);
     const free = transitionSlot(second, { to: "free", golden_hash: "g2", reset_ms: 4999.6 }, ctx);

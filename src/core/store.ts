@@ -137,8 +137,11 @@ export class Transaction {
     return slot;
   }
 
-  /** Moves a slot along the status table; throws `IllegalTransitionError` or on an unknown slot. */
-  transition(id: string, request: TransitionRequest): Slot {
+  /**
+   * Moves a slot along the status table; throws `IllegalTransitionError` or on an unknown slot.
+   * `note` is logged as the event's reason (a quarantine reason is logged either way).
+   */
+  transition(id: string, request: TransitionRequest, note?: string): Slot {
     const slot = this.slots[id];
     if (!slot) throw new Error(`no slot "${id}"`);
     const next = transitionSlot(slot, request, { now: this.env.now(), newLeaseId: this.env.newLeaseId });
@@ -149,7 +152,7 @@ export class Transaction {
       from: slot.status,
       to: next.status,
       ...(lease ? { lease: lease.lease_id.slice(0, 8), holder: lease.holder } : {}),
-      ...(next.quarantine_reason !== undefined ? { reason: next.quarantine_reason } : {}),
+      ...(next.quarantine_reason !== undefined ? { reason: next.quarantine_reason } : note !== undefined ? { reason: note } : {}),
     });
     return next;
   }

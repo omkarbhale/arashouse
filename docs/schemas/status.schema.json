@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/status.schema.json",
+  "title": "arashouse status --json",
+  "description": "One row per slot, totals per flavor, and the active-lease count against max_active. It never carries a password or a full lease id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["generated_at", "max_active", "slots", "flavors"],
+  "properties": {
+    "generated_at": { "type": "string" },
+    "max_active": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["limit", "in_use"],
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1 },
+        "in_use": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "slots": { "type": "array", "items": { "$ref": "#/$defs/row" } },
+    "flavors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["12sp9", "23", "35"],
+      "properties": {
+        "12sp9": { "$ref": "#/$defs/totals" },
+        "23": { "$ref": "#/$defs/totals" },
+        "35": { "$ref": "#/$defs/totals" }
+      }
+    }
+  },
+  "$defs": {
+    "status": { "enum": ["provisioning", "free", "leased", "dirty", "resetting", "quarantined", "disabled"] },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slot",
+        "flavor",
+        "status",
+        "holder",
+        "lease",
+        "leased_at",
+        "lease_age_seconds",
+        "last_reset_at",
+        "last_reset_ms",
+        "quarantine_reason"
+      ],
+      "properties": {
+        "slot": { "type": "string", "pattern": "^[a-z0-9]+-[0-9]{2}$" },
+        "flavor": { "enum": ["12sp9", "23", "35"] },
+        "status": { "$ref": "#/$defs/status" },
+        "holder": { "type": ["string", "null"] },
+        "lease": { "type": ["string", "null"], "pattern": "^[0-9a-f]{8}$", "description": "The first 8 characters of the lease id, to tell leases apart." },
+        "leased_at": { "type": ["string", "null"] },
+        "lease_age_seconds": { "type": ["integer", "null"], "minimum": 0 },
+        "last_reset_at": { "type": ["string", "null"] },
+        "last_reset_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "quarantine_reason": { "type": ["string", "null"] }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "provisioning", "free", "leased", "dirty", "resetting", "quarantined", "disabled"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "provisioning": { "type": "integer", "minimum": 0 },
+        "free": { "type": "integer", "minimum": 0 },
+        "leased": { "type": "integer", "minimum": 0 },
+        "dirty": { "type": "integer", "minimum": 0 },
+        "resetting": { "type": "integer", "minimum": 0 },
+        "quarantined": { "type": "integer", "minimum": 0 },
+        "disabled": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/get.schema.json",
+  "title": "arashouse get --json",
+  "description": "What `arashouse get` prints: the lease. It is the only output that ever carries the lease password, shown once.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slot", "flavor", "aras", "engine", "url", "database", "user", "lease_id", "holder", "password"],
+  "properties": {
+    "slot": { "type": "string", "pattern": "^[a-z0-9]+-[0-9]{2}$", "description": "The slot id, for example 23-02." },
+    "flavor": { "enum": ["12sp9", "23", "35"] },
+    "aras": { "type": ["string", "null"], "description": "The server build, for example 14.0.9.36073; null until the flavor's baseline has been built." },
+    "engine": { "type": "string", "description": "The import-export-libs-js engine for this server." },
+    "url": { "type": "string", "pattern": "^http://[^/]+/ah-[a-z0-9]+-[0-9]{2}$" },
+    "database": { "type": "string", "pattern": "^arashouse_[a-z0-9]+_[0-9]{2}$" },
+    "user": { "type": "string", "minLength": 1 },
+    "lease_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "128 random bits. Pass it to `return --if-lease-id`." },
+    "holder": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "password": { "type": "string", "minLength": 1, "description": "The lease's Aras password, for `user`. Shown once." }
+  }
+}

@@ -30,6 +30,10 @@ export function assertSecretName(name: string): string {
 export class MemorySecretStore implements SecretStore {
   readonly #secrets = new Map<string, Secret>();
 
+  get size(): number {
+    return this.#secrets.size;
+  }
+
   async has(name: string): Promise<boolean> {
     return this.#secrets.has(assertSecretName(name));
   }

@@ -1,7 +1,9 @@
 import { win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 import { encodeLicence, licenceElement, licenceSecretName } from "../core/licence.js";
-import { DEFAULT_INSTALL_ROOT, slotLoginSecretName, slotNames, stampFile, type SlotRef } from "../core/names.js";
+import { editList } from "../core/edit-lists.js";
+import { serializeEditList } from "../core/edits.js";
+import { DEFAULT_INSTALL_ROOT, goldenLayout, slotLoginSecretName, slotNames, stampFile, type SlotRef } from "../core/names.js";
 import { Secret } from "../core/secret.js";
 import { HostError } from "../host/errors.js";
 import { Broker } from "./broker.js";
@@ -104,6 +106,19 @@ describe("provisionSlot", () => {
       `<License lic_type="Type-Placeholder" lic_key="LICENCE-KEY-PLACEHOLDER-0002" act_key="ACT-KEY-PLACEHOLDER-0002" company="Company &amp; Placeholder"/>`,
     );
     for (const value of Object.values(values)) expect(JSON.stringify(result)).not.toContain(value);
+  });
+
+  it("renders the whole element from a golden whose edits.json predates it (lic_key alone)", async () => {
+    const system = new FakeSlotSystem();
+    const current = editList("12sp9");
+    const old = { ...current, edits: current.edits.filter((e) => !/\/License\/@(act_key|lic_type|company)$/.test(e.path)) };
+    system.put(goldenLayout("12sp9", ROOT).edits, serializeEditList(old));
+    const values = { lic_key: "LICENCE-KEY-PLACEHOLDER-0004", act_key: "ACT-KEY-PLACEHOLDER-0004", lic_type: "Type-Placeholder", company: "Company-Placeholder" };
+    await system.secrets.put(licenceSecretName("12"), encodeLicence(licenceElement(values)));
+    expect((await provision(system)).ok).toBe(true);
+    expect(system.text(win32.join(names.slotDir, "InnovatorServerConfig.xml"))).toContain(
+      `<License lic_type="Type-Placeholder" lic_key="LICENCE-KEY-PLACEHOLDER-0004" act_key="ACT-KEY-PLACEHOLDER-0004" company="Company-Placeholder"/>`,
+    );
   });
 
   it("renders the <License> element blank, and says the slot cannot log in, without a stored licence", async () => {

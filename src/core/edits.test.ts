@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BUILD_PASSWORDS, sampleGolden } from "./config-samples.fixture.js";
-import { editList } from "./edit-lists.js";
+import { editList, withLicenceElement } from "./edit-lists.js";
 import {
   type Edit,
   type EditList,
@@ -316,6 +316,30 @@ describe("verify", () => {
     expect(broken.ok).toBe(false);
     // The XML edits cannot read the file; the agent-port text edit finds nothing to check.
     for (const o of broken.outcomes) expect(o.status).toBe(o.kind === "xml" ? "error" : "differs");
+  });
+});
+
+describe("withLicenceElement", () => {
+  const current = editList("12sp9");
+  const licence = (p: string) => /\/License\/@/.test(p);
+  const before34b = list("12sp9", current.edits.filter((e) => !licence(e.path) || e.path.endsWith("@lic_key")));
+
+  it("adds the <License> attributes a golden's list from before ticket 34b lacks, and renders as the current list does", () => {
+    const merged = withLicenceElement(before34b);
+    expect(merged.edits.filter((e) => licence(e.path)).map((e) => e.path).sort()).toEqual(
+      ["/Innovator/License/@act_key", "/Innovator/License/@company", "/Innovator/License/@lic_key", "/Innovator/License/@lic_type"],
+    );
+    const golden = enc(sampleGolden("12sp9")["InnovatorServerConfig.xml"] ?? "");
+    const vars = editVars({ flavor: "12sp9", slot: 1 });
+    expect(dec(renderFile("InnovatorServerConfig.xml", golden, merged, vars, secrets).bytes)).toBe(
+      dec(renderFile("InnovatorServerConfig.xml", golden, current, vars, secrets).bytes),
+    );
+  });
+
+  it("leaves a current list, and one that renders no licence, as they are", () => {
+    expect(withLicenceElement(current)).toBe(current);
+    const noLicence = list("12sp9", current.edits.filter((e) => !licence(e.path)));
+    expect(withLicenceElement(noLicence)).toBe(noLicence);
   });
 });
 

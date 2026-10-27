@@ -10,6 +10,7 @@
 
 import { win32 } from "node:path";
 import { OOTB_OWNER, compareDenyList, goldenJson, type DenyListDiff, type DenyListSnapshot } from "../core/baseline.js";
+import { withLicenceElement } from "../core/edit-lists.js";
 import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type EditList, type EditSecrets, type SecretHandle } from "../core/edits.js";
 import { FLAVORS, type FlavorKey } from "../core/flavors.js";
 import { decodeLicence, licenceSecretName } from "../core/licence.js";
@@ -224,12 +225,15 @@ export interface RenderedConfigs {
 
 const LICENCE_HANDLES = ["licence", "licence_act_key", "licence_type", "licence_company"] as const satisfies readonly SecretHandle[];
 
-/** The golden's edit list (`golden\<key>\edits.json`), which must be the slot's flavor's. */
+/**
+ * The golden's edit list (`golden\<key>\edits.json`), which must be the slot's flavor's, with the whole `<License>` element
+ * also when the golden's list predates it (`withLicenceElement`).
+ */
 export async function goldenEditList(system: SlotSystem, slot: SlotRef, root: string): Promise<EditList> {
   const layout = goldenLayout(slot.flavor, root);
   const listBytes = await system.readFile(layout.edits);
   if (listBytes === null) throw new Error(`${layout.edits} does not exist`);
-  const list = parseEditList(JSON.parse(new TextDecoder().decode(listBytes)));
+  const list = withLicenceElement(parseEditList(JSON.parse(new TextDecoder().decode(listBytes))));
   if (list.flavor !== slot.flavor) throw new Error(`${layout.edits} is the edit list of flavor ${list.flavor}`);
   return list;
 }

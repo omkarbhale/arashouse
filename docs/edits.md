@@ -134,5 +134,5 @@ golden keeps `lic_key`, `act_key`, `dbo_pwd` and `regular_pwd` blank (the build 
 blanks them before the copy, `docs/baselines.md`). The build's login proof found the key alone refused ("License Key
 is invalid"): a slot needs `act_key`, `lic_type` and `company` from the key's source too (spike 30 copied all four),
 so the list sets all four from one stored licence through the handles `licence`, `licence_act_key`, `licence_type`
-and `licence_company` (ticket 34b). A golden built before that holds an `edits.json` with `lic_key` alone and renders
-only the key: rebuild it (`arashouse baseline build <key> --replace`).
+and `licence_company` (ticket 34b). A golden built before that holds an `edits.json` with `lic_key` alone; a render
+adds the three attributes it lacks (`withLicenceElement` in `src/core/edit-lists.ts`), so it needs no rebuild.

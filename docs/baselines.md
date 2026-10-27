@@ -375,7 +375,8 @@ same media proved both (above). The `12sp9` rebuild likewise.
   `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, which `23` shares (ticket 26).
 - A slot's licence needs the whole `<License>` element, not `lic_key` alone (run 5). Done (ticket 34b): the edit list
   sets `act_key`, `lic_type` and `company` with `lic_key`, and the secret store keeps the four together
-  (`docs/secrets.md`). A golden whose `edits.json` predates it renders the key alone, so it needs a `--replace` rebuild.
+  (`docs/secrets.md`). A golden whose `edits.json` predates it gets the three attributes added at render time, so it
+  needs no rebuild (`docs/edits.md`).
 - **Rebuild `23` and `35` after ticket 25.** The broker can use and drop a restore of a golden's `ootb.bak` only when
   that database's owner is `NT SERVICE\ArasHouseBroker`; ticket 25's builder fix sets it and records `ootbOwner` in
   `flavor.json`. Once it merges, both goldens built before it need `baseline build <key> --replace` (with

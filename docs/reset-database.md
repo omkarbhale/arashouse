@@ -71,3 +71,31 @@ As the broker's login (`EXECUTE AS LOGIN` from the worker's `sysadmin` session) 
 - A session **running** a statement in the database makes the restore wait until the statement ends (19 s for a
   25 s `WAITFOR`), then the restore goes through.
 - With nothing in the way the restore took 0.64 s; the owner stays the broker and the database `MULTI_USER`.
+
+## Measured on the host (2026-10-28)
+
+Through firstmate's elevated gate, `setup-host.ps1 -Apply -UpdateBroker` installed a broker built from this ticket
+(exit 0; its `broker\app\` read back equal to the bundle's). Then, as the worker from WSL, non-elevated, on the scratch
+slot `12sp9-31` (provisioned through the broker, 25.8 s; no pool uses slot 31):
+
+- **Dirtied** as the worker's `sysadmin` login: a Language (`zz`) and a Variable item added, the `admin` User's first
+  name changed, `VersionBuild` set to 99999, a stale `arashouse.reset_at` property added; the two users were also left
+  orphaned by an earlier bare restore.
+- **`resetDatabase`** through the broker: `restored from golden 8668e889d5e4 in 6.9 s (restore 0.6 s; 1 foreign
+  session ended first; version 12.0 SP9 build 24090; golden check 5.5 s)`, 7.2 s from WSL, with an idle `sysadmin`
+  session parked in the database. An earlier run with no session in the way: 8.9 s (restore 0.7 s, golden check 7.2 s).
+- **Read back:** the Language and the item gone, `admin` back to `Innovator`, `VersionBuild` 24090 (`VersionMajor` 12,
+  `VersionMinor` 0, `VersionServicePack` SP9), `arashouse.golden_hash` the golden's full manifest hash and
+  `arashouse.reset_at` the reset's time, `innovator` mapped to `arashouse_12sp9_31_dbo` and `innovator_regular` to
+  `_reg`, owner and `dbo` `NT SERVICE\ArasHouseBroker`, `MULTI_USER`.
+- **Refused** by the broker: `db\Core120.bak` (`Refused`), a hash that is not the golden's (`Retryable`), an empty hash
+  (`Refused`), the unprovisioned `12sp9-97` (`Refused`: no database).
+- **The negative test** (ticket 22), as the broker's login (`EXECUTE AS LOGIN`), made-up names only: `kill_connections`
+  refused all 11 (50001), the direct `RESTORE` of `ootb.bak` over `arashouse_negative_madeup` failed (3013), and that
+  name does not exist afterwards.
+- `destroySlot 12sp9-31`: 13.0 s, nothing of the slot left, the deny-list unchanged.
+
+The golden check (the `golden`-level manifest verify) takes longer than the restore itself. `resetTree` (ticket 30)
+verifies the same golden in the same reset, so a cheaper hash read here is an option once both are in.
+
+This step leaves the `root` and `admin` passwords as the golden has them (not tested by a login: no licence is stored, so no slot can log in yet); randomising them is ticket 32 (above).

@@ -37,6 +37,25 @@ export const RUNTIME_DIRS: readonly RuntimeRule[] = [
   { dir: "OAuthServer/App_Data", files: ["*.sqlite*", "key-*.xml"] },
 ];
 
+/**
+ * A Windows prerequisite a flavor's slots need on the host. `arashouse setup` checks the ones of the
+ * flavors in `media/` and lists what is missing; it never installs one (ticket 21).
+ */
+export type HostPrerequisite =
+  /** IIS with the role services the Aras installer and its applications use. */
+  | "iis"
+  /** .NET Framework 4.7.2 or newer: every MSI's launch condition. */
+  | "netfx-4.7.2"
+  /** An ASP.NET Core shared runtime of that major.minor (OAuth, Vault; the whole tree from 14.0). */
+  | "aspnetcore-2.1"
+  | "aspnetcore-6.0"
+  | "aspnetcore-8.0"
+  /** The IIS ASP.NET Core Module: V1 (`AspNetCoreModule`, the 12.0 tree) or V2 (14.x). */
+  | "ancm-v1"
+  | "ancm-v2"
+  /** The Visual C++ 2015-2022 (14.x) x64 runtime. */
+  | "vcredist-14-x64";
+
 export interface Flavor {
   readonly key: FlavorKey;
   /** The Aras release the key stands for. */
@@ -67,6 +86,8 @@ export interface Flavor {
   readonly defaultSlots: number;
   /** Runtime state inside the code tree: outside the golden manifest, cleared by a reset, never flagged. */
   readonly runtimeDirs: readonly RuntimeRule[];
+  /** What the host needs before a baseline of this flavor can run (spike record, section 1). */
+  readonly hostPrerequisites: readonly HostPrerequisite[];
 }
 
 export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
@@ -84,6 +105,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     backups: { core: "Core120.bak", coreAndSolutions: "CoreAndSolutions120.bak" },
     defaultSlots: 3,
     runtimeDirs: RUNTIME_DIRS,
+    // OAuth and Vault are netcoreapp2.1 under `AspNetCoreModule` (V1); the rest is .NET Framework 4.x.
+    hostPrerequisites: ["iis", "netfx-4.7.2", "aspnetcore-2.1", "ancm-v1"],
   },
   "23": {
     key: "23",
@@ -99,6 +122,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,
     runtimeDirs: RUNTIME_DIRS,
+    // net6.0 throughout, out of process (spike 07).
+    hostPrerequisites: ["iis", "netfx-4.7.2", "aspnetcore-6.0", "ancm-v2"],
   },
   "35": {
     key: "35",
@@ -115,6 +140,8 @@ export const FLAVORS: Readonly<Record<FlavorKey, Flavor>> = {
     backups: { core: "Core140.bak", coreAndSolutions: "CoreAndSolutions140.bak" },
     defaultSlots: 2,
     runtimeDirs: RUNTIME_DIRS,
+    // ASP.NET Core 8 and the VC++ 14.x runtime (spike 08, the Release 35 Installation Guide).
+    hostPrerequisites: ["iis", "netfx-4.7.2", "aspnetcore-8.0", "ancm-v2", "vcredist-14-x64"],
   },
 };
 

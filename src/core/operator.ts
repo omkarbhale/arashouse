@@ -34,6 +34,7 @@ import { type SlotRef, parseSlotId, slotId, slotNames, slotNumber } from "./name
 import { rebuildState } from "./recovery.js";
 import { redact } from "./redact.js";
 import { type ResetDeps, type ResetHost, describeOutcome, recoverDeadResets, resetSlot } from "./reset.js";
+import { type SetupObservation, checkSetup } from "./setup-host.js";
 import type { SecretStore } from "./secret-store.js";
 import { type Lease, RECOVERED_HOLDER, type Slot, type State, StateCorruptError, isLeaseId } from "./state.js";
 import type { StateStore } from "./store.js";
@@ -55,6 +56,8 @@ export interface OperatorDeps {
   readonly media?: (flavor: FlavorKey) => Promise<boolean | null>;
   /** The host's licence-key store (tickets 20 and 21); `doctor` reports each line's key as present or absent. Absent: skipped. */
   readonly licences?: SecretStore;
+  /** What the worker sees of `arashouse setup` on the host (ticket 21). Absent: `doctor` skips the setup checks. */
+  readonly setup?: () => Promise<SetupObservation>;
   readonly now?: () => Date;
 }
 
@@ -62,6 +65,8 @@ export interface OperatorDeps {
 export interface OperatorResult {
   readonly exitCode: number;
   readonly lines: readonly string[];
+  /** `doctor` only: its checks, for `doctor --json`. */
+  readonly findings?: readonly Finding[];
 }
 
 export const DRY_RUN = "dry run: nothing was changed; run again with --yes to do it";
@@ -510,7 +515,7 @@ export function formatFindings(findings: readonly Finding[]): string[] {
 }
 
 /**
- * Checks the pool: the state file, the broker, the SQL login, free disk and RAM, the media and
+ * Checks the pool: the state file, the host setup (ticket 21), the broker, the SQL login, free disk and RAM, the media and
  * baselines, every slot record against the host's stamps, slots with no record (orphans), and resets
  * with no live worker. It reads only the tool's own slots, as the host lists them. Exit 1 when a
  * check fails and was not fixed, else 0.
@@ -525,6 +530,7 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
   const done = (): OperatorResult => ({
     exitCode: findings.some((f) => f.level === "fail" && !f.resolved) ? 1 : EXIT_CODES.ok,
     lines: formatFindings(findings),
+    findings,
   });
   const now = (deps.now ?? (() => new Date()))();
   const config = poolConfig(deps);
@@ -537,6 +543,10 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
   } catch (err) {
     if (!(err instanceof StateCorruptError)) throw err;
     add("fail", "state", err.message);
+  }
+
+  if (deps.setup) {
+    for (const f of checkSetup(await deps.setup())) add(f.level, f.check, f.message);
   }
 
   try {

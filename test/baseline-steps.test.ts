@@ -55,6 +55,16 @@ describe("baseline-steps.ps1 (static)", () => {
     expect(steps).toContain("foreach ($dir in @($BuildDir, $VaultRoot))");
   });
 
+  it("waits for, then ends, the out-of-process applications started from the build folder (14.x), when it stops and removes", () => {
+    expect(steps).toContain("function Stop-BuildProcesses {");
+    expect(steps).toContain("(Test-Under $_.ExecutablePath $BuildDir)");
+    expect(steps).toContain("$_.CommandLine.IndexOf($BuildDir + '\\', [StringComparison]::OrdinalIgnoreCase)");
+    expect(steps).toContain("$ended = Stop-BuildProcesses");
+    const remove = steps.slice(steps.indexOf("    'remove' {"));
+    expect(remove.indexOf("[void](Stop-BuildProcesses)")).toBeGreaterThan(-1);
+    expect(remove.indexOf("[void](Stop-BuildProcesses)")).toBeLessThan(remove.indexOf("msiexec.exe"));
+  });
+
   it("removes only the build alias's applications and pools", () => {
     expect(steps).toContain("$s.Applications | Where-Object { Test-BuildApp $_.Path }");
     expect(steps).toContain("$_.Name.StartsWith($PoolPrefix, [StringComparison]::OrdinalIgnoreCase)");

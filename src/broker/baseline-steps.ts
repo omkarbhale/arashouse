@@ -149,6 +149,19 @@ function Get-Iis {
     return $mgr
 }
 function Test-BuildApp([string]$Path) { return ($Path -ieq "/$Alias") -or $Path.StartsWith("/$Alias/", [StringComparison]::OrdinalIgnoreCase) }
+# From 14.0 the Innovator, Client, OAuth and Vault applications run out of process (the ASP.NET Core Module starts Aras.Server.exe,
+# Aras.Client.exe and the like next to w3wp.exe; spike 07), and stopping a pool does not wait for them. Wait for every process started
+# from the build folder to exit, then end what is left: each is the throw-away instance's, and a running one holds its files open.
+function Stop-BuildProcesses {
+    $left = @()
+    for ($i = 0; $i -lt 60; $i++) {
+        $left = @(Get-CimInstance Win32_Process | Where-Object { ($_.ExecutablePath -and (Test-Under $_.ExecutablePath $BuildDir)) -or ($_.CommandLine -and $_.CommandLine.IndexOf($BuildDir + '\\', [StringComparison]::OrdinalIgnoreCase) -ge 0) })
+        if ($left.Count -eq 0) { return 0 }
+        Start-Sleep -Milliseconds 500
+    }
+    foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    return $left.Count
+}
 function Get-Role([string]$SubPath) {
     $role = $SubPath.Trim('/').ToLowerInvariant() -replace '[^a-z0-9]+', '-'
     if (-not $role) { return 'root' }
@@ -461,7 +474,8 @@ switch ($Step) {
             if ($left.Count -eq 0) { break }
             Start-Sleep -Milliseconds 500
         }
-        Write-Result @{ stopped = $true }
+        $ended = Stop-BuildProcesses
+        Write-Result @{ stopped = $true; ended = $ended }
     }
     'server-version' {
         $dll = Join-Path $BuildDir 'Innovator\\Server\\bin\\Aras.Server.Core.dll'
@@ -497,6 +511,7 @@ switch ($Step) {
             foreach ($pool in @($mgr.ApplicationPools | Where-Object { $_.Name.StartsWith($PoolPrefix, [StringComparison]::OrdinalIgnoreCase) })) { $mgr.ApplicationPools.Remove($pool) }
             $mgr.CommitChanges()
         } finally { $mgr.Dispose() }
+        [void](Stop-BuildProcesses)
         foreach ($code in (Get-BuildProducts)) {
             $p = Start-Process -FilePath msiexec.exe -ArgumentList @('/x', $code, '/qn', 'REMOVE_DATABASES=0', 'REBOOT=ReallySuppress', 'MSIRESTARTMANAGERCONTROL=Disable', '/norestart') -Wait -PassThru
             if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010 -and $p.ExitCode -ne 1605) { [Console]::Error.WriteLine("warning: msiexec /x $code returned $($p.ExitCode)") }

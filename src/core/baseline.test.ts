@@ -18,6 +18,7 @@ describe("the baseline plan", () => {
       candidateDir: "C:\\aras_installations\\golden-build\\12sp9.golden",
       retiredDir: "C:\\aras_installations\\golden-build\\12sp9.old",
       promotingMarker: "C:\\aras_installations\\golden-build\\12sp9.promoting",
+      engineDir: "C:\\aras_installations\\golden-build\\12sp9.engine",
       bundleDir: "C:\\aras_installations\\staging\\baseline-12sp9",
     });
     expect(plan.databaseFiles).toEqual({ data: "C:\\aras_installations\\sqldata\\arashouse_build_12sp9.mdf", log: "C:\\aras_installations\\sqldata\\arashouse_build_12sp9_log.ldf" });
@@ -27,6 +28,8 @@ describe("the baseline plan", () => {
     expect(plan.media.coreAndSolutions).toBe("C:\\aras_installations\\staging\\baseline-12sp9\\media\\CoreAndSolutions120.bak");
     expect(plan.serverBuild).toBe("12.0.0.24090");
     expect(plan.replace).toBe(false);
+    expect(plan.libsJsEngine).toBe("12.0");
+    expect(baselinePlan("23", { msiSha256: SHA }).libsJsEngine).toBe("14.0.7");
     expect(() => baselinePlan("12sp9", { msiSha256: "nope" })).toThrow(/SHA-256/);
     expect(() => baselinePlan("olm" as never, { msiSha256: SHA })).toThrow(/unknown flavor/);
   });
@@ -111,6 +114,14 @@ describe("baseline-build.ps1", () => {
     expect(script).toContain("Read-Host -AsSecureString");
     expect(script).toContain("SetEnvironmentVariable('ARASHOUSE_BUILD_LICENCE', $null, 'Process')");
     expect(script).not.toMatch(/\$nodeArgs \+= .*(licence|admin)/i);
+  });
+
+  it("pins the engine CLI's files, scoped packages included, and refuses an unpinned file under engine\\ as under app\\", () => {
+    const engine = [...pinned, { path: "engine\\node_modules\\@xmldom\\xmldom\\package.json", sha256: "6".repeat(64) }];
+    const script = renderBaselineBuildScript({ flavor: "23", version: "0.0.0", pinned: engine });
+    expect(script).toContain("@{ path = 'engine\\node_modules\\@xmldom\\xmldom\\package.json'; sha256 = '" + "6".repeat(64) + "' }");
+    expect(script).toContain("foreach ($folder in @('app', 'engine')) {");
+    expect(script).toContain("libs-js engine (14.0.7)");
   });
 
   it("refuses a bundle path that could leave the bundle, a bad hash and a missing entry", () => {

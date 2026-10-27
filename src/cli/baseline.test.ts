@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,7 +12,7 @@ import { StateStore } from "../core/store.js";
 import { FakeHost } from "../host/fake.js";
 import { HostError } from "../host/errors.js";
 import { STEPS_SCRIPT_NAME } from "../broker/baseline-steps.js";
-import { markFlavorDirty, mediaRefusal, runBaselineCommand, writeBaselineBundle, type BaselineCommandDeps } from "./baseline.js";
+import { engineFiles, markFlavorDirty, mediaRefusal, runBaselineCommand, writeBaselineBundle, type BaselineCommandDeps } from "./baseline.js";
 
 let dir: string;
 beforeEach(() => {
@@ -61,6 +61,46 @@ describe("the baseline bundle", () => {
     expect(bundle.files).toBe(8);
   });
 
+  it("bundles a built libs-js checkout for the engine check, pinned, and asks for the check in plan.json", async () => {
+    const libs = join(dir, "libs-js");
+    mkdirSync(join(libs, "dist"), { recursive: true });
+    mkdirSync(join(libs, "node_modules", "@xmldom", "xmldom", "lib"), { recursive: true });
+    mkdirSync(join(libs, "node_modules", "xpath"), { recursive: true });
+    writeFileSync(join(libs, "package.json"), JSON.stringify({ name: "import-export-libs-js", dependencies: { "@xmldom/xmldom": "0.9.12", xpath: "0.0.34" } }));
+    for (const f of ["cli.js", "chunk-A.js", "cli.js.map", "index.d.ts"]) writeFileSync(join(libs, "dist", f), `// ${f}\n`);
+    writeFileSync(join(libs, "node_modules", "@xmldom", "xmldom", "package.json"), "{}");
+    writeFileSync(join(libs, "node_modules", "@xmldom", "xmldom", "lib", "dom.js"), "// dom\n");
+    writeFileSync(join(libs, "node_modules", "xpath", "package.json"), "{}");
+    writeFileSync(join(libs, "node_modules", "xpath", "xpath.js"), "// xpath\n");
+    const out = join(dir, "bundle");
+    const bundle = await writeBaselineBundle({ flavor: "12sp9", media: await media(), distDir: dist(), packageJson: join(dir, "package.json"), version: "0.0.0", minFreeDiskGb: 10, outDir: out, engineDir: libs });
+    const script = readFileSync(join(out, BUILD_SCRIPT_NAME), "latin1");
+    const bundled = ["engine/package.json", "engine/dist/chunk-A.js", "engine/dist/cli.js", "engine/node_modules/@xmldom/xmldom/lib/dom.js", "engine/node_modules/@xmldom/xmldom/package.json", "engine/node_modules/xpath/package.json", "engine/node_modules/xpath/xpath.js"];
+    for (const rel of bundled) expect(script, rel).toContain(`@{ path = '${rel.replace(/\//g, "\\")}'; sha256 = '${sha(readFileSync(join(out, ...rel.split("/"))))}' }`);
+    expect(script).not.toContain("cli.js.map");
+    expect(script).not.toContain("index.d.ts");
+    expect(bundle.files).toBe(8 + bundled.length);
+    expect(JSON.parse(readFileSync(join(out, "plan.json"), "utf8")).engineCheck).toBe(true);
+    // A later bundle without the check drops the engine folder.
+    await writeBaselineBundle({ flavor: "12sp9", media: await media(), distDir: dist(), packageJson: join(dir, "package.json"), version: "0.0.0", minFreeDiskGb: 10, outDir: out });
+    expect(existsSync(join(out, "engine"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(out, "plan.json"), "utf8")).engineCheck).toBeUndefined();
+  });
+
+  it("refuses an engine checkout that is not libs-js, not built, or has transitive dependencies", async () => {
+    const libs = join(dir, "libs-js");
+    mkdirSync(join(libs, "dist"), { recursive: true });
+    writeFileSync(join(libs, "package.json"), JSON.stringify({ name: "other" }));
+    await expect(engineFiles(libs)).rejects.toThrow(/is not an import-export-libs-js checkout/);
+    writeFileSync(join(libs, "package.json"), JSON.stringify({ name: "import-export-libs-js", dependencies: { xpath: "1" } }));
+    await expect(engineFiles(libs)).rejects.toThrow(/no dist\/cli.js/);
+    writeFileSync(join(libs, "dist", "cli.js"), "//\n");
+    await expect(engineFiles(libs)).rejects.toThrow(/no node_modules\/xpath/);
+    mkdirSync(join(libs, "node_modules", "xpath"), { recursive: true });
+    writeFileSync(join(libs, "node_modules", "xpath", "package.json"), JSON.stringify({ dependencies: { other: "1" } }));
+    await expect(engineFiles(libs)).rejects.toThrow(/dependencies of its own/);
+  });
+
   it("refuses media that fail the check or lack a property the install sets, and a folder that is not a bundle", async () => {
     const lacking = await media(NEEDED.filter((p) => p !== "INSTALL_DATABASE"));
     expect(mediaRefusal(lacking, "12sp9")).toBe("the 12sp9 MSI has no INSTALL_DATABASE, which the unattended install sets");
@@ -80,19 +120,21 @@ describe("arashouse baseline", () => {
     const out: string[] = [];
     const err: string[] = [];
     const written: FlavorKey[] = [];
+    const engines: (string | undefined)[] = [];
     const report = await media();
     const d: BaselineCommandDeps = {
       host: options.host ?? new FakeHost({ baselines: options.baselines ?? [] }),
       store,
       checkMedia: async () => report,
-      writeBundle: async (flavor) => {
+      writeBundle: async (flavor, _media, engineDir) => {
         written.push(flavor);
+        engines.push(engineDir);
         return { script: `C:\\aras_installations\\staging\\baseline-${flavor}\\baseline-build.ps1`, files: 9, msiSha256: "f".repeat(64) };
       },
       out: (l) => out.push(l),
       err: (l) => err.push(l),
     };
-    return { d, store, out, err, written };
+    return { d, store, out, err, written, engines };
   }
 
   it("writes the bundle for a flavor with no golden and prints the elevated commands", async () => {
@@ -101,6 +143,14 @@ describe("arashouse baseline", () => {
     expect(t.written).toEqual(["12sp9"]);
     expect(t.out.join("\n")).toContain('-File "C:\\aras_installations\\staging\\baseline-12sp9\\baseline-build.ps1" -Apply');
     expect(t.out.join("\n")).not.toContain("-Replace");
+    expect(t.engines).toEqual([undefined]);
+  });
+
+  it("passes --engine-check's libs-js checkout to the bundle and says the build will export one item", async () => {
+    const t = await deps();
+    expect(await runBaselineCommand(t.d, ["build", "23", "--engine-check", "/src/libs-js"])).toBe(0);
+    expect(t.engines).toEqual(["/src/libs-js"]);
+    expect(t.out.join("\n")).toContain("then export one item with engine 14.0.7");
   });
 
   it("refuses to replace an existing golden without --replace, and writes nothing", async () => {

@@ -3,20 +3,20 @@
 // SQL Server, robocopy or icacls (baseline-steps.ts). It runs in the captain's elevated session.
 //
 // Secrets: the build's SQL login passwords go only on the `database` step's stdin; the admin password
-// only into the OAuth request body, as its MD5 (as the Aras clients send it). Neither is in an
-// argument list, an environment, a log or the report.
+// only into the OAuth request body, as its MD5 (as the Aras clients send it), and on the engine check's
+// stdin (`aras-pkg --password-stdin`). Neither is in an argument list, an environment, a log or the report.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { win32 } from "node:path";
-import type { BaselinePlan, DenyListSnapshot, IisApplication } from "../core/baseline.js";
+import { ENGINE_CHECK_ITEM, type BaselinePlan, type DenyListSnapshot, type IisApplication } from "../core/baseline.js";
 import { setupRecordFile } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import type { Secret } from "../core/secret.js";
 import { anonymousGet } from "../host/http.js";
-import type { BuildLogins, BuildSystem, CopyResult } from "./baseline-build.js";
+import type { BuildLogins, BuildSystem, CopyResult, EngineExport } from "./baseline-build.js";
 import { RESULT_MARKER, type PsStep } from "./baseline-steps.js";
 import { buildManifest, writeManifestOnce } from "./manifest-fs.js";
 
@@ -24,12 +24,16 @@ import { buildManifest, writeManifestOnce } from "./manifest-fs.js";
 const STEP_TIMEOUT_MS: Readonly<Partial<Record<PsStep, number>>> = { install: 30 * 60_000, remove: 20 * 60_000, "copy-tree": 20 * 60_000 };
 const DEFAULT_STEP_TIMEOUT_MS = 10 * 60_000;
 const HTTP_TIMEOUT_MS = 120_000;
+/** The engine check exports one item: seconds, or a minute on a cold server. */
+const ENGINE_TIMEOUT_MS = 10 * 60_000;
 
 export interface WindowsBuildSystemOptions {
   /** `baseline-steps.ps1` in the bundle. */
   readonly stepsScript: string;
   /** Told each step's stderr line (redacted), for the console. */
   readonly onLog?: (line: string) => void;
+  /** The bundled import-export-libs-js `dist\cli.js`, when the bundle carries one (`--engine-check`). */
+  readonly engineCli?: string;
 }
 
 /** One step: the request on stdin, the marked result line from stdout; a non-zero exit is the step's error line. */
@@ -119,6 +123,50 @@ async function passwordGrant(alias: string, database: string, user: string, pass
   }
 }
 
+/**
+ * `aras-pkg export` of one item under this Node (Windows `node.exe`, where `localhost` is IIS: the server's OAuth
+ * discovery names `http://localhost/...`, spike 07). The password goes on stdin; stdout is the `--json` summary.
+ */
+export function engineExport(cli: string, plan: BaselinePlan, user: string, password: Secret): Promise<EngineExport> {
+  const out = plan.scratch.engineDir;
+  const args = [cli, "export", win32.join(out, "pkg"), ENGINE_CHECK_ITEM, "--engine", plan.libsJsEngine, "--url", `http://localhost/${plan.names.alias}`];
+  args.push("--database", plan.names.database, "--user", user, "--password-stdin", "--log", win32.join(out, "aras-pkg.log"), "--json");
+  return new Promise((resolve, reject) => {
+    mkdir(out, { recursive: true }).then(() => {
+      const child = spawn(process.execPath, args, { cwd: out, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => child.kill(), ENGINE_TIMEOUT_MS);
+      child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+      child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr = (stderr + d).slice(-4096)));
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        let summary: EngineExport["summary"] = null;
+        try {
+          const json = JSON.parse(stdout) as Record<string, unknown>;
+          const str = (k: string) => (typeof json[k] === "string" ? (json[k] as string) : undefined);
+          summary = {
+            ...(str("result") ? { result: str("result") } : {}),
+            ...(str("engine") ? { engine: str("engine") } : {}),
+            ...(str("server") ? { server: str("server") } : {}),
+            ...(typeof json.items === "number" ? { items: json.items } : {}),
+            ...(str("error") ? { error: str("error") } : {}),
+          };
+        } catch {
+          // No summary: reported by exit code.
+        }
+        const last = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).at(-1);
+        resolve({ exitCode: code ?? -1, summary, ...(last ? { lastLine: redact(last).slice(0, 300) } : {}) });
+      });
+      child.stdin.end(`${password.reveal()}\n`);
+    }, reject);
+  });
+}
+
 export function windowsBuildSystem(plan: BaselinePlan, options: WindowsBuildSystemOptions): BuildSystem {
   const step = (name: PsStep, extra: object = {}) => runPsStep(options.stepsScript, name, { flavor: plan.flavor, ...extra }, options.onLog);
   return {
@@ -175,6 +223,10 @@ export function windowsBuildSystem(plan: BaselinePlan, options: WindowsBuildSyst
     get: (url, readBody) => anonymousGet(url, { timeoutMs: HTTP_TIMEOUT_MS, readBody }),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     login: (p, user, password) => passwordGrant(p.names.alias, p.names.database, user, password),
+    async engineExport(p, user, password) {
+      if (!options.engineCli) throw new Error("the bundle carries no engine CLI (write it with --engine-check)");
+      return engineExport(options.engineCli, p, user, password);
+    },
     async serverVersion() {
       const v = (await step("server-version")).version;
       return typeof v === "string" && v.length > 0 ? v : null;

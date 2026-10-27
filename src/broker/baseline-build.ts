@@ -12,6 +12,7 @@ import { randomBytes } from "node:crypto";
 import { win32 } from "node:path";
 import {
   BUILD_STEPS,
+  ENGINE_CHECK_ITEM,
   SHIPPED_ADMIN_LOGIN,
   compareDenyList,
   flavorRecord,
@@ -84,6 +85,21 @@ export function parseLicenceInput(secret: Secret): LicenceInput {
   };
 }
 
+/** What the engine check's `aras-pkg export --json` answered: its exit code and the summary's fields the check reads. */
+export interface EngineExport {
+  readonly exitCode: number;
+  /** Null when standard output held no JSON summary. */
+  readonly summary: {
+    readonly result?: string;
+    readonly engine?: string;
+    readonly server?: string;
+    readonly items?: number;
+    readonly error?: string;
+  } | null;
+  /** The last line the CLI wrote to standard error, redacted: the cause when there is no summary. */
+  readonly lastLine?: string;
+}
+
 export interface CopyResult {
   readonly files: number;
   readonly bytes: number;
@@ -118,6 +134,11 @@ export interface BuildSystem {
   sleep(ms: number): Promise<void>;
   /** An OAuth password grant as `user` against the build's own OAuth server; never returns the token. */
   login(plan: BaselinePlan, user: string, password: Secret): Promise<{ readonly ok: boolean; readonly detail: string }>;
+  /**
+   * The engine check: the bundled import-export-libs-js CLI exports `ENGINE_CHECK_ITEM` from the build instance into
+   * `scratch.engineDir`, logged in as `user` (the password on its standard input), with `plan.libsJsEngine`.
+   */
+  engineExport(plan: BaselinePlan, user: string, password: Secret): Promise<EngineExport>;
   /** `Aras.Server.Core.dll`'s file version, or null when the file is missing. */
   serverVersion(plan: BaselinePlan): Promise<string | null>;
   stopPools(plan: BaselinePlan): Promise<void>;
@@ -142,6 +163,8 @@ export interface BuildOptions {
   readonly inputs?: BuildInputs;
   /** Free disk the build needs at the root (config `min_free_disk_gb`). */
   readonly minFreeDiskGb: number;
+  /** The bundle carries the libs-js CLI (`--engine-check`): after the login, export one item with the flavor's engine. */
+  readonly engineCheck?: boolean;
   /** ISO time the report records as the start; defaults to now. */
   readonly startedAt?: string;
   /** Called with each step's record as it ends, for the console. */
@@ -229,6 +252,7 @@ interface RunState {
   denyBefore: DenyListSnapshot | null;
   logins: BuildLogins | null;
   loginChecked: boolean;
+  engineChecked: boolean;
   tree: { files: number; bytes: number } | null;
   licenceOriginal: Record<"lic_type" | "company", string> | null;
 }
@@ -248,6 +272,7 @@ export async function runBaselineBuild(system: BuildSystem, plan: BaselinePlan, 
     denyBefore: null,
     logins: null,
     loginChecked: false,
+    engineChecked: false,
     tree: null,
     licenceOriginal: null,
   };
@@ -308,7 +333,7 @@ export async function runBaselineBuild(system: BuildSystem, plan: BaselinePlan, 
       });
       return `set the build's SQL passwords${inputs.licence ? " and licence key" : ""} in ${SERVER_CONFIG} (${outcomes})`;
     },
-    verify: () => verify(system, plan, inputs, state),
+    verify: () => verify(system, plan, inputs, options.engineCheck === true, state),
     stop: async () => {
       await system.stopPools(plan);
       return `stopped the ${plan.scratch.poolPrefix}* pools`;
@@ -437,6 +462,7 @@ export async function runBaselineBuild(system: BuildSystem, plan: BaselinePlan, 
     steps,
     goldenHash: state.promoted ? state.goldenHash : null,
     loginChecked: state.loginChecked,
+    engineChecked: state.engineChecked,
     error: failure ? `${failure.step}: ${failure.message}` : null,
     leftovers,
   };
@@ -488,7 +514,7 @@ async function renderConfig(system: BuildSystem, plan: BaselinePlan, edits: Edit
   return `${applied} applied, ${result.outcomes.length - applied} already`;
 }
 
-async function verify(system: BuildSystem, plan: BaselinePlan, inputs: BuildInputs, state: RunState): Promise<string> {
+async function verify(system: BuildSystem, plan: BaselinePlan, inputs: BuildInputs, engineCheck: boolean, state: RunState): Promise<string> {
   const base = `http://localhost/${plan.names.alias}`;
   const problems: string[] = [];
   // DBList.aspx is installed in Innovator\Server, the `/Server` application (the MSI's File table).
@@ -511,8 +537,38 @@ async function verify(system: BuildSystem, plan: BaselinePlan, inputs: BuildInpu
       login = `logged in as ${SHIPPED_ADMIN_LOGIN}`;
     }
   }
+  let engine = "";
+  if (engineCheck && !state.loginChecked) engine = "; engine check skipped: it needs the login";
+  else if (engineCheck && inputs.adminPassword) {
+    let answer: EngineExport;
+    try {
+      answer = await system.engineExport(plan, SHIPPED_ADMIN_LOGIN, inputs.adminPassword);
+    } finally {
+      await system.removeDir(plan.scratch.engineDir);
+    }
+    const problem = engineProblem(answer, plan.libsJsEngine, version);
+    if (problem) problems.push(`engine check: ${problem}`);
+    else {
+      state.engineChecked = true;
+      engine = `; aras-pkg export --engine ${plan.libsJsEngine} of one item succeeded`;
+    }
+  }
   if (problems.length > 0) throw new BuildStepError("verify", problems.join("; "));
-  return `DBList.aspx lists ${plan.names.database}; OAuth discovery answers; server ${version}; ${login}`;
+  return `DBList.aspx lists ${plan.names.database}; OAuth discovery answers; server ${version}; ${login}${engine}`;
+}
+
+/** Why the engine check's export does not prove the engine serves this server, or null when it does. */
+function engineProblem(answer: EngineExport, engine: string, server: string | null): string | null {
+  const s = answer.summary;
+  if (answer.exitCode !== 0 || s?.result !== "success") {
+    const cause = s?.error ?? answer.lastLine;
+    const why = cause ? `: ${redact(cause).slice(0, 300)}` : "";
+    return `aras-pkg export exited ${answer.exitCode}${s?.result ? ` (${s.result})` : ""}${why}`;
+  }
+  if (s.engine !== engine) return `aras-pkg ran engine ${s.engine ?? "(none named)"}, not ${engine}`;
+  if (server !== null && s.server !== server) return `aras-pkg saw server ${s.server ?? "(none named)"}, not ${server}`;
+  if (s.items !== 1) return `aras-pkg exported ${s.items ?? 0} items, not 1`;
+  return null;
 }
 
 /** A freshly installed application can answer 500 or 503 while it first starts: ask again for up to a minute. */
@@ -551,7 +607,7 @@ async function secretsIn(system: BuildSystem, plan: BaselinePlan, tree: string, 
 
 async function removeAll(system: BuildSystem, plan: BaselinePlan): Promise<string[]> {
   const left = [...(await system.removeThrowaway(plan))];
-  for (const dir of [plan.names.dir, plan.scratch.msiDir, plan.scratch.vaultRoot, plan.scratch.candidateDir]) {
+  for (const dir of [plan.names.dir, plan.scratch.msiDir, plan.scratch.vaultRoot, plan.scratch.candidateDir, plan.scratch.engineDir]) {
     try {
       if (await system.exists(dir)) await system.removeDir(dir);
     } catch {

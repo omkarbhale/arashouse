@@ -80,4 +80,42 @@ describeWithLocalDb("setup-sql.ps1 on a throw-away LocalDB instance", { timeout:
     expect(r2.changes).toEqual([]);
     expect(r2.state.signer).toMatchObject({ privateKeyRemoved: true, sameThumbprint: true, login: true });
   });
+
+  it("-Uninstall refuses while a slot database is left, then drops every object it made, and then has nothing to drop", () => {
+    // A slot database the broker owns, made through the procedure as the broker would (the instance's sysadmin impersonates it).
+    const slot = join(dir, "slot-db.ps1");
+    const conn = `Data Source=(localdb)\\${instance};Initial Catalog=master;Integrated Security=SSPI;Pooling=False`;
+    const sql = (text: string) =>
+      `$c = New-Object Data.SqlClient.SqlConnection '${conn}'; $c.Open(); $q = $c.CreateCommand(); $q.CommandText = "${text}"; [void]$q.ExecuteNonQuery(); $c.Dispose()`;
+    const asBroker = (proc: string) => sql(`EXECUTE AS LOGIN = N'NT SERVICE\\ArasHouseBroker'; EXEC arashouse_admin.dbo.${proc} @database = N'arashouse_12sp9_97'; REVERT;`);
+    writeFileSync(slot, `param([string]$Proc)\r\n${asBroker("create_slot_database").replace("create_slot_database", "$Proc")}\r\n`, "ascii");
+    expect(runPs(["-File", toHostPath(slot), "create_slot_database"]).code).toBe(0);
+
+    const dry = runPs(["-File", toHostPath(script), "-Uninstall"]);
+    expect(dry.code).toBe(1);
+    const refused = result(dry.out);
+    expect(refused).toMatchObject({ mode: "uninstall", ok: false, planned: [], changes: [] });
+    expect(refused.state.slotDatabases).toEqual(["arashouse_12sp9_97"]);
+    expect(refused.errors.join(" ")).toContain("refused: slot databases are left: arashouse_12sp9_97");
+    const refusedApply = result(runPs(["-File", toHostPath(script), "-Uninstall", "-Apply"]).out);
+    expect(refusedApply).toMatchObject({ ok: false, changes: [] });
+    expect(refusedApply.state).toMatchObject({ adminDatabase: true, poolLogin: true, signerLogin: true, masterCertificate: true });
+
+    expect(runPs(["-File", toHostPath(slot), "drop_slot_database"]).code).toBe(0);
+    const plan = result(runPs(["-File", toHostPath(script), "-Uninstall"]).out);
+    expect(plan).toMatchObject({ ok: true, applied: false, changes: [] });
+    expect(plan.planned).toHaveLength(4);
+
+    const apply = runPs(["-File", toHostPath(script), "-Uninstall", "-Apply"], 300_000);
+    expect(apply.err).toBe("");
+    expect(apply.code).toBe(0);
+    const removed = result(apply.out);
+    expect(removed.changes).toHaveLength(4);
+    expect(removed.state).toMatchObject({ slotDatabases: [], slotLogins: [], adminDatabase: false, poolLogin: false, signerLogin: false, masterCertificate: false });
+    expect(existsSync(join(rootOnWsl, "sqldata", "arashouse_admin.mdf"))).toBe(false);
+
+    const again = runPs(["-File", toHostPath(script), "-Uninstall", "-Apply"]);
+    expect(again.code).toBe(0);
+    expect(result(again.out)).toMatchObject({ ok: true, changes: [], planned: [] });
+  });
 });

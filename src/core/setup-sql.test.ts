@@ -11,6 +11,7 @@ import {
   SQL_ERRORS,
   checkSqlLogin,
   databasePatterns,
+  likeAny,
   loginPatterns,
   negativeDatabaseNames,
   negativeLoginNames,
@@ -232,13 +233,27 @@ describe("setup-sql.ps1", () => {
 
   it("lists databases only by the arashouse_ filter, and names each other database it reads", () => {
     for (const m of script.matchAll(/FROM sys\.databases([^\n]*)/g)) {
-      expect(m[1], m[0]).toMatch(/WHERE (name LIKE N'arashouse\[_\]%'|name = @db|owner_sid = |database_id = DB_ID\(|name IN )| d JOIN STRING_SPLIT/);
+      // \$SlotDatabaseFilter is the slot databases' own patterns (likeAny, checked in the -Uninstall test below).
+      expect(m[1], m[0]).toMatch(/WHERE (name LIKE N'arashouse\[_\]%'|name = @db|owner_sid = |database_id = DB_ID\(|name IN |\{0\} ORDER BY name" -f \$SlotDatabaseFilter)| d JOIN STRING_SPLIT/);
     }
+    expect(script).toContain(`$SlotDatabaseFilter = '${likeAny("name", databasePatterns()).replace(/'/g, "''")}'`);
     expect(script).toContain("SELECT name FROM sys.databases WHERE name LIKE N'arashouse[_]%' ORDER BY name");
   });
 
   it("changes nothing outside an Invoke-Change block", () => {
-    const changers = ["New-PoolLogin", "Enable-PoolLogin", "New-AdminDatabase", "Set-AdminDatabaseSafe", "Set-PoolUser", "Build-Procedures", "Grant-Procedures"];
+    const changers = [
+      "New-PoolLogin",
+      "Enable-PoolLogin",
+      "New-AdminDatabase",
+      "Set-AdminDatabaseSafe",
+      "Set-PoolUser",
+      "Build-Procedures",
+      "Grant-Procedures",
+      "Remove-AdminDatabase",
+      "Remove-SignerLogin",
+      "Remove-MasterCertificate",
+      "Remove-PoolLogin",
+    ];
     for (const fn of changers) {
       const uses = script.split("\n").filter((l) => l.includes(fn) && !l.startsWith(`function ${fn}`));
       expect(uses.length, fn).toBeGreaterThan(0);
@@ -247,7 +262,32 @@ describe("setup-sql.ps1", () => {
     // The checks write only the self-test's and the negative test's own throw-away names.
     const drops = script.split("\n").filter((l) => /DROP (DATABASE|LOGIN)/.test(l) && l.includes("Invoke-Sql"));
     expect(drops.length).toBeGreaterThan(0);
-    for (const l of drops) expect(l).toMatch(/\$Signer|\$SelfTestLogin|\$SelfTestDatabase|\$NegativeDatabase|DROP PROCEDURE/);
+    for (const l of drops) expect(l).toMatch(/\$Signer|\$SelfTestLogin|\$SelfTestDatabase|\$NegativeDatabase|\$AdminDatabase|\$PoolLogin|DROP PROCEDURE/);
+  });
+
+  it("-Uninstall drops only the objects -Apply made, and refuses while a slot's database or login is left (ticket 49)", () => {
+    expect(script).toMatch(/param\(\s*\[switch\]\$Apply,\s*\[switch\]\$SelfTest,\s*\[switch\]\$Uninstall\s*\)/);
+    expect(script).toContain("if ($Uninstall -and $SelfTest) { Fail 2 '-Uninstall takes only -Apply' }");
+    // Each drop names one of the script's own objects, and nothing else.
+    const bodyOf = (fn: string) => script.slice(script.indexOf(`function ${fn}`), script.indexOf("\n}\n", script.indexOf(`function ${fn}`)));
+    expect(bodyOf("Remove-AdminDatabase")).toMatch(/DROP DATABASE \[\{0\}\];' -f \$AdminDatabase\)$/m);
+    expect(bodyOf("Remove-SignerLogin")).toContain("('DROP LOGIN [{0}];' -f $Signer)");
+    expect(bodyOf("Remove-MasterCertificate")).toContain("('DROP CERTIFICATE [{0}];' -f $Signer)");
+    expect(bodyOf("Remove-PoolLogin")).toContain("SELECT QUOTENAME(@login)' @{ login = $PoolLogin }");
+    expect(bodyOf("Remove-PoolLogin")).toContain("KILL {0};' -f [int]$spid");
+    // The refusal: slot databases and logins by the procedures' own patterns, read in a binary collation.
+    const uninstall = bodyOf("Invoke-Uninstall");
+    expect(uninstall.indexOf("if ($blocked.Count -gt 0)")).toBeLessThan(uninstall.indexOf("Invoke-Change"));
+    expect(uninstall).toContain("return $state\n    }");
+    for (const p of [...databasePatterns(), ...loginPatterns()]) expect(script).toContain(`name COLLATE Latin1_General_BIN2 LIKE N''${p}''`);
+    expect(bodyOf("Get-UninstallState")).toContain("SELECT name FROM sys.databases WHERE {0} ORDER BY name\" -f $SlotDatabaseFilter");
+    expect(bodyOf("Get-UninstallState")).toContain("SELECT name FROM sys.server_principals WHERE {0} ORDER BY name\" -f $SlotLoginFilter");
+    // An arashouse_admin whose data file is elsewhere is not the one this script made: refused, not dropped.
+    expect(uninstall).toContain("$state.adminDataFile -ne $AdminDataFile");
+    // The uninstall branch ends the script before the install's changes and checks.
+    const branch = script.indexOf("if ($Uninstall) {\n    $state = $null");
+    expect(branch).toBeGreaterThan(-1);
+    expect(script.indexOf("exit 0", branch)).toBeLessThan(script.indexOf("$state = Get-State\n", branch));
   });
 
   it("gives a secret of the run only to SQL as a parameter, and redacts it from errors", () => {

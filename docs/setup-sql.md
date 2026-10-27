@@ -28,6 +28,7 @@ in SQL Server.
    powershell -NoProfile -ExecutionPolicy Bypass -File "<dir>\setup-sql.ps1"                    # the facts and the plan
    powershell -NoProfile -ExecutionPolicy Bypass -File "<dir>\setup-sql.ps1" -Apply             # make the changes, then check them
    powershell -NoProfile -ExecutionPolicy Bypass -File "<dir>\setup-sql.ps1" -Apply -SelfTest   # ... and a round trip as the broker
+   powershell -NoProfile -ExecutionPolicy Bypass -File "<dir>\setup-sql.ps1" -Uninstall [-Apply] # drop it all again (below)
    ```
 
 3. From WSL: `arashouse doctor`. The `sql` and `sql login` checks should pass. `sql login` needs a broker built
@@ -175,8 +176,19 @@ by the worker, non-elevated:
 - `arashouse doctor`: `sql` ok, and `sql login`: `NT SERVICE\ArasHouseBroker is neither sysadmin nor dbcreator,
   and executes the 5 arashouse_admin procedures`.
 
+## Uninstall
+
+`setup-sql.ps1 -Uninstall` (a dry run) and `-Uninstall -Apply` drop what `-Apply` created, and nothing else: the
+database `arashouse_admin` (and with it the user `arashouse_pool`, the five procedures and the certificate in it), the
+certificate's login `arashouse_admin_signer`, the certificate's copy in `master`, and last the broker's login, after
+ending its sessions (each broker call opens one). It refuses, with nothing dropped, while a slot's database or login is
+left (matched by the procedures' own patterns, in a binary collation), while the broker's login owns any database, or
+when `arashouse_admin`'s data file is not the one this script puts under `sqldata\`. A second run has nothing to drop.
+The result's `mode` is `uninstall`. `arashouse teardown` (ticket 49, `docs/teardown.md`) runs it from its own script,
+after it has destroyed the slots. Rehearsed on LocalDB (2026-10-28, `test/setup-sql.test.ts`): refused while a slot
+database the broker made through `create_slot_database` was left, then the four drops, then nothing to drop.
+
 ## Not here
 
 Using the procedures: provisioning (ticket 25), the reset's restore and fix-ups (ticket 31). The baseline build's
 database `arashouse_build_<key>` (ticket 24) is created in the captain's own session, not through these procedures.
-Removing these objects is ticket 49's `teardown`.

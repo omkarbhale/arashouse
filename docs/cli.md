@@ -28,6 +28,7 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 | `arashouse repair <slot> [--rebuild]` | Resets a quarantined slot from golden; the way out of `quarantined`. |
 | `arashouse destroy <slot> [--yes] [--include-leased]` | Removes a slot from the host and the pool. |
 | `arashouse prune [--yes]` | Destroys the `disabled` and orphaned slots. |
+| `arashouse teardown [--goldens] [--keep-sql] [--remove-root] [--include-leased <slot>...] [--yes] [--out <dir>]` | Removes the whole pool, then writes the script the captain runs elevated to remove the SQL objects, the broker and (as asked) the goldens and the root (`docs/teardown.md`). |
 | `arashouse force-return <slot> --lease-id <lease> [--yes]` | Returns the lease of a holder that crashed. |
 | `arashouse disable <slot>`, `arashouse enable <slot>` | Takes a slot out of rotation, or puts it back. |
 | `arashouse help [<command>]`, `<command> --help` | Help for the tool or one command. |
@@ -113,7 +114,7 @@ expiry (the captain's answer 5).
 
 What a person, or firstmate, uses when something is wrong. Source: `src/core/operator.ts`.
 
-- **Destructive commands are dry runs unless `--yes` is given**: `destroy`, `prune`, `force-return`,
+- **Destructive commands are dry runs unless `--yes` is given**: `destroy`, `prune`, `teardown`, `force-return`,
   the orphan removal of `doctor --fix` and `doctor --rebuild-state`. A dry run prints what it would do
   and `dry run: nothing was changed; run again with --yes to do it`, and exits 0.
 - **A command names a slot only by its id** (`23-01`, as `status` shows it). A deny-listed name
@@ -192,6 +193,16 @@ Lists, and with `--yes` destroys, the slots that are `disabled` and the orphans.
 lease has no expiry. An orphan whose stamp names a lease is listed and left alone. A slot that was
 enabled, or given a record, after it was listed is skipped.
 
+### `teardown [--goldens] [--keep-sql] [--remove-root] [--include-leased <slot>...] [--yes] [--out <dir>]`
+
+Removes the whole pool (ticket 49, `docs/teardown.md`). It destroys every slot, the state's and the
+orphans the host lists, as `destroy` does one, and writes `teardown.ps1` to `<dir>` (default:
+`arashouse-teardown` in the Windows temp folder) for the captain to run elevated. A leased slot is refused
+(exit 7) unless every leased slot is named after `--include-leased`; naming one that is not leased is
+exit 2. A slot whose reset is running is refused. Both refusals come before anything is destroyed. With
+`--yes` the bundle is written first, so a failure there changes nothing. `--remove-root` needs
+`--goldens` and does not go with `--keep-sql` (exit 2).
+
 ### `force-return <slot> --lease-id <lease> [--yes]`
 
 The operator's `return`, for a holder that crashed. `<lease>` is the `LEASE` column of `status`
@@ -221,12 +232,12 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 |---|---|
 | 0 | ok (including `already returned`) |
 | 1 | any other failure; `doctor` found a check that failed and was not fixed |
-| 2 | usage: an unknown command, option or flavor, a missing argument, `return` by slot name without `--if-lease-id`, a slot that is not a slot id |
+| 2 | usage: an unknown command, option or flavor, a missing argument, `return` by slot name without `--if-lease-id`, a slot that is not a slot id, `teardown` options that do not go together |
 | 3 | no slot available: none of the flavor is free, or the governor refused (`max_active`, `min_free_ram_mb`; `docs/governor.md`) |
 | 4 | lease mismatch: `return --if-lease-id` or `force-return --lease-id` named a lease the slot no longer holds; `run` on a lease that is not held, or whose password is gone |
 | 5 | reset failed: the slot is quarantined or disabled, or `return --wait` timed out; `reset-worker` or `repair` quarantined its slot |
 | 6 | host unreachable (the host or broker did not answer) |
-| 7 | refused by a guard: the name is not one arashouse owns, or is on the deny-list; or an operator command the slot's status does not allow (destroying a leased slot, repairing one that is not quarantined), or `repair --rebuild` under the disk gate |
+| 7 | refused by a guard: the name is not one arashouse owns, or is on the deny-list; or an operator command the slot's status does not allow (destroying a leased slot, a `teardown` while a slot is leased, repairing one that is not quarantined), or `repair --rebuild` under the disk gate |
 | 8 | a step needs a secret and no terminal can ask for it |
 | 127 | `run` could not start its command |
 

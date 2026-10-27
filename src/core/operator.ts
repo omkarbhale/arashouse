@@ -89,7 +89,7 @@ function poolConfig(deps: OperatorDeps): ArashouseConfig {
   return deps.reset.config ?? DEFAULT_CONFIG;
 }
 
-function workerAlive(deps: OperatorDeps): ResetWorkerAlive {
+export function workerAlive(deps: OperatorDeps): ResetWorkerAlive {
   return deps.reset.isWorkerAlive ?? isResetWorkerAlive;
 }
 
@@ -140,14 +140,14 @@ export function operatorSlot(arg: unknown): SlotRef {
   }
 }
 
-interface HostSlots {
+export interface HostSlots {
   /** The host's slots by id, each rebuilt from its id so nothing the host sent is passed back. */
   readonly slots: ReadonlyMap<string, ListedSlot>;
   /** Entries that are not a slot of a registered flavor, or repeat one: never acted on. */
   readonly ignored: number;
 }
 
-async function hostSlots(host: Pick<HostDriver, "listSlots">): Promise<HostSlots> {
+export async function hostSlots(host: Pick<HostDriver, "listSlots">): Promise<HostSlots> {
   const slots = new Map<string, ListedSlot>();
   let ignored = 0;
   for (const listed of (await host.listSlots()).slots) {
@@ -168,7 +168,7 @@ async function hostSlots(host: Pick<HostDriver, "listSlots">): Promise<HostSlots
   return { slots, ignored };
 }
 
-function ignoredLine(count: number): string {
+export function ignoredLine(count: number): string {
   return `ignored ${count} entr${count === 1 ? "y" : "ies"} the host listed that ${count === 1 ? "is not an arashouse slot" : "are not arashouse slots"}`;
 }
 
@@ -297,15 +297,15 @@ function removalSummary(ref: SlotRef): string {
   ].join(", ");
 }
 
-interface DestroyOptions {
+export interface DestroyOptions {
   readonly yes: boolean;
   readonly includeLeased: boolean;
   /** For `prune` and `doctor --fix`: destroy only while the slot is still disabled, or still has no record. */
   readonly only?: "disabled" | "orphan";
 }
 
-/** Destroys one slot, whose host entry (if any) the caller listed just before. */
-async function destroyOne(deps: OperatorDeps, ref: SlotRef, onHost: ListedSlot | undefined, options: DestroyOptions): Promise<OperatorResult> {
+/** Destroys one slot, whose host entry (if any) the caller listed just before (also `teardown`'s, teardown.ts). */
+export async function destroyOne(deps: OperatorDeps, ref: SlotRef, onHost: ListedSlot | undefined, options: DestroyOptions): Promise<OperatorResult> {
   const id = slotId(ref);
   const alive = workerAlive(deps);
   /** Why the slot is skipped (prune and doctor only), or undefined; throws when the slot must not be destroyed. */

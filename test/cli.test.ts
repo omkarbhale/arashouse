@@ -420,6 +420,41 @@ describe("operator commands (ticket 16)", () => {
     expect(existsSync(join(home, "leases", grant.lease_id))).toBe(false);
   });
 
+  it("teardown is a dry run without --yes, refuses a leased slot unless named, and checks its options (ticket 49)", async () => {
+    await seed({ "23": 2 });
+    const grant = await lease("23");
+    const slots = async () => (JSON.parse((await cli(["status", "--json"])).stdout).slots as { slot: string; status: string }[]).map((s) => `${s.slot} ${s.status}`);
+    const before = await slots();
+
+    const refused = await cli(["teardown"]);
+    expect(refused.code).toBe(EXIT_CODES.refused);
+    expect(refused.stderr).toContain(`teardown refuses while slots are leased: ${grant.slot} (to task-a)`);
+
+    const dry = await cli(["teardown", "--goldens", "--include-leased", grant.slot]);
+    expect(dry.code, dry.stderr).toBe(0);
+    expect(dry.stdout).toMatch(/^would destroy 23-01: its record \(leased\); application ah-23-01, /m);
+    expect(dry.stdout).toMatch(/^would destroy 23-02: its record \(free\); /m);
+    expect(dry.stdout).toContain("then, elevated, teardown.ps1");
+    expect(dry.stdout).toContain("  remove the goldens: C:\\aras_installations\\golden\\12sp9, ");
+    expect(dry.stdout).toContain("dry run: nothing was changed; run again with --yes to do it");
+    expect(dry.stdout).toContain("with --yes it first writes teardown.ps1 and the two scripts it runs to arashouse-teardown in the Windows temp folder");
+    expect(await slots()).toEqual(before);
+
+    for (const [args, message] of [
+      [["teardown", "23-01"], 'teardown names slots only after --include-leased, not "23-01"'],
+      [["teardown", "--include-leased"], "--include-leased needs the exact name of every leased slot"],
+      [["teardown", "--include-leased", grant.slot, "23-02"], "--include-leased names 23-02, which is not a leased slot of the pool"],
+      [["teardown", "--remove-root"], "--remove-root removes golden\\ too: give --goldens with it"],
+      [["teardown", "--goldens", "--remove-root", "--keep-sql"], "it cannot go with --keep-sql"],
+    ] as const) {
+      const r = await cli(args);
+      expect(r.code, args.join(" ")).toBe(EXIT_CODES.usage);
+      expect(r.stderr).toContain(message);
+    }
+    expect((await cli(["teardown", "--include-leased", "OLM_Local"])).code).toBe(EXIT_CODES.refused);
+    expect(await slots()).toEqual(before);
+  });
+
   it("provision makes the missing slots of a flavor, in order, and leaves the pool's own alone (ticket 25)", async () => {
     const first = await cli(["provision", "23", "2"]);
     expect(first.code).toBe(0);
@@ -505,9 +540,9 @@ describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
-    const commands = ["get", "return", "status", "flavors", "run", "setup", "setup-sql", "doctor", "provision", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
+    const commands = ["get", "return", "status", "flavors", "run", "setup", "setup-sql", "doctor", "provision", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable", "help", "version"];
     for (const command of commands) expect(overview.stdout).toContain(`  ${command}`);
-    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable"]) {
+    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable"]) {
       const r = await cli([command, "--help"]);
       expect(r.code, command).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));

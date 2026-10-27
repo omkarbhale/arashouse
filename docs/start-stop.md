@@ -69,6 +69,22 @@ Through firstmate's elevated gate, `setup-host.ps1 -Apply -UpdateBroker` install
 The warm-up runs on the broker, so it does not depend on reaching the slot from WSL; in this run the WSL-side address
 discovery (`docs/slot-url.md`) found no address that answered, which is the health check's concern (ticket 32).
 
+## Measured with the agent (2026-10-28, ticket 33b)
+
+After the `12sp9` golden was rebuilt with the agent and a broker built from ticket 33b installed (`setup-host.ps1 -Apply
+-UpdateBroker`, exit 0), as the worker from WSL, non-elevated, through `BrokerHost` on the throw-away slot `12sp9-97`:
+
+- `provisionSlot`: 26.7 s (agent 2.9 s; configs: 9 files, 21 edits). `ArasHouseAgent_12sp9_97` exists, stopped,
+  `DEMAND_START`, `LocalSystem`, running `C:\aras_installations\slots\12sp9\97\AgentService\Aras.Server.Agent.Service.exe`.
+  The slot's agent config names `http://localhost:8897/ah-12sp9-97` and the slot's server, and its server config's
+  `<AgentService InnovatorToServiceAddress>` the same address; the commented-out HTTPS block is as shipped.
+- `startSlot` without the agent: 11.1 s, all three warm; the agent stays stopped.
+- `stopSlot`: 9.1 s, "agent stopped".
+- `startSlot` with the agent: 4.6 s, "agent ArasHouseAgent_12sp9_97 running on port 8897", and its health URL
+  `http://localhost:8897/ah-12sp9-97?wsdl` answered 200 (with the three warm-ups); the service runs.
+- `stopSlot`: 7.5 s; the service is stopped. `destroySlot`: 12.1 s (agent 1.0 s); the service and the slot folder are
+  gone; the provision's and the destroy's deny-list checks found every object unchanged.
+
 ## Not here
 
 - `sc sdset` with `(A;;LCRPWP;;;<user SID>)` would let a non-admin start and stop a slot's service without the broker

@@ -62,8 +62,8 @@ export const PS_IIS = `function Get-Iis {
  * captain's install roots (their config's SHA-256), every IIS application and pool not named `ah-*` (settings and
  * members), the agent services of the deny-list, and the Aras products registered outside the root. Names and
  * hashes only; databases are not listed (the tool creates and drops only its own). `$OwnServices` names the deny-listed
- * services the script itself makes and removes, left out: the build's `ArasInnovatorAgent_ah-build-<key>` (ticket 33b),
- * none for a slot. Needs `PS_PATHS_AND_PRINTS` and `PS_IIS`.
+ * services arashouse itself makes and removes, left out: the builds' `ArasInnovatorAgent_ah-build-<key>` (ticket 33b),
+ * the build's own in `baseline-steps.ps1`, all three in `slot-steps.ps1` (a provision may overlap a build). Needs `PS_PATHS_AND_PRINTS` and `PS_IIS`.
  */
 export const PS_DENY_LIST_PRINTS = `function Get-DenyListPrints {
     $prints = [ordered]@{}

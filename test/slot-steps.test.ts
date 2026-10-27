@@ -141,8 +141,9 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain('New-Service -Name $Service -BinaryPathName $command -StartupType Manual');
   });
 
-  it("shares the deny-list fingerprints with the baseline build, leaving no service out", () => {
-    expect(steps).toContain("$OwnServices = @()");
+  it("shares the deny-list fingerprints with the baseline build, leaving out only the builds' own agent services", () => {
+    // A build's ArasInnovatorAgent_ah-build-<key> comes and goes while a provision or destroy may run.
+    expect(steps).toContain("$OwnServices = @('ArasInnovatorAgent_ah-build-12sp9', 'ArasInnovatorAgent_ah-build-23', 'ArasInnovatorAgent_ah-build-35')");
     expect(steps).toContain(PS_DENY_LIST_PRINTS);
     expect(renderBuildStepsScript()).toContain(PS_DENY_LIST_PRINTS);
     expect(steps).toContain("Write-Result @{ prints = (Get-DenyListPrints) }");

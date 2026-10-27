@@ -24,6 +24,7 @@ import {
   SLOT_POOL_IDLE_MINUTES,
   STAMP_FILE_NAME,
   agentServiceName,
+  buildScratch,
   databaseFiles,
   databaseName,
   goldenDir,
@@ -124,8 +125,9 @@ $MarkerAt = ${psQuote(DATABASE_MARKER.resetAt)}
 $PoolIdentities = @('ApplicationPoolIdentity', 'NetworkService', 'LocalService')
 $DeniedRoots = ${list(DENIED_INSTALL_ROOTS)}
 $DeniedServicePrefixes = ${list(DENIED_SERVICE_PREFIXES)}
-# No deny-listed service is the broker's: every one is fingerprinted.
-$OwnServices = @()
+# The baseline builds' own agent services (ArasInnovatorAgent_ah-build-<key>, ticket 33b) come and go while a build runs, which a
+# provision or destroy may overlap; they are arashouse's, so the fingerprints leave out those exact names and nothing else.
+$OwnServices = ${list(FLAVOR_KEYS.map((key) => buildScratch(key, r).agent.service))}
 
 function Stop-Step([string]$Message) { [Console]::Error.WriteLine("error: $Message"); exit 1 }
 function Write-Result($Value) { [Console]::Out.WriteLine(${psQuote(RESULT_MARKER)} + (ConvertTo-Json -InputObject $Value -Depth 8 -Compress)) }

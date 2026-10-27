@@ -123,8 +123,10 @@ The service's name matches the deny-list prefix `ArasInnovatorAgent_`, so the bu
 it, as its own: the fingerprints (below) leave it out, the survey reports it by name (so a leftover is found and a
 build refuses to start over it), `verify` starts it only by that name and only when its executable is in the build
 folder, `stop` and `remove` stop it through the service manager (the MSI sets it to restart when its process ends) and
-`remove` deletes it by that name if the uninstall did not. No other guard is loosened, and no slot service is ever
-named `ArasInnovatorAgent_*`.
+`remove` deletes it by that name if the uninstall did not. A provision's or destroy's fingerprints (`slot-steps.ps1`)
+leave out the three build names as well, since one may run while a build has its agent: without that, a provision
+overlapping a build was quarantined for a "new" deny-listed service. No other guard is loosened, and no slot service is
+ever named `ArasInnovatorAgent_*`.
 
 `service.json`:
 
@@ -326,6 +328,21 @@ blank-secrets 0, capture-tree 22.5, capture-db 1.3, metadata 0, **manifest 236.9
 
 From WSL as the worker, through the broker: `arashouse baseline verify 35` passed in 1.9 s (golden level, 23,536
 files), `--full` in 28.0 s the first time and 8.0 s warm, and `arashouse doctor` reports `ok baseline 35`.
+
+## Measured: the goldens with the agent (2026-10-28, ticket 33b)
+
+Each rebuilt with `-Apply -Replace` through firstmate's elevated gate (the captain's Windows login, no prompt), without
+the login check (no licence in a gate run), from the same media as before.
+
+**`12sp9`**: one run, 786 s, `leftovers: []`. Step by step (seconds): preflight 2.5, snapshot 1.4 (35 objects),
+msi-copy 4.9, msi-cost 8.9, **install 128.8** (MSI exit 0, the agent's service made and started by the MSI), pools
+66.4, database 1.8, configure 0, verify 15.9, stop 7.5, blank-secrets 0, capture-tree 17.2, capture-db 0.8, metadata
+0, **manifest 277.2**, promote 4.4, **remove 184.0**, deny-list 1.9 (all 35 unchanged), seal 62.3. `verify`: "agent
+ArasInnovatorAgent_ah-build-12sp9 (AgentService\Aras.Server.Agent.Service.exe, Auto) answers
+http://localhost:8800/ah-build-12sp9?wsdl with 200". Tree 23,818 files, 560.7 MB; **manifest 23,815 files, hash
+`d30c857941e3dc815e3e881a33ca7581a30618d6cf68cc6a2c413f58a9dfff3a`** (55 files and 3.3 MB more than the golden without the agent). `ootb.bak`
+77.1 MB. `service.json`: `installed: true`, `binaryPath` `AgentService\Aras.Server.Agent.Service.exe`, `startMode`
+`Auto`, `arguments: null`. The manifest leaves out the same 3 runtime files as before: the agent writes nothing into its tree.
 
 ## For later tickets
 

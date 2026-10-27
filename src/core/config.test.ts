@@ -56,7 +56,7 @@ describe("parseConfig", () => {
 
   it.each<[string, unknown, RegExp]>([
     ["an array", [], /not a JSON object/],
-    ["an unknown key, so nothing else can be kept there", { sa_password: "x" }, /unknown key "sa_password"/],
+    ["an unknown key, so nothing else can be kept there", { licence_key: "x" }, /unknown key "licence_key"/],
     ["max_active 0", { max_active: 0 }, /max_active must be a whole number from 1 up/],
     ["a fractional max_resets", { max_resets: 1.5 }, /max_resets/],
     ["a negative RAM floor", { min_free_ram_mb: -1 }, /min_free_ram_mb/],

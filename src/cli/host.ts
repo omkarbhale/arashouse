@@ -64,6 +64,7 @@ function unavailable(): Promise<never> {
 
 /** Stands in for the broker client until it exists: every call fails `Unreachable`. */
 const brokerHost: CliHost = {
+  hostInfo: unavailable,
   readStamp: unavailable,
   writeStamp: unavailable,
   healthCheck: unavailable,

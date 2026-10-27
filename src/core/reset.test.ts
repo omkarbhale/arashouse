@@ -183,6 +183,9 @@ describe("the reset worker", () => {
     const slot = await p.status("23-01");
     expect(slot).toMatchObject({ status: "free", golden_hash: fakeGoldenHash("23"), last_reset_ms: 12_000 });
     expect(slot?.reset).toBeUndefined();
+    // The event log carries each step's seconds, for the record of a reset on the host (ticket 35).
+    const freed = (await p.store.events()).filter((e) => e.slot === "23-01" && e.to === "free").at(-1);
+    expect(freed?.reason).toMatch(/^reset: golden [\d.]+ s, quiesce [\d.]+ s, database [\d.]+ s, tree [\d.]+ s, start [\d.]+ s, health [\d.]+ s$/);
     expect(atGolden(p, "23-01")).toBe(true);
     expect(p.host.inspect(parseSlotId("23-01"))?.stamp?.leaseId).toBeNull();
   });

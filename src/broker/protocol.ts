@@ -27,9 +27,10 @@ export const DEFAULT_VERB_TIMEOUT_MS = 30_000;
 
 /**
  * The verbs that are not host-driver methods: no WSL caller sends them. `storeLicence` is sent by the captain's
- * elevated `scripts/store-licence.ps1` on Windows (ticket 34b, docs/secrets.md).
+ * elevated `scripts/store-licence.ps1` on Windows (ticket 34b, docs/secrets.md), `storeOotbRoot` by
+ * `scripts/store-ootb-root.ps1` (ticket 35, docs/health.md).
  */
-export const HOST_SIDE_VERBS = ["storeLicence"] as const;
+export const HOST_SIDE_VERBS = ["storeLicence", "storeOotbRoot"] as const;
 /** Every verb the broker can serve: the host-driver methods and the host-side verbs. */
 export type BrokerVerb = HostMethod | (typeof HOST_SIDE_VERBS)[number];
 

@@ -61,8 +61,21 @@ lease, so it cannot change a leaseholder's password. A destroy deletes the store
 (`licence-12`, `licence-14`), no slot of it renders one and its server refuses every login, with any password; the check
 then passes as `not checked: no licence key is stored for line 12, ...` rather than logging in. Once a key is stored,
 every login check runs, and it fails (and quarantines) when neither password works. The whole `<License>` element is
-stored by `scripts/store-licence.ps1` (ticket 34b, `docs/secrets.md`); storing the golden backup's `root` password
-(`ootb-root-<key>`) is ticket 35's, so until it lands a slot of a line with a stored licence fails its login check.
+stored by `scripts/store-licence.ps1` (ticket 34b, `docs/secrets.md`); the golden backup's `root` password
+(`ootb-root-<key>`) by `scripts/store-ootb-root.ps1` (ticket 35, below). Until both are stored for a flavor, a slot of a
+line with a stored licence fails its login check.
+
+### Storing the golden backup's password
+
+`scripts/store-ootb-root.ps1 -Flavor <key> -PasswordFile <file> -Apply`, elevated (the captain or firstmate's gate), reads
+the password from a file of `ConvertFrom-SecureString` output that only the captain's Windows user can decrypt (the one
+the baseline build's `-AdminPasswordFile` takes, such as the spike's `C:\aras_installations\spike\handoff\aras.dpapi`)
+and sends it on the broker client's stdin to the `storeOotbRoot` verb (`src/broker/ootb-root.ts`), which stores it as
+`ootb-root-<key>` in the host's DPAPI store. It is a `Secret` from the moment the broker reads it; the verb answers
+with the flavor only, the audit log records the verb and outcome, and the script prints only `stored the golden backup's
+root password for <key>` or an error that names no value. Without `-Apply` it prints the plan and reads nothing. Exit 0
+stored, 1 the broker refused or failed, 2 a wrong parameter or precondition (nothing sent), 6 the broker could not be
+reached.
 
 ## Dirty detection in `get`
 

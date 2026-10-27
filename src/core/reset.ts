@@ -232,7 +232,17 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
     },
   };
 
+  /** Each step's seconds on the clock, its retry included: the event log's breakdown of a reset that ends free. */
+  const timings: string[] = [];
   const runStep = async (step: ResetStep): Promise<StepResult> => {
+    const stepStarted = now().getTime();
+    try {
+      return await attemptStep(step);
+    } finally {
+      timings.push(`${step} ${(Math.max(0, now().getTime() - stepStarted) / 1000).toFixed(1)} s`);
+    }
+  };
+  const attemptStep = async (step: ResetStep): Promise<StepResult> => {
     let failure = "";
     let unreachable = false;
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -270,7 +280,7 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
     const reason = "the golden changed during the reset";
     return settle({ to: "dirty" }, reason, { kind: "dirty", slot: slot.id, reason });
   }
-  return settle({ to: "free", golden_hash: (golden as GoldenSet).tree.hash, reset_ms: ms }, "reset", { kind: "free", slot: slot.id, ms });
+  return settle({ to: "free", golden_hash: (golden as GoldenSet).tree.hash, reset_ms: ms }, `reset: ${timings.join(", ")}`, { kind: "free", slot: slot.id, ms });
 }
 
 function notOk(detail: string): HostResult {

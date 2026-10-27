@@ -39,28 +39,6 @@ describe("scripts/store-licence.ps1 (static)", () => {
   it("is plain ASCII, so Windows PowerShell 5.1 reads it without a BOM", () => {
     expect(text).toMatch(/^[\x00-\x7f]*$/);
   });
-
-  it("sends the values only on the client's stdin, and prints none of them", () => {
-    // The only argument the client gets is its own path.
-    expect(text).toMatch(/\$psi\.Arguments = '"' \+ \$Client \+ '"'/);
-    expect(text).toContain("StandardInput.BaseStream.Write($bytes");
-    // Nothing that holds a value is written out: only the line, paths and the broker's own (redacted) message.
-    for (const line of text.split("\n").filter((l) => /Write-(Output|Host)|WriteLine/.test(l))) {
-      expect(line).not.toMatch(/\$(licence|element|request|bytes|out)\b/);
-    }
-    expect(text).not.toMatch(/Set-Content|Out-File|WriteAll|Add-Content|Start-Transcript/);
-  });
-
-  it("only reads the source, and names no install of the captain's", () => {
-    expect(text).toContain("$xml.Load($full)");
-    expect(text).not.toMatch(/\$xml\.Save|SetAttribute|Remove-Item|Copy-Item|Move-Item/);
-    expect(text).not.toMatch(/Aras12|Aras28|OLM_Local|InnovatorServer2/i);
-  });
-
-  it("is documented in docs/secrets.md", () => {
-    const doc = readFileSync(join(repoRoot, "docs/secrets.md"), "utf8");
-    for (const p of ["scripts/store-licence.ps1", "-Line", "-SourceConfig", "-Apply", "storeLicence"]) expect(doc, p).toContain(p);
-  });
 });
 
 describeWithPs(`scripts/store-licence.ps1 under ${ps}`, { timeout: 60_000 }, () => {

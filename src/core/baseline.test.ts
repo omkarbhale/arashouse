@@ -17,6 +17,7 @@ describe("the baseline plan", () => {
       vaultRoot: "C:\\aras_installations\\golden-build\\12sp9.vault",
       candidateDir: "C:\\aras_installations\\golden-build\\12sp9.golden",
       retiredDir: "C:\\aras_installations\\golden-build\\12sp9.old",
+      promotingMarker: "C:\\aras_installations\\golden-build\\12sp9.promoting",
       bundleDir: "C:\\aras_installations\\staging\\baseline-12sp9",
     });
     expect(plan.databaseFiles).toEqual({ data: "C:\\aras_installations\\sqldata\\arashouse_build_12sp9.mdf", log: "C:\\aras_installations\\sqldata\\arashouse_build_12sp9_log.ldf" });

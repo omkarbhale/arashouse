@@ -112,7 +112,9 @@ try {
         $c = Get-Content -LiteralPath $cloneJson -Raw | ConvertFrom-Json
         $base = Get-Content -LiteralPath (Join-Path $script:SpikeOutDir "10-baseline-install-$Flavor-$SourceSuffix.json") -Raw | ConvertFrom-Json
         $ctx.layout = @($base.iisLayout)
-        $ctx.edited = @($c.editedFiles | ForEach-Object { Join-Path $slot $_.file })
+        # robocopy matches /XF paths on the source side: the first ticket 06 run passed only the slot-side paths and the baseline's configs
+        # were mirrored over the slot's (its preview listed them). Both sides are passed.
+        $ctx.edited = @($c.editedFiles | ForEach-Object { Join-Path $slot $_.file; Join-Path $golden $_.file })
         $ctx.pw = Get-SpikeArasPassword
         $ctx.dbId = Get-SpikeDbId -ConfigPath (Find-SpikeFile -Root $slot -Name 'InnovatorServerConfig.xml')
         Restart-SpikePools -Alias $names.Alias

@@ -1,4 +1,4 @@
-# The per-lease password: `setLeaseCredentials`
+# The per-lease password and `setLeaseCredentials`
 
 Ticket 34. A free slot cannot be logged in to with the shipped credentials, and a leaseholder gets a password that
 exists only for that lease and dies with it.

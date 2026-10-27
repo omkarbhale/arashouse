@@ -105,7 +105,8 @@ describe("its arguments", () => {
   it("take only a URL-safe password of 16 to 128 characters, never quoted in an error", () => {
     expect(parseLeaseCredentialArgs({ password: LEASE }).password.reveal()).toBe(LEASE);
     const short = ["sh", "ort", "pw"].join("");
-    for (const args of [{}, { password: 7 }, { password: short }, { password: `${LEASE} x` }, { password: "a".repeat(129) }]) {
+    const long = "x".repeat(129);
+    for (const args of [{}, { password: 7 }, { password: short }, { password: `${LEASE} x` }, { password: long }]) {
       expect(() => parseLeaseCredentialArgs(args)).toThrow(/needs the lease's password/);
     }
     expect(() => parseLeaseCredentialArgs({ password: LEASE, user: "sa" })).toThrow('setLeaseCredentials takes only "password", not "user"');

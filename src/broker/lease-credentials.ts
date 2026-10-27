@@ -20,7 +20,7 @@ import { seconds, type SlotSystem } from "./provision.js";
 /** The Aras user the slot is logged in to as, and whose password a lease gets. */
 export const LEASE_LOGIN = "root";
 
-/** The users that get the lease's password: `admin` first, so `root`'s own edit is the last thing its token does. */
+/** The users that get the lease's password, `admin` first, so `root`'s own edit is the last thing its token does. */
 export const LEASE_USERS: readonly string[] = ["admin", "root"];
 
 /** A lease password: 128 random bits as base64url are 22 characters; anything from 16 to 128 URL-safe ones is taken. */

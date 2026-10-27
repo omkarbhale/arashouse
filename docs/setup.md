@@ -104,6 +104,20 @@ The steps, in order:
    - `-SlotIdleTimeoutMinutes <1..1440>` records a short idle timeout for slot app pools in the result's
      `options`. No pool exists yet: ticket 25 applies it when it creates them. It is kept across runs.
 
+## Installed on the host (2026-10-27)
+
+The captain's elevated `-Apply` of the script generated from this branch exited 0 with `"ok": true` and no
+errors: the root's own ACL tightened, the eight new folders created and `staging\` re-permissioned, every
+folder's ACL as planned, no prerequisite missing for `12sp9`, `23` or `35`, and `ArasHouseBroker` running as
+`NT SERVICE\ArasHouseBroker`, a member of Administrators, with restart recovery, answering `ping`. Read back from
+WSL as the worker:
+
+- `arashouse doctor --json`: `setup`, `prerequisites`, `setup acl`, `broker` (`arashouse-broker 0.0.0`), `disk`
+  and `ram` ok. `sql` fails until ticket 22 creates the broker's login; the baselines warn until ticket 28 adds
+  `baselineVerify`.
+- `ls /mnt/c/aras_installations/secrets`: `Permission denied`.
+- `ping` through `node.exe <root>\broker\app\broker\client.js` from WSL: about 0.27 s.
+
 ## Uninstall
 
 `setup-host.ps1 -Uninstall -Apply` stops the service, takes its account out of Administrators, deletes the

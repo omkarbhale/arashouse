@@ -12,7 +12,7 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { HostDriver, HostInfo, SlotStamp } from "../host/driver.js";
-import { isHostError } from "../host/errors.js";
+import { HostError, isHostError } from "../host/errors.js";
 import { hostAddress, slotUrl } from "../host/url.js";
 import { EXIT_CODES, type ExitCode } from "./exit-codes.js";
 import { FLAVOR_KEYS, type FlavorKey, getFlavor, isFlavorKey } from "./flavors.js";
@@ -35,7 +35,7 @@ export const DEFAULT_POLL_MS = 1_000;
 const MAX_HOLDER = 500;
 
 /** The part of the host driver the lease operations use. */
-export type LeaseHost = Pick<HostDriver, "hostInfo" | "readStamp" | "writeStamp" | "healthCheck" | "setLeaseCredentials">;
+export type LeaseHost = Pick<HostDriver, "hostInfo" | "readStamp" | "writeStamp" | "healthCheck" | "setLeaseCredentials" | "startSlot">;
 
 /** A queue ticket stays valid this long past its caller's deadline, so a slow last poll keeps its place. */
 const TICKET_GRACE_MS = 30_000;
@@ -173,6 +173,11 @@ export interface GetRequest {
   readonly holder: string;
   /** Seconds to wait for a slot; 0 or absent fails at once when none can be handed out. */
   readonly waitSeconds?: number;
+  /**
+   * Start the slot's agent service for this lease (`get --agent`, ticket 33): conversion tasks and scheduled methods need it,
+   * most leases do not, so it is left stopped otherwise. The reset stops it again.
+   */
+  readonly agent?: boolean;
 }
 
 /** What `get` hands back. The password is a `Secret`: it is shown once, by `renderGetJson`. */
@@ -308,7 +313,7 @@ export async function getLease(deps: LeaseDeps, request: GetRequest): Promise<Le
   let granted = false;
   try {
     for (;;) {
-      const attempt = await attemptGet(deps, flavor, holder, ticket, skipped, lazyFailed);
+      const attempt = await attemptGet(deps, flavor, holder, request.agent === true, ticket, skipped, lazyFailed);
       if (attempt.kind === "granted") {
         granted = true;
         return attempt.grant;
@@ -352,6 +357,7 @@ async function attemptGet(
   deps: LeaseDeps,
   flavor: FlavorKey,
   holder: string,
+  agent: boolean,
   ticket: number | null,
   skipped: Set<string>,
   lazyFailed: Set<string>,
@@ -435,6 +441,10 @@ async function attemptGet(
     await deps.secrets.put(secretName, password);
     await host.writeStamp(ref, { ...stamp, leaseId: lease.lease_id });
     await host.setLeaseCredentials(ref, { secretRef: secretName });
+    if (agent) {
+      const started = await host.startSlot(ref, { agent: true });
+      if (!started.ok) throw new HostError("Retryable", `the slot did not start with its agent: ${started.detail}`);
+    }
     const url = await (deps.resolveUrl ?? defaultResolveUrl)(webAlias(ref));
     const flavorInfo = getFlavor(flavor);
     return {

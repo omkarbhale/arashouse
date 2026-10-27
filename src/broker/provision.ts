@@ -20,6 +20,7 @@ import type { SecretStore } from "../core/secret-store.js";
 import type { SlotStamp } from "../host/driver.js";
 import { HostError, isHostError } from "../host/errors.js";
 import { newLoginPassword } from "./baseline-build.js";
+import { parseStartArgs, startSlotOnHost, stopSlotOnHost, type StartArgs } from "./start-stop.js";
 import type { Broker, VerbContext } from "./broker.js";
 import type { WireResult } from "./protocol.js";
 
@@ -44,7 +45,28 @@ export interface SlotLogins {
   readonly reg: Secret;
 }
 
-/** Every effect the two verbs have on the host. The slot's names and paths are derived on both sides of this seam. */
+/** What `start` did: the pools it started, and the agent: `running`, `none` (the slot has no agent service) or `not asked`. */
+export interface StartInfo {
+  readonly pools: number;
+  readonly agent: "running" | "none" | "not asked";
+  /** The slot's reserved agent port. */
+  readonly port: number;
+}
+
+/** What `stop` did: the pools it stopped, and the agent: `stopped` or `none` (the slot has no agent service). */
+export interface StopInfo {
+  readonly pools: number;
+  readonly agent: "stopped" | "none";
+}
+
+/** One anonymous GET from the broker (`anonymousGet`, src/host/http.ts): a status, or why nothing answered. */
+export interface WarmAnswer {
+  readonly status?: number;
+  readonly ms: number;
+  readonly error?: string;
+}
+
+/** Every effect the slot verbs have on the host. The slot's names and paths are derived on both sides of this seam. */
 export interface SlotSystem {
   now(): number;
   /** Checks `golden\<key>` against its manifest (`golden` level) and returns the manifest hash. */
@@ -62,8 +84,12 @@ export interface SlotSystem {
   createAgent(slot: SlotRef): Promise<{ readonly installed: boolean; readonly port?: number }>;
   /** The database from the golden's `ootb.bak`, its two logins and their users. */
   restoreDatabase(slot: SlotRef, logins: SlotLogins): Promise<void>;
-  /** Stops the slot's pools and agent and waits for its worker processes to end. */
-  stop(slot: SlotRef): Promise<void>;
+  /** Starts the slot's pools, and its agent service when asked and the slot has one (ticket 33). */
+  start(slot: SlotRef, options: { readonly agent: boolean }): Promise<StartInfo>;
+  /** Stops the slot's agent and pools and waits for its worker processes to end. */
+  stop(slot: SlotRef): Promise<StopInfo>;
+  /** One anonymous GET of a slot URL on this machine, for the warm-up after a start. */
+  warm(url: string, timeoutMs: number): Promise<WarmAnswer>;
   /** True when there was a service to remove. */
   removeAgent(slot: SlotRef): Promise<boolean>;
   /** Drops the database and the two logins; answers 1 (dropped) or 0 (absent) for each name. */
@@ -82,11 +108,11 @@ export interface SlotSystem {
 
 const LOGIN_ROLES: readonly LoginRole[] = ["dbo", "reg"];
 
-function seconds(ms: number): string {
+export function seconds(ms: number): string {
   return (Math.round(ms / 100) / 10).toFixed(1);
 }
 
-function errorText(err: unknown): string {
+export function errorText(err: unknown): string {
   return redact(err instanceof Error ? err.message : String(err));
 }
 
@@ -100,7 +126,7 @@ function denyListText(diff: DenyListDiff): string {
 }
 
 /** The step timings of one verb, for its detail line. */
-class Timings {
+export class Timings {
   private readonly parts: string[] = [];
   constructor(private readonly system: SlotSystem) {}
 
@@ -301,13 +327,16 @@ export async function destroySlotOnHost(system: SlotSystem, slot: SlotRef, names
   return { ok: true, detail: `destroyed ${id} in ${seconds(system.now() - started)} s (${timings})` };
 }
 
-/** Registers `provisionSlot` and `destroySlot` on `broker`. One provision or destroy runs per slot at a time. */
+/**
+ * Registers `provisionSlot`, `destroySlot`, `startSlot` and `stopSlot` on `broker`. One of them runs per slot at a time;
+ * a second is `Retryable`.
+ */
 export function registerSlotVerbs(broker: Broker, system: SlotSystem): Broker {
   const busy = new Set<string>();
   const exclusive = async (ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>): Promise<WireResult> => {
     const slot = ctx.slot as SlotRef;
     const id = slotId(slot);
-    if (busy.has(id)) throw new HostError("Retryable", `slot ${id} is being provisioned or destroyed already`);
+    if (busy.has(id)) throw new HostError("Retryable", `slot ${id} is being provisioned, destroyed, started or stopped already`);
     busy.add(id);
     try {
       return await fn(slot, ctx.names as SlotNames);
@@ -323,5 +352,14 @@ export function registerSlotVerbs(broker: Broker, system: SlotSystem): Broker {
     .register("destroySlot", {
       target: "slot",
       run: (ctx) => exclusive(ctx, (slot, names) => destroySlotOnHost(system, slot, names)),
+    })
+    .register("startSlot", {
+      target: "slot",
+      args: parseStartArgs,
+      run: (ctx) => exclusive(ctx, (slot, names) => startSlotOnHost(system, slot, names, ctx.root, ctx.args as StartArgs)),
+    })
+    .register("stopSlot", {
+      target: "slot",
+      run: (ctx) => exclusive(ctx, (slot) => stopSlotOnHost(system, slot, ctx.root)),
     });
 }

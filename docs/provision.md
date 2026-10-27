@@ -140,7 +140,8 @@ worker from WSL, non-elevated, under a scratch `ARASHOUSE_HOME`:
 - The health check (ticket 32): `BrokerHost.healthCheck` is not a verb yet, so on the real host `provision` leaves each
   slot `dirty`, and the reset (tickets 30 to 33) brings it to `free`. `FakeHost` checks health, so the offline tests
   cover the `free` path.
-- Starting the agent and its configuration (ticket 33); the per-lease password (ticket 34).
+- Starting the agent (ticket 33, `docs/start-stop.md`) and an agent in the golden with its configuration (ticket 33b); the
+  per-lease password (ticket 34).
 - The whole contract suite on the real host (ticket 35). `test/host-contract.broker.test.ts` runs it against
   `BrokerHost` with `ARASHOUSE_TEST_BROKER=1` on slot `12sp9-98`. Run on 2026-10-28: `ping`/`hostInfo`, "provisions a
   slot, lists it and destroys it" (40 s) and the refusal of `OLM_Local` and unregistered slots pass; the two tests that

@@ -53,7 +53,7 @@ path, and in `repair` (`docs/cli.md`).
 | `quiesce` | `quiesce` | Stops the agent and the application pools (spike 06: the pool stop releases every lock and closes Aras's SQL sessions). |
 | `database` | `resetDatabase` | Restores the golden backup and fixes it up (ticket 31). |
 | `tree` | `resetTree` | Mirrors the golden tree and writes a fresh stamp (ticket 30). |
-| `start` | `startSlot` | Brings the applications online, without the agent (ticket 33 owns the agent). |
+| `start` | `startSlot` | Starts the slot's pools and warms them, without the agent (`docs/start-stop.md`; `get --agent` starts it). |
 | `health` | `healthCheck`, `readStamp` | The health check must pass, and the stamp must carry the golden hash, no lease and a reset time (ticket 32). |
 
 Then the golden is read again: if its hash changed during the reset (a `baseline build -Replace`

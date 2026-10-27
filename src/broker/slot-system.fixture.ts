@@ -8,10 +8,10 @@ import { sampleGolden } from "../core/config-samples.fixture.js";
 import { serializeEditList } from "../core/edits.js";
 import { editList } from "../core/edit-lists.js";
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
-import { DEFAULT_INSTALL_ROOT, databaseName, goldenLayout, loginName, slotLoginSecretName, slotNames, type SlotRef } from "../core/names.js";
+import { DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, type SlotRef } from "../core/names.js";
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
-import type { GoldenCheck, SlotLogins, SlotSystem } from "./provision.js";
+import type { GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, WarmAnswer } from "./provision.js";
 
 export const FAKE_GOLDEN_HASH = "9".repeat(64);
 
@@ -25,6 +25,14 @@ export class FakeSlotSystem implements SlotSystem {
   readonly objects = new Set<string>();
   /** The login passwords the database step was given, by login name. */
   readonly loginSecrets = new Map<string, Secret>();
+  /** Whether the slots have an agent service (no golden has one yet: ticket 33b). */
+  agentInstalled = false;
+  /** The slots whose pools run, and whose agent runs, by slot id. */
+  readonly running = new Set<string>();
+  readonly agentRunning = new Set<string>();
+  /** The URLs `warm` was asked for, in order, and what it answers. */
+  readonly warmed: string[] = [];
+  warmAnswer: (url: string) => WarmAnswer = () => ({ status: 200, ms: 50 });
   /** What `golden` answers. */
   goldenState: GoldenCheck = { state: "ok", hash: FAKE_GOLDEN_HASH };
   denyList: Record<string, string> = { "IIS pool DefaultAppPool": "p1", "install root C:\\Program Files (x86)\\Aras12\\Innovator": "c1" };
@@ -138,8 +146,27 @@ export class FakeSlotSystem implements SlotSystem {
     }
   }
 
-  async stop(slot: SlotRef): Promise<void> {
+  async start(slot: SlotRef, options: { readonly agent: boolean }): Promise<StartInfo> {
+    this.record("start", slot);
+    const id = slotId(slot);
+    this.running.add(id);
+    if (options.agent && this.agentInstalled) this.agentRunning.add(id);
+    return { pools: 7, agent: !options.agent ? "not asked" : this.agentInstalled ? "running" : "none", port: agentPort(slot) };
+  }
+
+  async stop(slot: SlotRef): Promise<StopInfo> {
     this.record("stop", slot);
+    const id = slotId(slot);
+    this.running.delete(id);
+    const hadAgent = this.agentRunning.delete(id);
+    return { pools: 7, agent: this.agentInstalled || hadAgent ? "stopped" : "none" };
+  }
+
+  async warm(url: string, timeoutMs: number): Promise<WarmAnswer> {
+    this.record("warm");
+    void timeoutMs;
+    this.warmed.push(url);
+    return this.warmAnswer(url);
   }
 
   async removeAgent(slot: SlotRef): Promise<boolean> {

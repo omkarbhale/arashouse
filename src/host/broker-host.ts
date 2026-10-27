@@ -2,8 +2,8 @@
 // WSL side first, then sends one request to the broker (ticket 20) through a `BrokerTransport` and
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
-// The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot` and
-// `destroySlot` so far. Every other method fails `Unreachable`, naming the ticket that adds its verb,
+// The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot`,
+// `destroySlot`, `startSlot` and `stopSlot` so far. Every other method fails `Unreachable`, naming the ticket that adds its verb,
 // so a reset waits (the slot stays dirty) rather than being quarantined for a verb the broker does
 // not have yet. `baselineBuild`
 // is never a verb: a baseline is built in an elevated session (ticket 24).
@@ -44,8 +44,6 @@ const PENDING: Partial<Record<HostMethod, string>> = {
   quiesce: "30",
   resetTree: "30",
   resetDatabase: "31",
-  startSlot: "33",
-  stopSlot: "33",
   healthCheck: "32",
   writeStamp: "30",
   deployCode: "40",
@@ -217,12 +215,16 @@ export class BrokerHost implements HostDriver {
     return this.pending("resetDatabase", this.slotGuard(slot));
   }
 
-  startSlot(slot: SlotRef, _options: StartOptions): Promise<HostResult> {
-    return this.pending("startSlot", this.slotGuard(slot));
+  async startSlot(slot: SlotRef, options: StartOptions): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const { result, ms } = await this.call("startSlot", { slot: { flavor: slot.flavor, slot: slot.slot } }, { agent: options.agent === true });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
-  stopSlot(slot: SlotRef): Promise<HostResult> {
-    return this.pending("stopSlot", this.slotGuard(slot));
+  async stopSlot(slot: SlotRef): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const { result, ms } = await this.call("stopSlot", { slot: { flavor: slot.flavor, slot: slot.slot } });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   deployCode(slot: SlotRef, _stagedPath: string): Promise<HostResult> {

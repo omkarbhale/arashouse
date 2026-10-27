@@ -119,14 +119,15 @@ describe("BrokerHost against an in-process broker", () => {
 
   it("every method the broker does not have yet is Unreachable, naming its ticket, after the guards", async () => {
     const calls: Record<
-      Exclude<keyof HostDriver, "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot">,
+      Exclude<
+        keyof HostDriver,
+        "ping" | "hostInfo" | "readStamp" | "listSlots" | "baselineBuild" | "baselineVerify" | "provisionSlot" | "destroySlot" | "startSlot" | "stopSlot"
+      >,
       () => Promise<unknown>
     > = {
       quiesce: () => host.quiesce(s1),
       resetTree: () => host.resetTree(s1, { flavor: "12sp9", hash: "h" }),
       resetDatabase: () => host.resetDatabase(s1, { flavor: "12sp9", file: `${ROOT}\\golden\\12sp9\\db.bak`, hash: "h" }),
-      startSlot: () => host.startSlot(s1, { agent: false }),
-      stopSlot: () => host.stopSlot(s1),
       deployCode: () => host.deployCode(s1, `${ROOT}\\staging\\l\\code`),
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       backupDatabase: () => host.backupDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
@@ -134,7 +135,7 @@ describe("BrokerHost against an in-process broker", () => {
       writeStamp: () => host.writeStamp(s1, { slotId: "12sp9-01", flavor: "12sp9", goldenHash: null, lastResetAt: null }),
       setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: LEASE_REF }),
     };
-    expect(Object.keys(calls).length + 8).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 10).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -167,6 +168,29 @@ describe("BrokerHost against an in-process broker", () => {
     expect((await rejection(host.provisionSlot({ flavor: "OLM_Local" as never, slot: 1 }))).kind).toBe("Refused");
     expect((await rejection(host.destroySlot({ flavor: "12sp9", slot: 100 }))).kind).toBe("Refused");
     expect(transport.requests).toHaveLength(3);
+  });
+
+  it("starts and stops a slot through the broker's verbs, the agent only when asked, guarded on both sides", async () => {
+    expect(await rejection(host.startSlot(s1, { agent: false }))).toMatchObject({ kind: "Refused", message: "slot 12sp9-01 is not provisioned" });
+    await host.provisionSlot(s1);
+    slots.agentInstalled = true;
+    const plain = await host.startSlot(s1, { agent: false });
+    expect(plain).toMatchObject({ ok: true, detail: expect.stringMatching(/^started 12sp9-01 in .*agent not started; warm Client\/ 200/) });
+    expect(slots.agentRunning.has("12sp9-01")).toBe(false);
+    const withAgent = await host.startSlot(s1, { agent: true });
+    expect(withAgent.detail).toContain("agent ArasHouseAgent_12sp9_01 running on port 8801");
+    expect(slots.agentRunning.has("12sp9-01")).toBe(true);
+    expect(await host.stopSlot(s1)).toMatchObject({ ok: true, detail: expect.stringMatching(/^stopped 12sp9-01 in .* \(7 pools; agent stopped\)$/) });
+    expect(slots.agentRunning.has("12sp9-01")).toBe(false);
+    expect(slots.running.has("12sp9-01")).toBe(false);
+    expect(transport.requests.slice(2).map((r) => [r.verb, r.slot, r.args])).toEqual([
+      ["startSlot", s1, { agent: false }],
+      ["startSlot", s1, { agent: true }],
+      ["stopSlot", s1, undefined],
+    ]);
+    expect((await rejection(host.stopSlot({ flavor: "OLM_Local" as never, slot: 1 }))).kind).toBe("Refused");
+    expect((await rejection(host.startSlot({ flavor: "12sp9", slot: 100 }, { agent: true }))).kind).toBe("Refused");
+    expect(transport.requests).toHaveLength(5);
   });
 
   it("verifies a golden through the broker's baselineVerify verb", async () => {

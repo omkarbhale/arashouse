@@ -65,12 +65,14 @@ export interface CliIo {
 
 const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
   get: [
-    "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--json]",
+    "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json]",
     "",
     `Leases a clean slot of <flavor> (${FLAVOR_KEYS.join(", ")}) to <task>. With --json, stdout is the`,
     "lease contract (docs/schemas/get.schema.json) and nothing else; it holds the lease's password,",
     "shown this once. Without --json the password is not shown: reach it through `arashouse run`.",
     "--wait <seconds> waits up to that long for a slot; without it, no free slot exits 3 at once.",
+    "--agent also starts the slot's agent service (conversion tasks, scheduled methods); without it the",
+    "agent stays stopped. A flavor whose golden has no agent refuses it (exit 7).",
   ],
   return: [
     "usage: arashouse return <lease_id> [--wait[=<seconds>]]",
@@ -194,6 +196,7 @@ const OVERVIEW: readonly string[] = [
   "usage: arashouse <command> [options]",
   "",
   "  get <flavor> --holder <task> [--wait <seconds>] [--json]  lease a clean slot",
+  "      [--agent]                                             ... with its agent service started",
   "  return <lease_id> [--wait[=<seconds>]]                     give a lease back (its slot is discarded)",
   "  status [--json]                                            every slot and its holder",
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
@@ -330,14 +333,19 @@ function printJson(io: CliIo, value: unknown): void {
 }
 
 async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
-  const parsed = parseArgs(args, { holder: "value", wait: "value", json: "flag" });
+  const parsed = parseArgs(args, { holder: "value", wait: "value", agent: "flag", json: "flag" });
   const [flavor, extra] = parsed.positionals;
   if (flavor === undefined) throw new UsageError(`get needs a flavor: ${FLAVOR_KEYS.join(", ")}`);
   if (extra !== undefined) throw new UsageError(`get takes one flavor, not "${extra}" too`);
   const holder = stringOption(parsed, "holder");
   if (holder === undefined) throw new UsageError("get needs --holder <task>: who is taking the lease");
   const wait = stringOption(parsed, "wait");
-  const grant = await getLease(await leaseDeps(ctx), { flavor, holder, waitSeconds: wait === undefined ? 0 : parseSeconds(wait, "--wait") });
+  const grant = await getLease(await leaseDeps(ctx), {
+    flavor,
+    holder,
+    waitSeconds: wait === undefined ? 0 : parseSeconds(wait, "--wait"),
+    agent: parsed.options.agent === true,
+  });
   const returnHint = `return it with: arashouse return ${grant.lease_id}`;
   if (parsed.options.json === true) {
     printJson(ctx.io, renderGetJson(grant));

@@ -18,6 +18,7 @@ import { SHIPPED_DATABASE_USERS } from "../core/baseline.js";
 import {
   AGENT_PORT_BASE,
   APP_POOL_ROLES,
+  DATABASE_MARKER,
   DEFAULT_INSTALL_ROOT,
   MSI_DEFAULT_AGENT_PORT,
   SLOT_POOL_IDLE_MINUTES,
@@ -45,6 +46,7 @@ export const SLOT_STEPS = [
   "agent",
   "database",
   "start",
+  "reset-database",
   "stop",
   "quiesce",
   "reset-tree",
@@ -115,6 +117,8 @@ $RuntimeDirs = @{
 ${runtimeDirs}
 }
 $ShippedUsers = [ordered]@{ dbo = ${psQuote(SHIPPED_DATABASE_USERS.dbo)}; reg = ${psQuote(SHIPPED_DATABASE_USERS.reg)} }
+$MarkerHash = ${psQuote(DATABASE_MARKER.goldenHash)}
+$MarkerAt = ${psQuote(DATABASE_MARKER.resetAt)}
 $PoolIdentities = @('ApplicationPoolIdentity', 'NetworkService', 'LocalService')
 $DeniedRoots = ${list(DENIED_INSTALL_ROOTS)}
 $DeniedServicePrefixes = ${list(DENIED_SERVICE_PREFIXES)}
@@ -274,6 +278,12 @@ function Clear-AspNetTemp {
     return $n
 }
 
+function Test-SqlError($Exception, [int]$Number) {
+    for ($e = $Exception; $e; $e = $e.InnerException) {
+        if ($e -is [System.Data.SqlClient.SqlException]) { foreach ($x in $e.Errors) { if ($x.Number -eq $Number) { return $true } } }
+    }
+    return $false
+}
 function Read-Golden([string]$Name) {
     $file = Join-Path $Golden $Name
     if (-not (Test-Path -LiteralPath $file)) { Stop-Step "$file does not exist (is the $Flavor baseline built?)" }
@@ -467,6 +477,55 @@ switch ($Step) {
             }
         }
         Write-Result @{ pools = $started.Count; agent = $agent; port = $AgentPort }
+    }
+    'reset-database' {
+        # The reset's owner restore (spike 06, ticket 31): the golden's ootb.bak over the slot database by its owner, the broker,
+        # files moved to sqldata\\, after kill_connections has ended any other session in it. One that comes back in between blocks
+        # it with 3101: kill_connections again and it runs once more. Then MULTI_USER, the two users mapped to the slot's logins again, and the marker written (after the restore, which
+        # brings the golden's own properties). The owner survives the restore and the vault URL is alias-relative, so neither is fixed.
+        $bak = Join-Path $Golden 'db\\ootb.bak'
+        if (-not (Test-Path -LiteralPath $bak)) { Stop-Step "$bak does not exist" }
+        $goldenHash = [string]$request.marker.goldenHash
+        $resetAt = [string]$request.marker.resetAt
+        if ($goldenHash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }
+        if ($resetAt -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }
+        $c = New-Sql
+        try {
+            if (@(Invoke-Sql $c 'SELECT name FROM sys.databases WHERE name = @n' @{ '@n' = $Database }).Count -eq 0) { Write-Result @{ missing = $true }; return }
+            $db = Format-Ident $Database
+            $files = $BackupFiles[$Flavor]
+            $move = "MOVE " + (Format-Str $files.data) + " TO " + (Format-Str $DataFile) + ", MOVE " + (Format-Str $files.log) + " TO " + (Format-Str $LogFile)
+            $restore = "RESTORE DATABASE " + (Format-Ident $Database) + " FROM DISK = " + (Format-Str $bak) + " WITH REPLACE, " + $move + ", RECOVERY"
+            $kill = 'DECLARE @r int; EXEC @r = arashouse_admin.dbo.kill_connections @database = @d; SELECT @r AS r'
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            # Ended first as well: an idle session in the database holds the restore for about 20 s before the 3101 (measured).
+            $killed = [int](Invoke-Sql $c $kill @{ '@d' = $Database })[-1].r
+            try {
+                Invoke-Sql $c $restore | Out-Null
+            } catch {
+                if (-not (Test-SqlError $_.Exception 3101)) { throw }
+                $killed += [int](Invoke-Sql $c $kill @{ '@d' = $Database })[-1].r
+                Invoke-Sql $c $restore | Out-Null
+            }
+            $watch.Stop()
+            $access = [string](Invoke-Sql $c 'SELECT user_access_desc AS a FROM sys.databases WHERE name = @n' @{ '@n' = $Database })[0].a
+            if ($access -ne 'MULTI_USER') { Invoke-Sql $c "ALTER DATABASE $db SET MULTI_USER" | Out-Null }
+            $users = @(Invoke-Sql $c ("SELECT name FROM $db.sys.database_principals WHERE type = 'S'") | ForEach-Object { $_.name })
+            foreach ($role in @('dbo', 'reg')) {
+                $user = $ShippedUsers[$role]
+                if ($users -notcontains $user) { Stop-Step "the restored database has no user $user" }
+                $login = if ($role -eq 'dbo') { $LoginDbo } else { $LoginReg }
+                Invoke-Sql $c ("USE $db; ALTER USER " + (Format-Ident $user) + " WITH LOGIN = " + (Format-Ident $login)) | Out-Null
+            }
+            foreach ($pair in @(@($MarkerHash, $goldenHash), @($MarkerAt, $resetAt))) {
+                Invoke-Sql $c ("USE $db; IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 0 AND name = @n) EXEC sys.sp_updateextendedproperty @name = @n, @value = @v ELSE EXEC sys.sp_addextendedproperty @name = @n, @value = @v") @{ '@n' = $pair[0]; '@v' = $pair[1] } | Out-Null
+            }
+            $marker = [ordered]@{}
+            foreach ($row in @(Invoke-Sql $c ("SELECT name, CAST(value AS nvarchar(200)) AS value FROM $db.sys.extended_properties WHERE class = 0 AND name IN (@h, @a)") @{ '@h' = $MarkerHash; '@a' = $MarkerAt })) { $marker[[string]$row.name] = [string]$row.value }
+            $version = [ordered]@{}
+            foreach ($row in @(Invoke-Sql $c ("SELECT name, value FROM $db.innovator.[VARIABLE] WHERE name IN ('VersionMajor', 'VersionMinor', 'VersionServicePack', 'VersionBuild')"))) { $version[[string]$row.name] = [string]$row.value }
+        } finally { $c.Dispose() }
+        Write-Result @{ restoreMs = [int]$watch.ElapsedMilliseconds; killed = $killed; access = $access; marker = $marker; version = $version }
     }
     'stop' {
         # The slot's agent and pools stopped, and its worker processes gone, so nothing holds a file or a session (ticket 33; before a

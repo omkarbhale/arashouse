@@ -20,10 +20,12 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain(`if (@(${SECRET_STEPS.map((s) => `'${s}'`).join(", ")}) -ccontains $Step)`);
   });
 
-  it("takes nothing from the request but the flavor, the slot number, the agent switch, the two login passwords and a secret's name and value", () => {
+  it("takes nothing from the request but the flavor, the slot number, the agent switch, the two login passwords, the reset's marker and a secret's name and value", () => {
     const used = [...steps.matchAll(/\$request\.([A-Za-z.]+)/g)].map((m) => m[1]);
-    expect([...new Set(used)].sort()).toEqual(["agent", "flavor", "name", "secrets.dbo", "secrets.reg", "slot", "value"]);
+    expect([...new Set(used)].sort()).toEqual(["agent", "flavor", "marker.goldenHash", "marker.resetAt", "name", "secrets.dbo", "secrets.reg", "slot", "value"]);
     expect(steps).toContain("if ($request.agent -eq $true) {");
+    expect(steps).toContain("if ($goldenHash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }");
+    expect(steps).toContain("if ($resetAt -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }");
     expect(steps).toContain("if ($FlavorKeys -cnotcontains $Flavor) { Stop-Step 'the request names no registered flavor' }");
     expect(steps).toContain("if (-not (($raw -is [int]) -or ($raw -is [long])) -or $raw -lt 1 -or $raw -gt 99) { Stop-Step 'the request names no slot number from 1 to 99' }");
     expect(steps).toContain("if ($SecretName -cnotmatch '^[a-z0-9][a-z0-9-]{0,63}$') { Stop-Step 'the request names no usable secret' }");
@@ -54,6 +56,24 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain("$bak = Join-Path $Golden 'db\\ootb.bak'");
     for (const m of steps.matchAll(/ALTER USER [^\n]*/g)) expect(m[0]).toContain("WITH LOGIN = \" + (Format-Ident $login))");
     expect(steps).toContain("foreach ($pair in @(@($LoginDbo, $dbo), @($LoginReg, $reg)))");
+  });
+
+  it("resets the slot database by the owner's restore of ootb.bak, after kill_connections, and once more after it on 3101 only", () => {
+    const body = steps.slice(steps.indexOf("    'reset-database' {"), steps.indexOf("    'stop' {"));
+    expect(body).toContain("$bak = Join-Path $Golden 'db\\ootb.bak'");
+    expect(body).toContain("if (-not (Test-SqlError $_.Exception 3101)) { throw }");
+    expect(body.match(/Invoke-Sql \$c \$restore/g)).toHaveLength(2);
+    expect(body.match(/Invoke-Sql \$c \$kill/g)).toHaveLength(2);
+    expect(body.indexOf("Invoke-Sql $c $kill")).toBeLessThan(body.indexOf("Invoke-Sql $c $restore"));
+    expect(body.lastIndexOf("Invoke-Sql $c $kill")).toBeGreaterThan(body.indexOf("Test-SqlError $_.Exception 3101"));
+    expect(body).not.toContain("create_slot_database");
+    expect(body).not.toContain("create_slot_login");
+    expect(body).toContain('if ($access -ne \'MULTI_USER\') { Invoke-Sql $c "ALTER DATABASE $db SET MULTI_USER" | Out-Null }');
+    // The marker goes in after the restore and its values only as parameters.
+    expect(body.indexOf("sp_addextendedproperty")).toBeGreaterThan(body.lastIndexOf("Invoke-Sql $c $restore"));
+    expect(body).toContain("EXEC sys.sp_updateextendedproperty @name = @n, @value = @v ELSE EXEC sys.sp_addextendedproperty @name = @n, @value = @v\") @{ '@n' = $pair[0]; '@v' = $pair[1] }");
+    expect(steps).toContain("$MarkerHash = 'arashouse.golden_hash'");
+    expect(steps).toContain("$MarkerAt = 'arashouse.reset_at'");
   });
 
   it("removes only the slot alias's applications, the pools named from the slot and the service of its own name", () => {

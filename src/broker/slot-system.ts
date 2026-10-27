@@ -18,6 +18,7 @@ import type { BrokerFs } from "./fs.js";
 import { readManifest, verifyGolden, verifyTree } from "./manifest-fs.js";
 import type { GoldenCheck, SlotLogins, SlotSystem, TreeReset } from "./provision.js";
 import { runPsScript } from "./ps-step.js";
+import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 import { renderSlotStepsScript, type SlotStep } from "./slot-steps.js";
 
 /** How long one step may take: the mirror copies a golden tree, the rest take seconds. */
@@ -112,6 +113,13 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
       const r = await slotStep("start", slot, { agent });
       const state = r.agent === "running" || r.agent === "none" ? r.agent : "not asked";
       return { pools: Number(r.pools), agent: state, port: Number(r.port) };
+    },
+    async resetDatabase(slot, marker: DatabaseMarker): Promise<DatabaseReset> {
+      const r = await slotStep("reset-database", slot, { marker });
+      if (r.missing === true) return { state: "missing" };
+      const texts = (v: unknown): Record<string, string> =>
+        typeof v === "object" && v !== null && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, String(x)])) : {};
+      return { state: "restored", restoreMs: Number(r.restoreMs), killed: Number(r.killed), access: String(r.access), marker: texts(r.marker), version: texts(r.version) };
     },
     async stop(slot) {
       const r = await slotStep("stop", slot);

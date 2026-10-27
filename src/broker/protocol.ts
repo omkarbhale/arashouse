@@ -43,6 +43,9 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
   quiesce: 10 * 60_000,
   // The reset's mirror is under a second over a used slot (spike 06), but a cold cache or a lease that filled the tree costs more.
   resetTree: 30 * 60_000,
+  // A reset's restore took 0.5 to 1.7 s for a 77 MB 12sp9 backup (spike 06, ticket 31); the golden check and a second
+  // restore after kill_connections add seconds. The bound leaves room for a larger backup on a busy disk.
+  resetDatabase: 10 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

@@ -126,6 +126,13 @@ export function stampFile(ref: SlotRef, root: string = DEFAULT_INSTALL_ROOT): st
   return win32.join(slotDir(ref, root), STAMP_FILE_NAME);
 }
 
+/**
+ * The database-level extended properties a reset writes into a slot database after its restore (ticket 31): the
+ * golden manifest hash it was restored from and the time. A restored database carries the golden's own properties,
+ * so they are written after the restore, never before.
+ */
+export const DATABASE_MARKER = { goldenHash: "arashouse.golden_hash", resetAt: "arashouse.reset_at" } as const;
+
 /** `<root>\vaults\<key>-<NN>` */
 export function vaultDir(ref: SlotRef, root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(root, "vaults", dashTag(ref));

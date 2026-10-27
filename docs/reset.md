@@ -71,8 +71,8 @@ host no more.
 |---|---|
 | A step throws `Retryable` (or any non-host error), or returns `ok: false` | Tries the step once more (every step is idempotent). A second failure quarantines the slot: `reset step <step> failed twice: <error>`. |
 | A step throws `Refused` (a guard) or `Quarantine` | Quarantines at once: `reset step <step> was refused: <error>`. |
-| A step throws `Unreachable` twice | Gives the slot back as `dirty` (the slot is not at fault) and stops; a later worker or `get` tries again. A lazy reset in `get` exits 6. |
-| The slot's reset has been started more than 3 times without finishing (`MAX_RESET_ATTEMPTS`) | Quarantines it: `reset started 4 times without finishing`. |
+| A step throws `Unreachable` twice | Gives the slot back as `dirty` (the slot is not at fault) and stops; a later worker or `get` tries again, and this reset does not count toward the attempt cap. A lazy reset in `get` exits 6. |
+| The slot's reset is started a 4th time after 3 workers died mid-reset (`MAX_RESET_ATTEMPTS`) | Quarantines it: `reset started 4 times without finishing`. |
 
 A quarantined slot is never handed out. `arashouse repair <slot>` (ticket 16) re-provisions it from
 golden. Reasons are redacted and at most 480 characters.

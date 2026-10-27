@@ -9,6 +9,8 @@ import { mappedRoot, type MappedRoot } from "./mapped-fs.fixture.js";
 import type { BrokerResponse } from "./protocol.js";
 import { registerCoreVerbs, type BrokerSystem } from "./verbs.js";
 
+const LEASE_REF = "lease-1";
+
 const ROOT = "C:\\aras_installations";
 const s1 = { flavor: "12sp9", slot: 1 } as const;
 const s2 = { flavor: "23", slot: 2 } as const;
@@ -187,7 +189,7 @@ describe("failures inside a verb", () => {
       args: (args) => args,
       run: async () => ({ ok: true, detail: `set password=${secret.reveal()}` }),
     });
-    const response = await ask({ verb: "setLeaseCredentials", slot: s1, args: { secretRef: "lease-1", value: secret.reveal() } });
+    const response = await ask({ verb: "setLeaseCredentials", slot: s1, args: { secretRef: LEASE_REF, value: secret.reveal() } });
     expect(result(response).detail).toBe("set password=[redacted]");
     expect(audit.lines.join("\n")).not.toContain(secret.reveal());
     expect(audit.lines.join("\n")).not.toContain("lease-1");

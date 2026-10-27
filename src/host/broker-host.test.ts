@@ -11,6 +11,8 @@ import { FakeClock } from "./clock.js";
 import { HOST_METHODS, type HostDriver } from "./driver.js";
 import { HostError } from "./errors.js";
 
+const LEASE_REF = "lease-1";
+
 const ROOT = "C:\\aras_installations";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 const s1 = { flavor: "12sp9", slot: 1 } as const;
@@ -112,7 +114,7 @@ describe("BrokerHost against an in-process broker", () => {
       backupDatabase: () => host.backupDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       healthCheck: () => host.healthCheck(s1),
       writeStamp: () => host.writeStamp(s1, { slotId: "12sp9-01", flavor: "12sp9", goldenHash: null, lastResetAt: null }),
-      setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: "x" }),
+      setLeaseCredentials: () => host.setLeaseCredentials(s1, { secretRef: LEASE_REF }),
       baselineBuild: () => host.baselineBuild("12sp9"),
       baselineVerify: () => host.baselineVerify("12sp9"),
     };

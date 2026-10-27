@@ -97,6 +97,30 @@ gives the robocopy and clearing seconds, the counts cleared, the configs and eac
 The broker runs one provision, destroy, quiesce, tree reset or stamp write per slot at a time (`SlotLocks`); a second
 is `Retryable`.
 
+### Measured on the host (2026-10-27, `12sp9`)
+
+Through firstmate's elevated gate: `setup-host.ps1 -Apply -UpdateBroker` installed a broker built from this ticket (exit
+0), then a one-off proof script (exit 0) drove that broker through its Windows client on the throw-away slot `12sp9-30`,
+golden `8668e889d5e4`, Defender on:
+
+- `provisionSlot` 29.1 s; the slot served (`/Server/DBList.aspx` 200 listing only `arashouse_12sp9_30`).
+- Dirtied as a lease would: a new file under `Innovator\Client`, a line appended to
+  `Innovator\Client\BrowserCode\common\javascript\BrowserHelper.js`, 200 files in `Innovator\Server\temp`, a DLL
+  deployed into `Innovator\Server\bin` (a copy of `Aras.Server.Core.dll` under a new name, after which `DBList.aspx`
+  answered 500), and a vault file.
+- `quiesce` **6.1 s** with the slot serving (1.3 s on a stopped slot); `resetTree` **4.2 s** on the broker, 4.4 s round
+  trip: golden 0.1, mirror 1.6 (robocopy 0.2, clearing 0.2), configs 0.4 (8 files, 19 edits), the `fast` verify 1.1
+  (23,760 files, green), stamp 0.0. Over the clean slot again: 3.7 s. So the tree half of a reset is about 10 s with the
+  quiesce, most of it the pool stop and the verify.
+- After it: every piece of dirt gone, the edited file equal to golden's, the stamp carrying the golden hash and no lease,
+  all seven pools still stopped. Once the proof started them, `DBList.aspx` answered 200 in 8.3 s (the first request
+  after the ASP.NET temporary files were cleared) listing only the slot's own database, and `/Client/` 200 in 2.1 s.
+- The deny-list fingerprints (35 objects) were unchanged after the resets and again after the slot was destroyed
+  (`destroySlot` 17.8 s, nothing left).
+
+Not measured here: the same calls from WSL through `BrokerHost` (the next lane's broker build went on straight after),
+and the database step (ticket 31).
+
 ## Failure
 
 | what happened | what the reset does |

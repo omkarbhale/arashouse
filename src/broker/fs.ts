@@ -12,6 +12,8 @@ export interface BrokerFs {
   listDirs(path: string): Promise<string[] | null>;
   /** Whether `path` is a folder. */
   isDirectory(path: string): Promise<boolean>;
+  /** Whether `path` is a file. */
+  isFile(path: string): Promise<boolean>;
   /** Free bytes available to the broker on the volume that holds `path`. */
   freeBytes(path: string): Promise<number>;
   /** For the guards: whether `path` is a junction, symbolic link or other reparse point (false when it does not exist). */
@@ -61,6 +63,14 @@ export function nodeBrokerFs(options: NodeBrokerFsOptions = {}): BrokerFs {
     async isDirectory(path) {
       try {
         return (await stat(local(path))).isDirectory();
+      } catch (err) {
+        if (isMissing(err)) return false;
+        throw err;
+      }
+    },
+    async isFile(path) {
+      try {
+        return (await stat(local(path))).isFile();
       } catch (err) {
         if (isMissing(err)) return false;
         throw err;

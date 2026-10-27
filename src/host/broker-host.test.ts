@@ -356,6 +356,11 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
     expect((await withLogin(null).hostInfo()).info.sqlLogin).toBeNull();
     const before22 = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: base } }));
     expect("sqlLogin" in (await before22.hostInfo()).info).toBe(false);
+    expect("licences" in (await before22.hostInfo()).info).toBe(false);
+    const withLicences = (licences: unknown) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: { ...base, licences } } }));
+    expect((await withLicences([{ line: "12", present: true }]).hostInfo()).info.licences).toEqual([{ line: "12", present: true }]);
+    expect((await rejection(withLicences([{ line: "12", present: true, value: "x" }]).hostInfo())).message).toMatch(/info.licences has the wrong fields/);
+    expect((await rejection(withLicences({ "12": true }).hostInfo())).message).toMatch(/info.licences is not a list/);
     const stamp = { slotId: "23-01", flavor: "23", goldenHash: null, lastResetAt: null };
     const other = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", stamp } }));
     expect((await rejection(other.readStamp(s1))).message).toMatch(/readStamp is malformed/);

@@ -209,8 +209,8 @@ rather than compare nothing.
   Windows user can read (`-LicenceFile`: the key, or the JSON `{ "lic_key", "act_key", "lic_type", "company" }`),
   hands it to Node in that process's environment only (`ARASHOUSE_BUILD_LICENCE`, read once and removed), writes it
   into the build's config for the check, and before the copy blanks `lic_key` and `act_key` and puts back the
-  `lic_type` and `company` the MSI wrote. It stores it nowhere: storing it machine-scope for slots is
-  the secret store's job when ticket 25 renders slot configs.
+  `lic_type` and `company` the MSI wrote. It stores it nowhere: the slots' licence is stored separately, by
+  `scripts/store-licence.ps1` (`docs/secrets.md`).
 - The **admin password** of the shipped backup's `root` login comes the same way (`-AskAdminPassword`,
   `-AdminPasswordFile`; for example the spike's `C:\aras_installations\spike\handoff\aras.dpapi`) and goes only into
   the OAuth request, as its MD5, as the Aras clients send it.
@@ -373,8 +373,10 @@ same media proved both (above). The `12sp9` rebuild likewise.
 - **`DBList.aspx` lives at `/<alias>/Server/DBList.aspx`** in `12sp9` and `35` (the MSI's File table; `/<alias>/DBList.aspx`
   answered 404 on the build). The WSL probe (`src/host/probe.ts`, `docs/slot-url.md`, ticket 29) asks
   `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, which `23` shares (ticket 26).
-- A slot's licence needs the whole `<License>` element, not `lic_key` alone (run 5): ticket 25's edit list adds
-  `act_key` (`{{secret:licence_act_key}}`), `lic_type` and `company`, and the secret store keeps the four together.
+- A slot's licence needs the whole `<License>` element, not `lic_key` alone (run 5). Done (ticket 34b): the edit list
+  sets `act_key`, `lic_type` and `company` with `lic_key`, and the secret store keeps the four together
+  (`docs/secrets.md`). A golden whose `edits.json` predates it gets the three attributes added at render time, so it
+  needs no rebuild (`docs/edits.md`).
 - **Rebuild `23` and `35` after ticket 25.** The broker can use and drop a restore of a golden's `ootb.bak` only when
   that database's owner is `NT SERVICE\ArasHouseBroker`; ticket 25's builder fix sets it and records `ootbOwner` in
   `flavor.json`. Once it merges, both goldens built before it need `baseline build <key> --replace` (with

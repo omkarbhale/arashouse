@@ -1,5 +1,6 @@
 // Licence keys: asked for once, only when a step needs one, then stored machine-scope on the host.
 // "if one is needed, it should ask for it" (captain). One stored key serves every slot of its line.
+// A login needs the whole `<License>` element (ticket 34b), so the store keeps the four values together.
 
 import { FLAVORS, FLAVOR_KEYS, type FlavorKey, type LicenceRequirement } from "./flavors.js";
 import { Secret } from "./secret.js";
@@ -105,6 +106,57 @@ export async function ensureLicence(
     byLine.set(line, pending);
   }
   return pending;
+}
+
+/** The attributes of `<License>` a login needs together: the key alone is refused ("License Key is invalid", ticket 24). */
+export const LICENCE_ATTRIBUTES = ["lic_key", "act_key", "lic_type", "company"] as const;
+export type LicenceAttribute = (typeof LICENCE_ATTRIBUTES)[number];
+
+/** A whole `<License>` element. Every value is a licence Secret, so `redact` replaces each of them. */
+export type LicenceElement = Readonly<Record<LicenceAttribute, Secret>>;
+
+/** Longer than any licence attribute; bounds what a request or a stored blob may carry. */
+const MAX_LICENCE_VALUE = 4096;
+
+/**
+ * A `<License>` element from its four attribute values, as an existing install's `InnovatorServerConfig.xml` holds
+ * them. `lic_key` must be non-empty; the others may be empty. Throws naming the attribute, never a value.
+ */
+export function licenceElement(values: Readonly<Record<string, unknown>>): LicenceElement {
+  const extra = Object.keys(values).find((k) => !(LICENCE_ATTRIBUTES as readonly string[]).includes(k));
+  if (extra !== undefined) throw new Error(`a licence has no "${extra.slice(0, 32)}" attribute; it has ${LICENCE_ATTRIBUTES.join(", ")}`);
+  const out: Partial<Record<LicenceAttribute, Secret>> = {};
+  for (const attr of LICENCE_ATTRIBUTES) {
+    const value = values[attr] ?? "";
+    if (typeof value !== "string") throw new Error(`the licence's ${attr} is not a string`);
+    if (value.length > MAX_LICENCE_VALUE || /[\u0000-\u001f]/.test(value)) throw new Error(`the licence's ${attr} is not a <License> attribute value`);
+    out[attr] = Secret.of(value, "licence");
+  }
+  if (out.lic_key!.length === 0) throw new Error("the licence has no lic_key");
+  return out as LicenceElement;
+}
+
+/** The stored form of `licence-<line>`: the four values as one JSON object, one DPAPI blob on the host. */
+export function encodeLicence(element: LicenceElement): Secret {
+  const values = Object.fromEntries(LICENCE_ATTRIBUTES.map((attr) => [attr, element[attr].reveal()]));
+  return Secret.of(JSON.stringify(values), "licence");
+}
+
+/**
+ * The element a stored `licence-<line>` holds. A value that is not a JSON object is a key alone, as ticket 23's hidden
+ * prompt stores it: `lic_key`, with the other attributes empty. Throws, naming no value, on a stored object it cannot use.
+ */
+export function decodeLicence(stored: Secret): LicenceElement {
+  const text = stored.reveal();
+  if (!text.trimStart().startsWith("{")) return licenceElement({ lic_key: text });
+  let values: unknown;
+  try {
+    values = JSON.parse(text);
+  } catch {
+    throw new Error("the stored licence is not readable");
+  }
+  if (typeof values !== "object" || values === null || Array.isArray(values)) throw new Error("the stored licence is not readable");
+  return licenceElement(values as Record<string, unknown>);
 }
 
 /** `arashouse licence forget <line>`: remove the stored key; true if there was one. */

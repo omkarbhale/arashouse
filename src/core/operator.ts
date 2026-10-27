@@ -29,7 +29,7 @@ import {
   leaseRef,
   leaseSecretName,
 } from "./lease.js";
-import { licenceStatus } from "./licence.js";
+import { licenceStatus, type LicenceStatus } from "./licence.js";
 import { MAX_SLOT, type SlotRef, parseSlotId, slotId, slotNames, slotNumber } from "./names.js";
 import { rebuildState } from "./recovery.js";
 import { redact } from "./redact.js";
@@ -55,7 +55,7 @@ export interface OperatorDeps {
   readonly startWorker?: (slot: string) => void;
   /** Whether the flavor's media is present (`flavors`' check); null when its folder cannot be found. Absent: `doctor` skips media. */
   readonly media?: (flavor: FlavorKey) => Promise<boolean | null>;
-  /** The host's licence-key store (tickets 20 and 21); `doctor` reports each line's key as present or absent. Absent: skipped. */
+  /** A licence store to report instead of the host's `hostInfo` (tests); `doctor` reports each line as present or absent, a boolean only. */
   readonly licences?: SecretStore;
   /** What the worker sees of `arashouse setup` on the host (ticket 21). Absent: `doctor` skips the setup checks. */
   readonly setup?: () => Promise<SetupObservation>;
@@ -676,8 +676,10 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
     return done();
   }
 
+  let hostLicences: readonly LicenceStatus[] | undefined;
   try {
     const { info } = await host.hostInfo();
+    hostLicences = info.licences;
     for (const f of checkSqlLogin(info)) add(f.level, f.check, f.message);
     if (info.freeDiskGb >= config.min_free_disk_gb) add("ok", "disk", `${info.freeDiskGb} GB free at the install root`);
     else add("warn", "disk", `${info.freeDiskGb} GB free at the install root, under min_free_disk_gb ${config.min_free_disk_gb}: no provision or baseline build starts`);
@@ -705,10 +707,9 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
     }
   }
 
-  if (deps.licences) {
-    for (const status of await licenceStatus(deps.licences)) {
-      add("ok", `licence line ${status.line}`, status.present ? "present" : "absent (asked for when a step needs it)");
-    }
+  const licences = deps.licences ? await licenceStatus(deps.licences) : hostLicences;
+  for (const status of licences ?? []) {
+    add("ok", `licence line ${status.line}`, status.present ? "present" : "absent (asked for when a step needs it)");
   }
 
   let listed: HostSlots;

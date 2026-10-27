@@ -60,8 +60,9 @@ lease, so it cannot change a leaseholder's password. A destroy deletes the store
 (spike record, section 2: a blank key answers "Missing lic_key directive"). While no key is stored for the line
 (`licence-12`, `licence-14`), no slot of it renders one and its server refuses every login, with any password; the check
 then passes as `not checked: no licence key is stored for line 12, ...` rather than logging in. Once a key is stored,
-every login check runs, and it fails (and quarantines) when neither password works. Storing the whole `<License>`
-element and the golden backup's `root` password is left to tickets 34b and 35; nothing stores either yet.
+every login check runs, and it fails (and quarantines) when neither password works. The whole `<License>` element is
+stored by `scripts/store-licence.ps1` (ticket 34b, `docs/secrets.md`); storing the golden backup's `root` password
+(`ootb-root-<key>`) is ticket 35's, so until it lands a slot of a line with a stored licence fails its login check.
 
 ## Dirty detection in `get`
 

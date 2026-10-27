@@ -581,6 +581,12 @@ describe("doctor", () => {
     expect(withKeys.lines).toEqual(expect.arrayContaining(["ok    licence line 14: present", "ok    licence line 12: absent (asked for when a step needs it)"]));
     expect(withKeys.lines.join("\n")).not.toContain("not-a-real-key");
 
+    // Without a store of its own, doctor reports what the host's hostInfo says (ticket 34b).
+    p.host.setHostInfo({ licences: [{ line: "12", present: true }, { line: "14", present: false }] });
+    const fromHost = await doctor(p.deps, {});
+    expect(fromHost.lines).toEqual(expect.arrayContaining(["ok    licence line 12: present", "ok    licence line 14: absent (asked for when a step needs it)"]));
+    p.host.setHostInfo({ licences: undefined });
+
     p.host.setHostInfo({ sqlReachable: false, freeDiskGb: 3, freeRamMb: 100 });
     const bad = await doctor({ ...p.deps, media: async (f) => (f === "35" ? null : false) }, {});
     expect(bad.exitCode).toBe(1);

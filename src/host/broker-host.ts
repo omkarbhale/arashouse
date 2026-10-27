@@ -10,6 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { FlavorKey } from "../core/flavors.js";
+import type { LicenceStatus } from "../core/licence.js";
 import { isSecretName, parseSlotId, slotId, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import type { SecretStore } from "../core/secret-store.js";
@@ -78,6 +79,18 @@ function parseSqlLogin(value: unknown): SqlLoginInfo | null | undefined {
   return { login, sysadmin, dbcreator, procedures: procedures as number };
 }
 
+/** The licence lines' presence: a line and a boolean each, nothing else (ticket 34b). */
+function parseLicences(value: unknown): readonly LicenceStatus[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new ProtocolError("info.licences is not a list");
+  return value.map((entry: unknown) => {
+    if (!isRecord(entry) || Object.keys(entry).length !== 2 || typeof entry.line !== "string" || typeof entry.present !== "boolean") {
+      throw new ProtocolError("info.licences has the wrong fields");
+    }
+    return { line: entry.line, present: entry.present };
+  });
+}
+
 function parseHostInfo(value: unknown): HostInfo {
   if (!isRecord(value)) throw new ProtocolError("info is missing");
   const { os, freeRamMb, freeDiskGb, brokerVersion, sqlReachable } = value;
@@ -87,8 +100,9 @@ function parseHostInfo(value: unknown): HostInfo {
   }
   // A broker older than ticket 22 sends no sqlLogin; the doctor says so instead of guessing.
   const sqlLogin = parseSqlLogin(value.sqlLogin);
+  const licences = parseLicences(value.licences);
   const info: HostInfo = { os, freeRamMb: freeRamMb as number, freeDiskGb: freeDiskGb as number, brokerVersion, sqlReachable };
-  return sqlLogin === undefined ? info : { ...info, sqlLogin };
+  return { ...info, ...(sqlLogin === undefined ? {} : { sqlLogin }), ...(licences === undefined ? {} : { licences }) };
 }
 
 function parseLevel(value: unknown): VerifyLevel {

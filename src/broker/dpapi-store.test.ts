@@ -36,6 +36,16 @@ describe("the broker's DPAPI secret store", () => {
     expect(r.seen).toEqual(["secret-put slot-12sp9-01-dbo (22 chars)", "secret-get slot-12sp9-01-dbo", "secret-get licence-12", "secret-delete slot-12sp9-01-dbo", "secret-get slot-12sp9-01-dbo"]);
   });
 
+  it("answers has from the blob's presence alone when it is told how to see it, without a step", async () => {
+    const r = runner();
+    const files = new Set(["licence-12"]);
+    const store = dpapiSecretStore(r.run, async (name) => files.has(name));
+    expect(await store.has("licence-12")).toBe(true);
+    expect(await store.has("licence-14")).toBe(false);
+    await expect(store.has("../sa")).rejects.toThrow(/secret name/);
+    expect(r.seen).toEqual([]);
+  });
+
   it("refuses a name it does not keep, and a secret of the wrong kind for its name", async () => {
     const store = dpapiSecretStore(runner().run);
     await expect(store.get("../sa")).rejects.toThrow(/secret name/);

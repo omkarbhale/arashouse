@@ -10,9 +10,10 @@
 
 import { win32 } from "node:path";
 import { OOTB_OWNER, compareDenyList, goldenJson, type DenyListDiff, type DenyListSnapshot } from "../core/baseline.js";
-import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type EditList, type EditSecrets } from "../core/edits.js";
+import { withLicenceElement } from "../core/edit-lists.js";
+import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type EditList, type EditSecrets, type SecretHandle } from "../core/edits.js";
 import { FLAVORS, type FlavorKey } from "../core/flavors.js";
-import { licenceSecretName } from "../core/licence.js";
+import { decodeLicence, licenceSecretName } from "../core/licence.js";
 import type { Manifest, ManifestDiff } from "../core/manifest.js";
 import { goldenLayout, slotId, slotLoginSecretName, slotRootSecretName, stampFile, type LoginRole, type SlotNames, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
@@ -222,39 +223,46 @@ export interface RenderedConfigs {
   readonly files: readonly { readonly file: string; readonly bytes: Uint8Array }[];
 }
 
-/** The golden's edit list (`golden\<key>\edits.json`), which must be the slot's flavor's. */
+const LICENCE_HANDLES = ["licence", "licence_act_key", "licence_type", "licence_company"] as const satisfies readonly SecretHandle[];
+
+/**
+ * The golden's edit list (`golden\<key>\edits.json`), which must be the slot's flavor's, with the whole `<License>` element
+ * also when the golden's list predates it (`withLicenceElement`).
+ */
 export async function goldenEditList(system: SlotSystem, slot: SlotRef, root: string): Promise<EditList> {
   const layout = goldenLayout(slot.flavor, root);
   const listBytes = await system.readFile(layout.edits);
   if (listBytes === null) throw new Error(`${layout.edits} does not exist`);
-  const list = parseEditList(JSON.parse(new TextDecoder().decode(listBytes)));
+  const list = withLicenceElement(parseEditList(JSON.parse(new TextDecoder().decode(listBytes))));
   if (list.flavor !== slot.flavor) throw new Error(`${layout.edits} is the edit list of flavor ${list.flavor}`);
   return list;
 }
 
 /**
- * The secrets the edit list names, as a render uses them: the slot's login passwords, and the licence from the host's
- * store (`licence-<line>`; blank, as in golden, without one). `licensed` says whether a key was stored.
+ * The secrets the edit list names, as a render uses them: the slot's login passwords, and the whole `<License>` element
+ * from the host's store (`licence-<line>`; blank without one). `licensed` says whether a licence was stored.
  */
 export async function configSecrets(system: SlotSystem, slot: SlotRef, list: EditList, logins: SlotLogins): Promise<{ secrets: EditSecrets; licensed: boolean }> {
   const needed = secretsNeeded(list);
-  const licence = needed.some((h) => h === "licence" || h === "licence_act_key")
+  const stored = needed.some((h) => (LICENCE_HANDLES as readonly SecretHandle[]).includes(h))
     ? await system.secrets.get(licenceSecretName(FLAVORS[slot.flavor].licence.line))
     : undefined;
+  const licence = stored === undefined ? undefined : decodeLicence(stored);
   const blank = Secret.of("", "licence");
   const available: EditSecrets = {
     db_dbo_password: logins.dbo,
     db_reg_password: logins.reg,
-    licence: licence ?? blank,
-    // The `act_key` that goes with a stored key is not kept yet: a slot that must log in needs it (docs/baselines.md).
-    licence_act_key: blank,
+    licence: licence?.lic_key ?? blank,
+    licence_act_key: licence?.act_key ?? blank,
+    licence_type: licence?.lic_type ?? blank,
+    licence_company: licence?.company ?? blank,
   };
   return { secrets: Object.fromEntries(needed.map((h) => [h, available[h]])), licensed: licence !== undefined };
 }
 
 /**
- * Renders the golden's edit list into the slot's config files, from the golden's bytes. The licence comes from the
- * host's store (`licence-<line>`); without one the key stays blank, as in golden, and the detail says so.
+ * Renders the golden's edit list into the slot's config files, from the golden's bytes. The whole `<License>` element
+ * comes from the host's store (`licence-<line>`); without one it renders blank and the detail says so.
  */
 export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, logins: SlotLogins): Promise<RenderedConfigs> {
   const layout = goldenLayout(slot.flavor, root);

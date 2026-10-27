@@ -9,6 +9,7 @@
 // - No call takes, returns or logs a secret as a string. A secret is a `SecretRef` handle.
 
 import type { FlavorKey } from "../core/flavors.js";
+import type { LicenceStatus } from "../core/licence.js";
 import type { ManifestDiff, VerifyLevel } from "../core/manifest.js";
 import type { SlotRef } from "../core/names.js";
 
@@ -48,6 +49,8 @@ export interface HostInfo {
   readonly sqlReachable: boolean;
   /** The broker's SQL login; null when it cannot connect, absent from a broker older than ticket 22. */
   readonly sqlLogin?: SqlLoginInfo | null;
+  /** Whether a licence is stored for each licence line: booleans only (ticket 34b); absent from an older broker. */
+  readonly licences?: readonly LicenceStatus[];
 }
 
 export interface HostInfoResult extends HostResult {

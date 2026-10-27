@@ -44,7 +44,7 @@ them by the rules of `src/core/names.ts`, as `baseline-steps.ps1` does; a test f
 | `iis` | the applications of the golden's `iis.json` under `Default Web Site`: `/ah-<key>-<NN>` and each sub-application, each on its own pool `ah-<key>-<NN>-<role>` with the captured runtime, pipeline mode, bitness, identity and start mode, and an idle timeout of 10 minutes (or what `setup-host.ps1 -SlotIdleTimeoutMinutes` recorded). An existing application or pool is brought to the template |
 | `agent` | the agent service of the golden's `service.json`, if it has one (goldens built since ticket 33b, `docs/baselines.md`): `ArasHouseAgent_<key>_<NN>` running the golden's `binaryPath` in the slot (with its `arguments`, the tree the slot's, refused if they name a path outside the slot), startup Manual, left stopped, its port (`8800 + 100 x flavor index + NN`) refused if it is 8734 to 8736 or something listens there. An older golden has none, and the step answers `no agent` |
 | `database` | the slot's two SQL login passwords from the host's secret store (made and stored on the first provision); then, through the name-checked procedures (ticket 22): `create_slot_database`, `kill_connections`, the broker's own `RESTORE ... WITH REPLACE` of the golden's `db\ootb.bak` with its files moved to `sqldata\arashouse_<key>_<NN>.mdf` and `_log.ldf`, `create_slot_login` for `_dbo` and `_reg`, and `ALTER USER innovator` / `innovator_regular` `WITH LOGIN` to them, then the database marker (the golden hash and the time, as a reset writes it; ticket 32's health check holds the database to the stamp). The CD's SQL scripts are not run |
-| `configs` | the golden's `edits.json` rendered into the slot's config files from the golden's bytes (`docs/edits.md`): the slot's names, its login passwords, and the licence key stored for the flavor's line (`licence-12` or `licence-14`); without one the key stays blank, as in golden, and the result says the slot cannot log in yet |
+| `configs` | the golden's `edits.json` rendered into the slot's config files from the golden's bytes (`docs/edits.md`): the slot's names, its login passwords, and the whole `<License>` element stored for the flavor's line (`licence-12` or `licence-14`, `docs/secrets.md`); without one it renders blank and the result says the slot cannot log in yet |
 | `stamp` | `.arashouse-slot.json`: the slot id, flavor, golden manifest hash, the time, no lease. Written last: a slot with a stamp is provisioned |
 | `deny-list` | the fingerprints again; any difference fails the provision (`Quarantine`) |
 
@@ -100,9 +100,9 @@ logical names of the `CoreAndSolutions*.bak` it was restored from.
   DPAPI blobs in `<root>\secrets\` (`src/broker/dpapi-store.ts`), readable through that folder's ACL by SYSTEM and the
   broker only. They reach SQL Server only on the `database` step's stdin, and the slot only in its rendered configs.
   A destroy deletes them, and the slot's stored random `root` password (`slot-<key>-<NN>-root`, `docs/lease-credentials.md`).
-- The licence is read from the same store (`licence-<line>`). Nothing stores one there yet, and a slot that must log in
-  needs the whole `<License>` element (`docs/baselines.md`, run 5), not the key alone: storing the licence for slots,
-  with its `act_key`, is ticket 34b.
+- The licence is read from the same store (`licence-<line>`): the whole `<License>` element a login needs
+  (`docs/baselines.md`, run 5), which `scripts/store-licence.ps1` stores from an existing install's config
+  (`docs/secrets.md`).
 - Nothing secret is in a request's arguments, the audit log, a step's error text (every line goes through `redact`) or
   the result.
 

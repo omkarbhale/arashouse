@@ -4,6 +4,7 @@
 
 import { win32 } from "node:path";
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
+import type { LicenceStatus } from "../core/licence.js";
 import { MAX_SLOT, STAMP_FILE_NAME, slotId, type SlotRef } from "../core/names.js";
 import type { HostInfo, ListedSlot, SlotStamp, SqlLoginInfo } from "../host/driver.js";
 import { HostError, isHostError } from "../host/errors.js";
@@ -26,6 +27,8 @@ export interface BrokerSystem {
   freeRamBytes(): number;
   /** The broker's SQL login as it reads itself, or null when it cannot connect (sql-probe.ts on the host). */
   sqlLogin(): Promise<SqlLoginInfo | null>;
+  /** Whether each licence line has a stored licence (booleans only); absent, `hostInfo` reports none. */
+  licences?(): Promise<readonly LicenceStatus[]>;
 }
 
 const MB = 1024 * 1024;
@@ -57,7 +60,7 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
     .register("hostInfo", {
       target: "none",
       run: async (ctx: VerbContext): Promise<WireResult> => {
-        const [freeBytes, sqlLogin] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlLogin()]);
+        const [freeBytes, sqlLogin, licences] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlLogin(), system.licences?.()]);
         const info: HostInfo = {
           os: system.os(),
           freeRamMb: Math.floor(system.freeRamBytes() / MB),
@@ -65,6 +68,7 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
           brokerVersion: system.brokerVersion,
           sqlReachable: sqlLogin !== null,
           sqlLogin,
+          ...(licences ? { licences: licences.map((l) => ({ line: l.line, present: l.present })) } : {}),
         };
         return { ok: true, detail: hostInfoDetail(info), info };
       },

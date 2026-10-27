@@ -10,7 +10,7 @@
 import { mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ManifestError, summarizeDiff } from "../core/manifest.js";
-import { buildScratch, goldenDir, slotDir, slotStepsScript, type SlotRef } from "../core/names.js";
+import { buildScratch, goldenDir, secretFile, slotDir, slotStepsScript, type SlotRef } from "../core/names.js";
 import type { FlavorKey } from "../core/flavors.js";
 import { anonymousGet } from "../host/http.js";
 import { arasHttp } from "./aras-http.js";
@@ -182,7 +182,7 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
         if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw err;
       }
     },
-    secrets: dpapiSecretStore((name, request) => step(name, request)),
+    secrets: dpapiSecretStore((name, request) => step(name, request), (name) => options.fs.isFile(secretFile(name, options.root))),
     aras: arasHttp(),
   };
 }

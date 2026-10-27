@@ -16,8 +16,8 @@ arashouse ── BrokerHost ── spawn ──▶ node.exe <root>\broker\app\br
 
 ## Verbs
 
-The verb list is the host-driver method list (`HOST_METHODS`); there is no verb that runs a command, SQL
-or a path the client chose. A request names its target as a slot record `{ flavor, slot }` or a flavor.
+The verb list is the host-driver method list (`HOST_METHODS`), plus `storeLicence`, which no WSL caller sends
+(`HOST_SIDE_VERBS`); there is no verb that runs a command, SQL or a path the client chose. A request names its target as a slot record `{ flavor, slot }` or a flavor.
 The broker derives every name and path from it and runs the guards (`assertSlotOwned` or
 `assertFlavorOwned`, `src/host/owned.ts`) before the verb runs. `BrokerHost` runs the same guards on the
 WSL side first, so a refused name is never sent.
@@ -25,7 +25,7 @@ WSL side first, so a refused name is never sent.
 | verb | target | what it does | ticket |
 |---|---|---|---|
 | `ping` | none | answers with the broker's version | 20 |
-| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute | 20, 22 |
+| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute, and for each licence line whether a licence is stored (a boolean) | 20, 22, 34b |
 | `readStamp` | slot | reads `<slot folder>\.arashouse-slot.json`; a slot with no folder is `Refused`, an unusable stamp `Quarantine` | 20 |
 | `listSlots` | none | every `slots\<key>\<NN>` folder whose name is the tool's and that is not a junction, with its stamp | 20 |
 | `provisionSlot` | slot | makes the slot from its flavor's golden: folders, IIS application and pools, agent, database and logins, rendered configs, stamp; refuses a slot with a stamp; a failure is rolled back (`docs/provision.md`) | 25 |
@@ -41,6 +41,7 @@ WSL side first, so a refused name is never sent.
 | `restoreDatabase`, `deployCode`, `backupDatabase` | slot | | 39, 40, 43 |
 | `baselineVerify` | flavor | checks `golden\<key>` against its manifest at `args.level` (`golden`, the default; `fast`; `full`): `ok`, `level`, the diff (counts and paths only) and `goldenHash` (the manifest hash a reset mirrors to); "not built" when there is no manifest | 28, 24, 30 |
 | `baselineBuild` | flavor | never served: the build runs in the captain's elevated session, since the broker's SQL login may not create its database (`docs/baselines.md`); `BrokerHost` refuses it without asking | 24 |
+| `storeLicence` | none | `args.line` (`12` or `14`) and `args.licence`, the four `<License>` attributes: stored as the line's licence (`licence-<line>`), replacing the one before; answers with the line only. Sent only by `scripts/store-licence.ps1`, not a host-driver method (`docs/secrets.md`) | 34b |
 
 The broker answers a verb it does not have `Refused`. Until a verb's ticket lands, `BrokerHost` fails that
 method `Unreachable` naming the ticket, without asking the broker, so a reset leaves the slot dirty instead

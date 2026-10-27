@@ -21,12 +21,14 @@ import { repoRoot } from "./helpers.js";
  * step's stdin (ticket 25). For the per-lease credentials (ticket 34), `BrokerHost` puts the lease's password on
  * the broker request line, `get --password-fd` writes it to the caller's descriptor, and the broker's Aras client
  * (shared with the baseline build's login check) sends a password's MD5 to the OAuth server and the token in the
- * `Authorization` header of the AML edit.
+ * `Authorization` header of the AML edit. A line's licence (ticket 34b) is stored as one JSON blob of the whole
+ * <License> element, which the licence module writes from the four values and reads back into them.
  */
 const ALLOWED: Readonly<Record<string, number>> = {
   "src/core/edits.ts": 1,
   "src/core/lease.ts": 1,
   "src/core/lease-files.ts": 1,
+  "src/core/licence.ts": 2,
   "src/cli/run.ts": 1,
   "src/broker/token.ts": 3,
   "src/broker/build-system.ts": 3,

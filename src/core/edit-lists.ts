@@ -13,6 +13,18 @@ import { EDIT_LIST_SCHEMA, type Edit, type EditList, parseEditList } from "./edi
 
 const SERVER_CONFIG = "InnovatorServerConfig.xml";
 
+/**
+ * The whole `<License>` element, from the line's one stored licence (ticket 34b). The golden holds no key (ticket 24
+ * blanks it); a key is needed to log in (ticket 09), and with it the rest of the element it came with ("License Key is
+ * invalid" without them, ticket 24).
+ */
+const LICENCE_EDITS: readonly Edit[] = [
+  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@lic_key", value: "{{secret:licence}}" },
+  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@act_key", value: "{{secret:licence_act_key}}" },
+  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@lic_type", value: "{{secret:licence_type}}" },
+  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@company", value: "{{secret:licence_company}}" },
+];
+
 const serverConfig: readonly Edit[] = [
   // One <DB-Connection>; 12.0 and 14.x name the logins dbo_uid/regular_uid, not uid.
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/DB-Connection/@id", value: "{{database}}" },
@@ -21,8 +33,7 @@ const serverConfig: readonly Edit[] = [
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/DB-Connection/@dbo_pwd", value: "{{secret:db_dbo_password}}" },
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/DB-Connection/@regular_uid", value: "{{login.reg}}" },
   { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/DB-Connection/@regular_pwd", value: "{{secret:db_reg_password}}" },
-  // The golden holds no key (ticket 24 blanks it); a key is needed to log in (ticket 09).
-  { file: SERVER_CONFIG, kind: "xml", path: "/Innovator/License/@lic_key", value: "{{secret:licence}}" },
+  ...LICENCE_EDITS,
   {
     file: SERVER_CONFIG,
     kind: "xml",
@@ -120,4 +131,15 @@ const EDITS: Readonly<Record<FlavorKey, readonly Edit[]>> = {
 /** The flavor's edit list, validated. */
 export function editList(flavor: FlavorKey): EditList {
   return parseEditList({ schema: EDIT_LIST_SCHEMA, flavor, edits: EDITS[flavor] });
+}
+
+/**
+ * A golden's list with the whole `<License>` element: a list that sets `lic_key` but not the rest (a golden built before
+ * ticket 34b) gets the attributes it lacks, so it renders the element without a rebuild. Any other list is returned as it is.
+ */
+export function withLicenceElement(list: EditList): EditList {
+  const has = (edit: Edit) => list.edits.some((e) => e.file.toLowerCase() === edit.file.toLowerCase() && e.path === edit.path);
+  if (!has(LICENCE_EDITS[0]!)) return list;
+  const missing = LICENCE_EDITS.filter((edit) => !has(edit));
+  return missing.length === 0 ? list : parseEditList({ schema: list.schema, flavor: list.flavor, edits: [...list.edits, ...missing] });
 }

@@ -121,7 +121,7 @@ describeWithPs(`teardown.ps1 under ${ps}`, { timeout: 90_000 }, () => {
     expect(b.err).toContain("it cannot go with -KeepSql");
   });
 
-  it.runIf(!elevated())("refuses -Apply when not elevated (exit 4)", () => {
+  it.runIf(Boolean(ps && windows) && !elevated())("refuses -Apply when not elevated (exit 4)", () => {
     const r = run(["-Apply"]);
     expect(r.code).toBe(4);
     expect(r.out).not.toContain("do: ");

@@ -18,6 +18,7 @@ Operator commands (`doctor`, `repair`, `destroy`, `prune`, `force-return`, `disa
 | `arashouse flavors [--json]` | Each flavor's release, build, libs-js engine, slot counts, media and baseline. |
 | `arashouse run --lease <lease_id> -- <command ...>` | Runs a command with the lease's connection in its environment. |
 | `arashouse media check [<flavor>...] [--json] [--write-sums]` | Checks the installers (`docs/media-check.md`). |
+| `arashouse reset-worker [--slot <slot>]` | Resets returned slots; `return` starts it detached (`docs/reset.md`). |
 | `arashouse help [<command>]`, `<command> --help` | Help for the tool or one command. |
 | `arashouse version`, `--version` | The package version. |
 
@@ -28,7 +29,9 @@ and never a secret.
 
 `--holder` names who takes the lease (a task or crewmate name); two `get` calls from one holder get
 two slots. `--wait <seconds>` waits up to that long for a slot; without it a flavor with no free slot
-exits 3 at once.
+exits 3 at once. With no free slot but a dirty one, `get --wait` resets it itself (about 10 s, and it
+finishes the reset even past the deadline); without `--wait` it starts a reset worker for it and
+exits 3 (`docs/reset.md`).
 
 With `--json`, stdout is the lease contract and nothing else (`docs/schemas/get.schema.json`); any
 human text goes to stderr. It is the one output that shows the lease's password, once. There is no
@@ -37,11 +40,20 @@ not the password: reach it through `run`.
 
 ### `return`
 
-Marks the slot dirty and exits; it does not wait for the reset unless `--wait` is given. The worker
+Marks the slot dirty, starts a detached `reset-worker` for it and exits; it does not wait for the
+reset unless `--wait` is given. The worker
 may assume the slot is clean from then on: arashouse does not hand it out again until it is. Returning
 twice is a no-op (exit 0, `already returned`). `--wait` blocks until the slot is free again, with no
 limit; `--wait=<seconds>` sets one. Only the `=` form takes a value, so the lease id after `--wait` is
 never read as seconds.
+
+### `reset-worker`
+
+`arashouse reset-worker [--slot <slot>]` resets `<slot>`, then every other dirty slot it can, and prints
+one line per slot (`23-01 reset in 9.8 s; free`). `return` starts it detached with no output; it is not
+needed by hand. It exits 5 if the named slot was quarantined and 6 if the host did not answer.
+`ARASHOUSE_RESET_WORKER=off` stops `return` and `get` from starting one (a lazy reset in `get --wait`
+still runs). See `docs/reset.md`.
 
 ### `run`
 
@@ -97,7 +109,7 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | 2 | usage: an unknown command, option or flavor, a missing argument, `return` by slot name without `--if-lease-id` |
 | 3 | no slot available: none of the flavor is free, or the governor refused (`max_active`, `min_free_ram_mb`; `docs/governor.md`) |
 | 4 | lease mismatch: `return --if-lease-id` named a lease the slot no longer holds; `run` on a lease that is not held, or whose password is gone |
-| 5 | reset failed: the slot is quarantined or disabled, or `return --wait` timed out |
+| 5 | reset failed: the slot is quarantined or disabled, or `return --wait` timed out; `reset-worker` quarantined its slot |
 | 6 | host unreachable (the host or broker did not answer) |
 | 7 | refused by a guard: the name is not one arashouse owns, or is on the deny-list |
 | 8 | a step needs a secret and no terminal can ask for it |
@@ -111,5 +123,6 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | `ARASHOUSE_HOST` | `broker` (default) or `fake`. The broker client is tickets 20 and 21; until then every host call exits 6. `fake` is the offline fake host, rebuilt in each process from the state file (each slot clean, each baseline built); the CLI tests use it. |
 | `ARASHOUSE_FAKE_FAULTS` | with the fake host: a JSON array of faults to inject (`src/host/fake.ts`, `Fault`), for tests |
 | `ARASHOUSE_HOST_ADDR` | the Windows host address for slot URLs (`docs/slot-url.md`) |
+| `ARASHOUSE_RESET_WORKER` | `off`: `return` and `get` start no detached reset worker (a lazy reset in `get --wait` still runs); the CLI tests use it |
 | `ARASHOUSE_MEDIA` | the folder holding `media/<flavor>/` (`docs/media-check.md`) |
 | `ARASHOUSE_DEBUG` | `1` prints the stack of an error |

@@ -184,6 +184,15 @@ describe("the state file bytes", () => {
     expect(parseState(JSON.stringify(raw))).toMatchObject({ next_ticket: 1, queue: [] });
   });
 
+  it("round-trips a reset worker's start time, and reads a reset record written without one", () => {
+    const resetting = transitionSlot(slotIn("dirty"), { to: "resetting", pid: 21, start_time: "8812345" }, ctx);
+    expect(resetting.reset).toEqual({ started_at: NOW.toISOString(), pid: 21, start_time: "8812345", attempt: 1 });
+    expect(parseState(serialiseState(stateWith(resetting))).slots["23-02"]?.reset).toEqual(resetting.reset);
+    const unknown = transitionSlot(slotIn("dirty"), { to: "resetting", pid: 22, start_time: null }, ctx);
+    expect(unknown.reset).toEqual({ started_at: NOW.toISOString(), pid: 22, attempt: 1 });
+    expect(parseState(serialiseState(stateWith(unknown))).slots["23-02"]?.reset).toEqual(unknown.reset);
+  });
+
   it("round-trips the lease, with its bootstrap", () => {
     const leased = transitionSlot(slotIn("free"), { to: "leased", holder: "h", bootstrap: { recipe: "r", steps: 3 } }, ctx);
     const back = parseState(serialiseState(stateWith(leased)));

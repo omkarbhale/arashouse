@@ -92,14 +92,20 @@ export function liveWaiters(queue: readonly Waiter[], now: Date, isAlive: (waite
 
 // ---- the reset cap ---------------------------------------------------------------------------------
 
-/** Whether a reset worker's process is still running (ticket 14 recovers a dead one's slot as dirty). */
-export function isResetWorkerAlive(pid: number): boolean {
-  return isProcessAlive({ pid, token: "", acquired_at: "", start_time: null });
+/**
+ * Whether a reset worker's process is still running (reset.ts recovers a dead one's slot as dirty).
+ * With its start time recorded, a reused pid (after a reboot, say) is not mistaken for it.
+ */
+export function isResetWorkerAlive(pid: number, startTime: string | null = null): boolean {
+  return isProcessAlive({ pid, token: "", acquired_at: "", start_time: startTime });
 }
 
+/** Whether a reset worker, by its pid and start time, is still running. */
+export type ResetWorkerAlive = (pid: number, startTime: string | null) => boolean;
+
 /** The slots whose reset is running now: `resetting`, with a live worker. */
-export function runningResets(slots: readonly Slot[], isAlive: (pid: number) => boolean = isResetWorkerAlive): Slot[] {
-  return slots.filter((s) => s.status === "resetting" && s.reset !== undefined && isAlive(s.reset.pid));
+export function runningResets(slots: readonly Slot[], isAlive: ResetWorkerAlive = isResetWorkerAlive): Slot[] {
+  return slots.filter((s) => s.status === "resetting" && s.reset !== undefined && isAlive(s.reset.pid, s.reset.start_time ?? null));
 }
 
 export type ResetStart = { readonly started: true; readonly slot: Slot } | { readonly started: false; readonly reason: string };
@@ -107,8 +113,10 @@ export type ResetStart = { readonly started: true; readonly slot: Slot } | { rea
 export interface BeginResetOptions {
   /** The reset worker's pid, recorded on the slot. */
   readonly pid: number;
+  /** The reset worker's process start time, recorded with the pid; null or absent where unknown. */
+  readonly startTime?: string | null;
   readonly maxResets: number;
-  readonly isAlive?: (pid: number) => boolean;
+  readonly isAlive?: ResetWorkerAlive;
 }
 
 /**
@@ -123,7 +131,7 @@ export async function beginReset(store: StateStore, slotId: string, options: Beg
     if (slot.status !== "dirty") return { started: false, reason: `slot ${slotId} is ${slot.status}, not dirty` };
     const running = runningResets(Object.values(tx.snapshot()), options.isAlive).length;
     if (running >= options.maxResets) return { started: false, reason: `max_resets ${options.maxResets} reached (${running} resetting)` };
-    return { started: true, slot: tx.transition(slotId, { to: "resetting", pid: options.pid }) };
+    return { started: true, slot: tx.transition(slotId, { to: "resetting", pid: options.pid, start_time: options.startTime ?? null }) };
   });
 }
 

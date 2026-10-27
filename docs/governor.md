@@ -65,8 +65,9 @@ events log, reason `gone`). The events log records every `queue-join` and `queue
 `beginReset(store, slot, { pid, maxResets })` is the only way into `resetting`: under the state lock
 it moves a `dirty` slot to `resetting` for the worker `pid` only while fewer than `max_resets` resets
 are running, and otherwise refuses (`max_resets 2 reached (2 resetting)`), leaving the slot `dirty`
-for a later try. A `resetting` slot whose worker process has ended does not count (ticket 14 recovers
-it as `dirty`). Ticket 14's reset worker and `get`'s lazy reset start every reset through it.
+for a later try. A `resetting` slot whose worker process has ended (by its pid and start time) does
+not count, and is recovered as `dirty`. The reset worker and `get`'s lazy reset start every reset
+through it (`docs/reset.md`).
 
 ## Rule 3: the disk gate, `min_free_disk_gb`
 

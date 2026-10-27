@@ -42,6 +42,8 @@ export interface Lease {
 export interface ResetInfo {
   readonly started_at: string;
   readonly pid: number;
+  /** The worker process's start time, so a reused pid is not mistaken for it (lock.ts); absent or null where unknown. */
+  readonly start_time?: string | null;
   /** Consecutive reset attempts since the slot was last clean. */
   readonly attempt: number;
 }
@@ -155,7 +157,7 @@ export type TransitionRequest =
   | { readonly to: "provisioning" | "dirty" | "disabled" }
   | { readonly to: "free"; readonly golden_hash: string; readonly reset_ms: number }
   | { readonly to: "leased"; readonly holder: string; readonly bootstrap?: BootstrapInfo }
-  | { readonly to: "resetting"; readonly pid: number }
+  | { readonly to: "resetting"; readonly pid: number; readonly start_time?: string | null }
   | { readonly to: "quarantined"; readonly reason: string };
 
 export interface TransitionContext {
@@ -206,7 +208,8 @@ export function transitionSlot(slot: Slot, request: TransitionRequest, context: 
     }
     case "resetting": {
       if (!Number.isInteger(request.pid) || request.pid <= 0) throw new Error("pid must be a positive integer");
-      return { ...base, reset: { started_at: now, pid: request.pid, attempt: (slot.reset?.attempt ?? 0) + 1 } };
+      const attempt = (slot.reset?.attempt ?? 0) + 1;
+      return { ...base, reset: { started_at: now, pid: request.pid, ...(request.start_time != null ? { start_time: request.start_time } : {}), attempt } };
     }
     case "quarantined": {
       const reason = requireText("quarantine reason", request.reason);
@@ -267,7 +270,16 @@ export function serialiseState(state: State): string {
       last_reset_at: s.last_reset_at,
       last_reset_ms: s.last_reset_ms,
       ...(s.quarantine_reason !== undefined ? { quarantine_reason: s.quarantine_reason } : {}),
-      ...(s.reset ? { reset: { started_at: s.reset.started_at, pid: s.reset.pid, attempt: s.reset.attempt } } : {}),
+      ...(s.reset
+        ? {
+            reset: {
+              started_at: s.reset.started_at,
+              pid: s.reset.pid,
+              ...(s.reset.start_time != null ? { start_time: s.reset.start_time } : {}),
+              attempt: s.reset.attempt,
+            },
+          }
+        : {}),
     }));
   const queue = state.queue.map((w) => ({
     ticket: w.ticket,
@@ -353,7 +365,13 @@ function parseSlot(path: string, key: string, raw: unknown): Slot {
   if (raw.reset !== undefined) {
     const r = raw.reset;
     if (!isObject(r) || !Number.isInteger(r.pid) || !Number.isInteger(r.attempt)) fail(path, `${where}.reset is malformed`);
-    reset = { started_at: str(path, `${where}.reset.started_at`, r.started_at), pid: r.pid as number, attempt: r.attempt as number };
+    const start_time = r.start_time === undefined ? null : strOrNull(path, `${where}.reset.start_time`, r.start_time);
+    reset = {
+      started_at: str(path, `${where}.reset.started_at`, r.started_at),
+      pid: r.pid as number,
+      ...(start_time !== null ? { start_time } : {}),
+      attempt: r.attempt as number,
+    };
   }
   if (slotStatus === "resetting" && !reset) fail(path, `${where} is resetting without a reset record`);
   return {

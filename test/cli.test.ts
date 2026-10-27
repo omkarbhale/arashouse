@@ -39,7 +39,8 @@ function cli(args: readonly string[], env: NodeJS.ProcessEnv = {}): Promise<Resu
       process.execPath,
       [BIN, ...args],
       {
-        env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ...env },
+        // No detached reset worker unless a test asks for one, so none outlives its test's home.
+        env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ARASHOUSE_RESET_WORKER: "off", ...env },
         encoding: "utf8",
         timeout: 30_000,
       },
@@ -338,12 +339,74 @@ describe("flavors", () => {
   });
 });
 
+describe("the reset (ticket 14)", () => {
+  async function slotStatus(id: string): Promise<{ status: string; last_reset_ms: number | null; quarantine_reason: string | null }> {
+    const report = JSON.parse((await cli(["status", "--json"])).stdout) as { slots: { slot: string; status: string; last_reset_ms: number | null; quarantine_reason: string | null }[] };
+    const row = report.slots.find((s) => s.slot === id);
+    if (!row) throw new Error(`no slot ${id}`);
+    return row;
+  }
+
+  it("return starts a detached reset worker that takes the slot back to free", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    const r = await cli(["return", grant.lease_id, "--wait=30"], { ARASHOUSE_RESET_WORKER: "" });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain("23-01 is free again");
+    expect((await slotStatus("23-01")).status).toBe("free");
+  });
+
+  it("get resets a dirty slot itself when none is free, and hands it out", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+    expect((await slotStatus("23-01")).status).toBe("dirty");
+    const r = await cli(["get", "23", "--holder", "task-b", "--wait", "30", "--json"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect((JSON.parse(r.stdout) as Grant).slot).toBe("23-01");
+    expect((JSON.parse(r.stdout) as Grant).lease_id).not.toBe(grant.lease_id);
+  });
+
+  it("get --wait 0 with only a dirty slot exits 3 at once, saying it is being reset", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+    const r = await cli(["get", "23", "--holder", "task-b"]);
+    expect(r.code).toBe(EXIT_CODES.noSlot);
+    expect(r.stderr).toContain("23-01 is being reset");
+  });
+
+  it("reset-worker resets the slot, and exits 5 with the step named when the reset fails twice", async () => {
+    await seed({ "23": 2 });
+    const first = await lease("23");
+    const second = await lease("23", "task-b");
+    expect((await cli(["return", first.lease_id])).code).toBe(0);
+    expect((await cli(["return", second.lease_id])).code).toBe(0);
+    const ok = await cli(["reset-worker", "--slot", "23-01"]);
+    expect(ok.code, ok.stderr).toBe(0);
+    expect(ok.stdout).toMatch(/^23-01 reset in [\d.]+ s; free$/m);
+    // It goes on to the other dirty slot.
+    expect(ok.stdout).toMatch(/^23-02 reset in/m);
+    expect((await slotStatus("23-02")).status).toBe("free");
+
+    const again = await lease("23");
+    expect((await cli(["return", again.lease_id])).code).toBe(0);
+    const fault = JSON.stringify([{ method: "resetTree", kind: "fail", times: 2 }]);
+    const failed = await cli(["reset-worker", "--slot", again.slot], { ARASHOUSE_FAKE_FAULTS: fault });
+    expect(failed.code).toBe(EXIT_CODES.resetFailed);
+    const row = await slotStatus(again.slot);
+    expect(row.status).toBe("quarantined");
+    expect(row.quarantine_reason).toContain("reset step tree failed twice");
+    expect((await cli(["reset-worker", "--slot", "nope"])).code).toBe(EXIT_CODES.usage);
+  });
+});
+
 describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
     for (const command of ["get", "return", "status", "flavors", "run", "help", "version"]) expect(overview.stdout).toContain(`  ${command}`);
-    for (const command of ["get", "return", "status", "flavors", "run", "media"]) {
+    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker"]) {
       const r = await cli([command, "--help"]);
       expect(r.code, command).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));

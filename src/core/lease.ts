@@ -2,10 +2,12 @@
 // `leaseStatus`, over the state store (store.ts) and the host driver (src/host, through the narrow
 // `LeaseHost` view of it). No daemon: every change is one locked update of the state file.
 //
-// The captain's rule governs `returnLease`: it marks the slot `dirty` and exits. It does not reset
-// and does not wait for one; arashouse will not hand the slot out again until it is clean (ticket
-// 14 decides when the reset runs). Nothing here keeps lease data past the return: the per-lease
-// password goes to the secret store and is deleted when the lease is returned.
+// The captain's rule governs `returnLease`: it marks the slot `dirty`, starts a detached reset
+// worker and exits. It does not reset and does not wait for one; arashouse will not hand the slot
+// out again until it is clean. When the reset runs is ticket 14's (reset.ts, docs/reset.md): the
+// worker, or a `get` that finds no free slot and resets a dirty one itself. Nothing here keeps lease
+// data past the return: the per-lease password goes to the secret store and is deleted when the
+// lease is returned.
 
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleepMs } from "node:timers/promises";
@@ -101,6 +103,19 @@ export function exitCodeFor(err: unknown): number {
 
 // ---- dependencies ----------------------------------------------------------------------------------
 
+/** How a lazy reset in `get` ended: the slot is `free`, it could not start (`busy`), or it `failed`. */
+export type LazyResetResult = "free" | "busy" | "failed";
+
+/** The reset policy as the lease operations see it (reset.ts implements it; ticket 14). */
+export interface ResetHooks {
+  /** Starts a detached reset worker for the slot and returns at once. Best effort: a lazy reset covers a failure. */
+  startWorker(slot: string): void;
+  /** Resets a dirty slot in this process and resolves when the reset has ended. */
+  resetNow(slot: string): Promise<LazyResetResult>;
+  /** Sends `resetting` slots whose worker has ended back to `dirty`. */
+  recover(): Promise<void>;
+}
+
 export interface LeaseDeps {
   readonly store: StateStore;
   readonly host: LeaseHost;
@@ -110,6 +125,8 @@ export interface LeaseDeps {
   readonly resolveUrl?: (alias: string) => Promise<string>;
   /** The pool's limits (`loadConfig`); defaults to `DEFAULT_CONFIG`. */
   readonly config?: ArashouseConfig;
+  /** The reset policy: `return` starts a worker, `get` resets lazily. Without it nothing here starts a reset. */
+  readonly reset?: ResetHooks;
   /** Defaults to `poolGovernor(config)`. */
   readonly governor?: Governor;
   /** Whether a queued caller still runs; defaults to a process check. A dead caller's ticket is dropped. */
@@ -244,6 +261,7 @@ async function checkClean(host: LeaseHost, slot: Slot): Promise<Clean> {
     return { clean: false, reason: "the stamp does not carry the golden hash the state recorded" };
   }
   if (stamp.leaseId) return { clean: false, reason: "the stamp still names a lease" };
+  if (!stamp.lastResetAt) return { clean: false, reason: "the stamp records no reset" };
   const health = await host.healthCheck(ref);
   if (!health.ok) return { clean: false, reason: `health check failed: ${redact(health.detail)}` };
   return { clean: true, stamp };
@@ -253,13 +271,20 @@ type Attempt =
   | { readonly kind: "granted"; readonly grant: LeaseGrant }
   /** Try again at once: another `get` took the slot, or this one was found dirty or unfit. */
   | { readonly kind: "retry" }
-  | { readonly kind: "none"; readonly message: string };
+  | { readonly kind: "none"; readonly message: string }
+  /** None is free, but `slot` is dirty: reset it (ticket 14's lazy reset) and look again. */
+  | { readonly kind: "reset"; readonly slot: string; readonly message: string };
 
 /**
  * Takes a lease on a free slot of `request.flavor` and returns what the holder needs to reach it.
  * `waitSeconds` > 0 takes a queue ticket and polls for a slot up to that long, served in ticket
  * order; otherwise a call that finds none, or that the governor refuses, fails at once with exit 3
  * and the reason.
+ *
+ * With `deps.reset`, a call that finds no free slot of the flavor but a dirty one resets it: inline
+ * when it may wait (the reset runs to its end, even past the deadline, and the slot is then tried),
+ * through a detached worker when it may not. A slot whose lazy reset failed is not tried again by
+ * the same call.
  */
 export async function getLease(deps: LeaseDeps, request: GetRequest): Promise<LeaseGrant> {
   if (!isFlavorKey(request.flavor)) throw new UsageError(`unknown flavor "${String(request.flavor)}"; the flavors are ${FLAVOR_KEYS.join(", ")}`);
@@ -271,16 +296,26 @@ export async function getLease(deps: LeaseDeps, request: GetRequest): Promise<Le
   const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
   const deadline = now() + waitMs;
   const skipped = new Set<string>();
+  const lazyFailed = new Set<string>();
   const ticket = waitMs > 0 ? await joinQueue(deps, flavor, holder, deadline) : null;
   let granted = false;
   try {
     for (;;) {
-      const attempt = await attemptGet(deps, flavor, holder, ticket, skipped);
+      const attempt = await attemptGet(deps, flavor, holder, ticket, skipped, lazyFailed);
       if (attempt.kind === "granted") {
         granted = true;
         return attempt.grant;
       }
       if (attempt.kind === "retry") continue;
+      if (attempt.kind === "reset" && deps.reset) {
+        if (waitMs > 0) {
+          const ended = await deps.reset.resetNow(attempt.slot);
+          if (ended === "free") continue;
+          if (ended === "failed") lazyFailed.add(attempt.slot);
+        } else {
+          startWorker(deps, attempt.slot);
+        }
+      }
       const left = deadline - now();
       if (left <= 0) throw new NoSlotAvailableError(attempt.message);
       skipped.clear();
@@ -306,7 +341,14 @@ async function joinQueue(deps: LeaseDeps, flavor: FlavorKey, holder: string, dea
   return waiter.ticket;
 }
 
-async function attemptGet(deps: LeaseDeps, flavor: FlavorKey, holder: string, ticket: number | null, skipped: Set<string>): Promise<Attempt> {
+async function attemptGet(
+  deps: LeaseDeps,
+  flavor: FlavorKey,
+  holder: string,
+  ticket: number | null,
+  skipped: Set<string>,
+  lazyFailed: Set<string>,
+): Promise<Attempt> {
   const { store, host } = deps;
   const nowDate = deps.now ?? (() => new Date());
   const isAlive = deps.isWaiterAlive ?? isWaiterAlive;
@@ -316,7 +358,7 @@ async function attemptGet(deps: LeaseDeps, flavor: FlavorKey, holder: string, ti
     .filter((s) => s.flavor === flavor)
     .sort((a, b) => a.number - b.number);
   const candidate = ofFlavor.find((s) => s.status === "free" && !skipped.has(s.id));
-  if (!candidate) return { kind: "none", message: describeNone(flavor, ofFlavor) };
+  if (!candidate) return noneOrReset(deps, flavor, lazyFailed);
 
   // The host's free RAM, then a first word from the governor on the unlocked state, so a caller
   // that is refused (or queued behind others) does not probe a slot it cannot have.
@@ -411,6 +453,21 @@ async function attemptGet(deps: LeaseDeps, flavor: FlavorKey, holder: string, ti
   }
 }
 
+/**
+ * No free slot of the flavor: a `resetting` one whose worker has ended goes back to `dirty`, and the
+ * first dirty one (not already failed in this call) is offered for a lazy reset.
+ */
+async function noneOrReset(deps: LeaseDeps, flavor: FlavorKey, lazyFailed: ReadonlySet<string>): Promise<Attempt> {
+  if (deps.reset) await deps.reset.recover();
+  const ofFlavor = Object.values((await deps.store.read()).slots)
+    .filter((s) => s.flavor === flavor)
+    .sort((a, b) => a.number - b.number);
+  const message = describeNone(flavor, ofFlavor);
+  const dirty = deps.reset ? ofFlavor.find((s) => s.status === "dirty" && !lazyFailed.has(s.id)) : undefined;
+  if (!dirty) return { kind: "none", message };
+  return { kind: "reset", slot: dirty.id, message: `${message}; ${dirty.id} is being reset` };
+}
+
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -437,11 +494,14 @@ async function abandon(
   note: string,
 ): Promise<void> {
   await deps.secrets.delete(leaseSecretName(leaseId)).catch(() => undefined);
-  await deps.store
+  const moved = await deps.store
     .update((tx) => {
-      if (tx.slot(slotId)?.lease?.lease_id === leaseId) tx.transition(slotId, request, note);
+      if (tx.slot(slotId)?.lease?.lease_id !== leaseId) return false;
+      tx.transition(slotId, request, note);
+      return true;
     })
-    .catch(() => undefined);
+    .catch(() => false);
+  if (moved && request.to === "dirty") startWorker(deps, slotId);
 }
 
 // ---- return ------------------------------------------------------------------------------------------
@@ -506,12 +566,22 @@ export async function returnLease(deps: LeaseDeps, request: ReturnRequest): Prom
   });
 
   if (decision.leaseId !== null) await deps.secrets.delete(leaseSecretName(decision.leaseId)).catch(() => undefined);
+  if (decision.kind === "returned") startWorker(deps, decision.slot);
   const result: ReturnResult =
     decision.kind === "returned"
       ? { outcome: "returned", slot: decision.slot, message: `returned ${decision.slot}; it is reset before it is handed out again` }
       : { outcome: "already-returned", slot: decision.slot, message: "already returned" };
   if (wait !== undefined && result.slot !== null) await waitForReset(deps, result.slot, decision.leaseId as string, wait);
   return result;
+}
+
+/** Starts the reset worker for a slot just marked dirty; never fails the caller. */
+function startWorker(deps: LeaseDeps, slot: string): void {
+  try {
+    deps.reset?.startWorker(slot);
+  } catch {
+    // A slot left dirty is reset by the next worker or lazily by `get`.
+  }
 }
 
 /** Blocks until `slotId`, returned with `leaseId`, is free again; a quarantined, disabled or timed-out slot throws exit 5. */

@@ -48,6 +48,9 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<HostMethod, number>>> = {
   resetDatabase: 10 * 60_000,
   // A login, two edits and a login again through the slot's server: seconds when warm, up to 2 minutes each when cold.
   setLeaseCredentials: 10 * 60_000,
+  // The health check waits for a cold start (up to 2 minutes), verifies the tree (about a second; minutes on a cold
+  // cache), and logs in three or four times.
+  healthCheck: 10 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

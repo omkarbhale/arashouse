@@ -49,6 +49,7 @@ export const SLOT_STEPS = [
   "database",
   "start",
   "reset-database",
+  "read-database",
   "stop",
   "quiesce",
   "reset-tree",
@@ -290,6 +291,30 @@ function Test-SqlError($Exception, [int]$Number) {
     }
     return $false
 }
+# The marker (src/core/names.ts DATABASE_MARKER) from the request, each value checked against its pattern; written after a restore,
+# which brings the golden's own properties. Read back with the version rows.
+function Get-RequestMarker {
+    $hash = [string]$request.marker.goldenHash
+    $at = [string]$request.marker.resetAt
+    if ($hash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }
+    if ($at -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }
+    return @($hash, $at)
+}
+function Write-Marker($c, [string]$db, [string[]]$Marker) {
+    foreach ($pair in @(@($MarkerHash, $Marker[0]), @($MarkerAt, $Marker[1]))) {
+        Invoke-Sql $c ("USE $db; IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 0 AND name = @n) EXEC sys.sp_updateextendedproperty @name = @n, @value = @v ELSE EXEC sys.sp_addextendedproperty @name = @n, @value = @v") @{ '@n' = $pair[0]; '@v' = $pair[1] } | Out-Null
+    }
+}
+function Read-Marker($c, [string]$db) {
+    $marker = [ordered]@{}
+    foreach ($row in @(Invoke-Sql $c ("SELECT name, CAST(value AS nvarchar(200)) AS value FROM $db.sys.extended_properties WHERE class = 0 AND name IN (@h, @a)") @{ '@h' = $MarkerHash; '@a' = $MarkerAt })) { $marker[[string]$row.name] = [string]$row.value }
+    return $marker
+}
+function Read-Version($c, [string]$db) {
+    $version = [ordered]@{}
+    foreach ($row in @(Invoke-Sql $c ("SELECT name, value FROM $db.innovator.[VARIABLE] WHERE name IN ('VersionMajor', 'VersionMinor', 'VersionServicePack', 'VersionBuild')"))) { $version[[string]$row.name] = [string]$row.value }
+    return $version
+}
 function Read-Golden([string]$Name) {
     $file = Join-Path $Golden $Name
     if (-not (Test-Path -LiteralPath $file)) { Stop-Step "$file does not exist (is the $Flavor baseline built?)" }
@@ -424,6 +449,7 @@ switch ($Step) {
         # and the restored users innovator and innovator_regular are mapped to them (the CD's SQL scripts are not run).
         $bak = Join-Path $Golden 'db\\ootb.bak'
         if (-not (Test-Path -LiteralPath $bak)) { Stop-Step "$bak does not exist" }
+        $marker = Get-RequestMarker
         $dbo = [string]$request.secrets.dbo
         $reg = [string]$request.secrets.reg
         if ($dbo.Length -lt 16 -or $reg.Length -lt 16 -or $dbo.Contains(';') -or $reg.Contains(';')) { Stop-Step 'the request carries no usable login passwords' }
@@ -446,6 +472,7 @@ switch ($Step) {
                 $login = if ($role -eq 'dbo') { $LoginDbo } else { $LoginReg }
                 Invoke-Sql $c ("USE $db; ALTER USER " + (Format-Ident $user) + " WITH LOGIN = " + (Format-Ident $login)) | Out-Null
             }
+            Write-Marker $c $db $marker
         } finally { $c.Dispose() }
         Write-Result @{ database = $Database }
     }
@@ -495,10 +522,7 @@ switch ($Step) {
         # brings the golden's own properties). The owner survives the restore and the vault URL is alias-relative, so neither is fixed.
         $bak = Join-Path $Golden 'db\\ootb.bak'
         if (-not (Test-Path -LiteralPath $bak)) { Stop-Step "$bak does not exist" }
-        $goldenHash = [string]$request.marker.goldenHash
-        $resetAt = [string]$request.marker.resetAt
-        if ($goldenHash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }
-        if ($resetAt -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }
+        $requested = Get-RequestMarker
         $c = New-Sql
         try {
             if (@(Invoke-Sql $c 'SELECT name FROM sys.databases WHERE name = @n' @{ '@n' = $Database }).Count -eq 0) { Write-Result @{ missing = $true }; return }
@@ -527,15 +551,22 @@ switch ($Step) {
                 $login = if ($role -eq 'dbo') { $LoginDbo } else { $LoginReg }
                 Invoke-Sql $c ("USE $db; ALTER USER " + (Format-Ident $user) + " WITH LOGIN = " + (Format-Ident $login)) | Out-Null
             }
-            foreach ($pair in @(@($MarkerHash, $goldenHash), @($MarkerAt, $resetAt))) {
-                Invoke-Sql $c ("USE $db; IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 0 AND name = @n) EXEC sys.sp_updateextendedproperty @name = @n, @value = @v ELSE EXEC sys.sp_addextendedproperty @name = @n, @value = @v") @{ '@n' = $pair[0]; '@v' = $pair[1] } | Out-Null
-            }
-            $marker = [ordered]@{}
-            foreach ($row in @(Invoke-Sql $c ("SELECT name, CAST(value AS nvarchar(200)) AS value FROM $db.sys.extended_properties WHERE class = 0 AND name IN (@h, @a)") @{ '@h' = $MarkerHash; '@a' = $MarkerAt })) { $marker[[string]$row.name] = [string]$row.value }
-            $version = [ordered]@{}
-            foreach ($row in @(Invoke-Sql $c ("SELECT name, value FROM $db.innovator.[VARIABLE] WHERE name IN ('VersionMajor', 'VersionMinor', 'VersionServicePack', 'VersionBuild')"))) { $version[[string]$row.name] = [string]$row.value }
+            Write-Marker $c $db $requested
+            $marker = Read-Marker $c $db
+            $version = Read-Version $c $db
         } finally { $c.Dispose() }
         Write-Result @{ restoreMs = [int]$watch.ElapsedMilliseconds; killed = $killed; access = $access; marker = $marker; version = $version }
+    }
+    'read-database' {
+        # The health check (ticket 32): the marker and the version rows, read only, from the database the broker owns.
+        $c = New-Sql
+        try {
+            if (@(Invoke-Sql $c 'SELECT name FROM sys.databases WHERE name = @n' @{ '@n' = $Database }).Count -eq 0) { Write-Result @{ missing = $true }; return }
+            $db = Format-Ident $Database
+            $marker = Read-Marker $c $db
+            $version = Read-Version $c $db
+        } finally { $c.Dispose() }
+        Write-Result @{ marker = $marker; version = $version }
     }
     'stop' {
         # The slot's agent and pools stopped, and its worker processes gone, so nothing holds a file or a session (ticket 33; before a

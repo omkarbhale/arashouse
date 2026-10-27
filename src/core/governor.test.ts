@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeHost, fakeGoldenHash } from "../host/fake.js";
+import { LiveClock } from "../host/clock.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import type { FlavorKey } from "./flavors.js";
 import { beginReset, checkDiskForBuild, liveWaiters, poolGovernor, runningResets } from "./governor.js";
@@ -33,7 +34,7 @@ interface Pool {
 /** Free, provisioned slots, real timers polling every 5 ms, and the config given. */
 async function pool(spec: Partial<Record<FlavorKey, number>>, config: Partial<ArashouseConfig> = {}, overrides: Partial<LeaseDeps> = {}): Promise<Pool> {
   const store = new StateStore({ home });
-  const host = new FakeHost();
+  const host = new FakeHost({ clock: new LiveClock() });
   for (const [flavor, count] of Object.entries(spec) as [FlavorKey, number][]) {
     for (let n = 1; n <= count; n++) {
       await store.update((tx) => {

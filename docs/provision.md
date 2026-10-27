@@ -43,7 +43,7 @@ them by the rules of `src/core/names.ts`, as `baseline-steps.ps1` does; a test f
 | `tree` | `robocopy <golden>\tree <slot> /MIR /XJ /R:2 /W:1 /MT:16`: the mirror the reset uses (`docs/reset.md`), with no `/XF` (robocopy matches it on the source side, spike 06). robocopy copies no ACL, so every file inherits the grants above, `OAuthServer\App_Data`'s SQLite file included |
 | `iis` | the applications of the golden's `iis.json` under `Default Web Site`: `/ah-<key>-<NN>` and each sub-application, each on its own pool `ah-<key>-<NN>-<role>` with the captured runtime, pipeline mode, bitness, identity and start mode, and an idle timeout of 10 minutes (or what `setup-host.ps1 -SlotIdleTimeoutMinutes` recorded). An existing application or pool is brought to the template |
 | `agent` | the agent service of the golden's `service.json`, if it has one (goldens built since ticket 33b, `docs/baselines.md`): `ArasHouseAgent_<key>_<NN>` running the golden's `binaryPath` in the slot (with its `arguments`, the tree the slot's, refused if they name a path outside the slot), startup Manual, left stopped, its port (`8800 + 100 x flavor index + NN`) refused if it is 8734 to 8736 or something listens there. An older golden has none, and the step answers `no agent` |
-| `database` | the slot's two SQL login passwords from the host's secret store (made and stored on the first provision); then, through the name-checked procedures (ticket 22): `create_slot_database`, `kill_connections`, the broker's own `RESTORE ... WITH REPLACE` of the golden's `db\ootb.bak` with its files moved to `sqldata\arashouse_<key>_<NN>.mdf` and `_log.ldf`, `create_slot_login` for `_dbo` and `_reg`, and `ALTER USER innovator` / `innovator_regular` `WITH LOGIN` to them. The CD's SQL scripts are not run |
+| `database` | the slot's two SQL login passwords from the host's secret store (made and stored on the first provision); then, through the name-checked procedures (ticket 22): `create_slot_database`, `kill_connections`, the broker's own `RESTORE ... WITH REPLACE` of the golden's `db\ootb.bak` with its files moved to `sqldata\arashouse_<key>_<NN>.mdf` and `_log.ldf`, `create_slot_login` for `_dbo` and `_reg`, and `ALTER USER innovator` / `innovator_regular` `WITH LOGIN` to them, then the database marker (the golden hash and the time, as a reset writes it; ticket 32's health check holds the database to the stamp). The CD's SQL scripts are not run |
 | `configs` | the golden's `edits.json` rendered into the slot's config files from the golden's bytes (`docs/edits.md`): the slot's names, its login passwords, and the licence key stored for the flavor's line (`licence-12` or `licence-14`); without one the key stays blank, as in golden, and the result says the slot cannot log in yet |
 | `stamp` | `.arashouse-slot.json`: the slot id, flavor, golden manifest hash, the time, no lease. Written last: a slot with a stamp is provisioned |
 | `deny-list` | the fingerprints again; any difference fails the provision (`Quarantine`) |
@@ -137,9 +137,8 @@ worker from WSL, non-elevated, under a scratch `ARASHOUSE_HOME`:
 
 ## Not here
 
-- The health check (ticket 32): `BrokerHost.healthCheck` is not a verb yet, so on the real host `provision` leaves each
-  slot `dirty`, and the reset (tickets 30 to 33; the tree step is in, `docs/reset.md`) brings it to `free`. `FakeHost` checks health, so the offline tests
-  cover the `free` path.
+- The health check is ticket 32's (`docs/health.md`): `arashouse provision` runs it after the provision, and a passing
+  slot goes `free`.
 - Starting the agent (ticket 33, `docs/start-stop.md`); the agent in the golden and its configuration is done in ticket
   33b (`docs/baselines.md` and `docs/edits.md`); the per-lease password is `docs/lease-credentials.md` (ticket 34).
 - The whole contract suite on the real host (ticket 35). `test/host-contract.broker.test.ts` runs it against

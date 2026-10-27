@@ -24,8 +24,8 @@ describe("slot-steps.ps1 (static)", () => {
     const used = [...steps.matchAll(/\$request\.([A-Za-z.]+)/g)].map((m) => m[1]);
     expect([...new Set(used)].sort()).toEqual(["agent", "flavor", "marker.goldenHash", "marker.resetAt", "name", "secrets.dbo", "secrets.reg", "slot", "value"]);
     expect(steps).toContain("if ($request.agent -eq $true) {");
-    expect(steps).toContain("if ($goldenHash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }");
-    expect(steps).toContain("if ($resetAt -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }");
+    expect(steps).toContain("if ($hash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }");
+    expect(steps).toContain("if ($at -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }");
     expect(steps).toContain("if ($FlavorKeys -cnotcontains $Flavor) { Stop-Step 'the request names no registered flavor' }");
     expect(steps).toContain("if (-not (($raw -is [int]) -or ($raw -is [long])) -or $raw -lt 1 -or $raw -gt 99) { Stop-Step 'the request names no slot number from 1 to 99' }");
     expect(steps).toContain("if ($SecretName -cnotmatch '^[a-z0-9][a-z0-9-]{0,63}$') { Stop-Step 'the request names no usable secret' }");
@@ -70,10 +70,20 @@ describe("slot-steps.ps1 (static)", () => {
     expect(body).not.toContain("create_slot_login");
     expect(body).toContain('if ($access -ne \'MULTI_USER\') { Invoke-Sql $c "ALTER DATABASE $db SET MULTI_USER" | Out-Null }');
     // The marker goes in after the restore and its values only as parameters.
-    expect(body.indexOf("sp_addextendedproperty")).toBeGreaterThan(body.lastIndexOf("Invoke-Sql $c $restore"));
-    expect(body).toContain("EXEC sys.sp_updateextendedproperty @name = @n, @value = @v ELSE EXEC sys.sp_addextendedproperty @name = @n, @value = @v\") @{ '@n' = $pair[0]; '@v' = $pair[1] }");
+    expect(body.indexOf("Write-Marker $c $db $requested")).toBeGreaterThan(body.lastIndexOf("Invoke-Sql $c $restore"));
+    expect(steps).toContain("EXEC sys.sp_updateextendedproperty @name = @n, @value = @v ELSE EXEC sys.sp_addextendedproperty @name = @n, @value = @v\") @{ '@n' = $pair[0]; '@v' = $pair[1] }");
     expect(steps).toContain("$MarkerHash = 'arashouse.golden_hash'");
     expect(steps).toContain("$MarkerAt = 'arashouse.reset_at'");
+  });
+
+  it("writes the marker after a provision's restore too, and reads it back for the health check without changing anything", () => {
+    const database = steps.slice(steps.indexOf("    'database' {"), steps.indexOf("    'start' {"));
+    expect(database.indexOf("$marker = Get-RequestMarker")).toBeLessThan(database.indexOf("New-Sql"));
+    expect(database.indexOf("Write-Marker $c $db $marker")).toBeGreaterThan(database.indexOf("RESTORE DATABASE"));
+    const read = steps.slice(steps.indexOf("    'read-database' {"), steps.indexOf("    'stop' {"));
+    expect(read).toContain("$marker = Read-Marker $c $db");
+    expect(read).toContain("$version = Read-Version $c $db");
+    expect(read).not.toMatch(/RESTORE|ALTER|Write-Marker|sp_addextendedproperty|sp_updateextendedproperty|UPDATE|DELETE|INSERT/);
   });
 
   it("removes only the slot alias's applications, the pools named from the slot and the service of its own name", () => {

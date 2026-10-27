@@ -27,7 +27,7 @@ export type ResetTreeStep = (typeof RESET_TREE_STEPS)[number];
 /** How many paths of each class a failed verify names in its error. */
 const DIFF_PATHS = 5;
 
-function diffText(diff: ManifestDiff): string {
+export function diffText(diff: ManifestDiff): string {
   const paths = [
     ...diff.missing.slice(0, DIFF_PATHS).map((p) => `missing ${p}`),
     ...diff.changed.slice(0, DIFF_PATHS).map((c) => `changed ${c.path} (${c.reasons.join(", ")})`),
@@ -36,12 +36,12 @@ function diffText(diff: ManifestDiff): string {
   return `${summarizeDiff(diff)}${paths.length > 0 ? `: ${paths.join("; ")}` : ""}`;
 }
 
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
 }
 
-/** The flavor's golden manifest, which must carry `hash` (the golden the reset began with). */
-async function goldenManifest(system: SlotSystem, slot: SlotRef, root: string, hash: string): Promise<Manifest> {
+/** The flavor's golden manifest as it is now: `Retryable` while a new golden is moved into place or when there is none. */
+export async function currentGoldenManifest(system: SlotSystem, slot: SlotRef, root: string): Promise<Manifest> {
   if ((await system.readFile(buildScratch(slot.flavor, root).promotingMarker)) !== null) {
     throw new HostError("Retryable", `a new ${slot.flavor} golden is being moved into place`);
   }
@@ -56,6 +56,12 @@ async function goldenManifest(system: SlotSystem, slot: SlotRef, root: string, h
     throw new HostError("Retryable", `the ${slot.flavor} golden manifest is unusable: ${err.message}`);
   }
   if (manifest.flavor !== slot.flavor) throw new HostError("Refused", `${file} is the manifest of flavor ${manifest.flavor}`);
+  return manifest;
+}
+
+/** The flavor's golden manifest, which must carry `hash` (the golden the reset began with). */
+async function goldenManifest(system: SlotSystem, slot: SlotRef, root: string, hash: string): Promise<Manifest> {
+  const manifest = await currentGoldenManifest(system, slot, root);
   if (manifest.manifestHash !== hash) {
     throw new HostError("Retryable", `the ${slot.flavor} golden is ${manifest.manifestHash.slice(0, 12)}, not the ${hash.slice(0, 12)} the reset began with`);
   }

@@ -3,7 +3,7 @@
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
 // The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot`,
-// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp`, `resetDatabase` and `setLeaseCredentials` so far. Every other
+// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp`, `resetDatabase`, `setLeaseCredentials` and `healthCheck` so far. Every other
 // method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot stays
 // dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild` is
 // never a verb: a baseline is built in an elevated session (ticket 24).
@@ -22,6 +22,7 @@ import type {
   BaselineVerifyOptions,
   BaselineVerifyResult,
   GoldenRef,
+  HealthCheckEntry,
   HealthResult,
   HostDriver,
   HostInfo,
@@ -30,6 +31,7 @@ import type {
   HostResult,
   ListSlotsResult,
   ListedSlot,
+  MarkerReading,
   SecretRef,
   SlotStamp,
   SqlLoginInfo,
@@ -42,7 +44,6 @@ import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, type OwnedContext
 
 /** The ticket that adds each verb the broker does not have yet. */
 const PENDING: Partial<Record<HostMethod, string>> = {
-  healthCheck: "32",
   deployCode: "40",
   restoreDatabase: "39",
   backupDatabase: "43",
@@ -93,6 +94,26 @@ function parseHostInfo(value: unknown): HostInfo {
 function parseLevel(value: unknown): VerifyLevel {
   if (typeof value !== "string" || !(VERIFY_LEVELS as readonly string[]).includes(value)) throw new ProtocolError("level is not a verify level");
   return value as VerifyLevel;
+}
+
+/** The health check's entries as the broker sends them: a name, a boolean, a detail and the time. */
+function parseChecks(value: unknown): HealthCheckEntry[] {
+  if (!Array.isArray(value)) throw new ProtocolError("checks is not a list");
+  return value.map((entry: unknown) => {
+    if (!isRecord(entry) || typeof entry.name !== "string" || typeof entry.ok !== "boolean" || typeof entry.detail !== "string") {
+      throw new ProtocolError("a check has the wrong fields");
+    }
+    const ms = typeof entry.ms === "number" && Number.isFinite(entry.ms) && entry.ms >= 0 ? entry.ms : undefined;
+    return { name: entry.name, ok: entry.ok, detail: redact(entry.detail), ...(ms === undefined ? {} : { ms }) };
+  });
+}
+
+/** The database marker the health check read: two strings or nulls; null when the database could not be read. */
+function parseMarker(value: unknown): MarkerReading | null {
+  if (value === null || value === undefined) return null;
+  const text = (v: unknown) => v === null || (typeof v === "string" && v.length <= 200);
+  if (!isRecord(value) || !text(value.goldenHash) || !text(value.resetAt)) throw new ProtocolError("marker has the wrong fields");
+  return { goldenHash: value.goldenHash as string | null, resetAt: value.resetAt as string | null };
 }
 
 /** A manifest diff as the broker sends it: counts and paths only. */
@@ -251,8 +272,14 @@ export class BrokerHost implements HostDriver {
     return this.pending("backupDatabase", this.slotGuard(slot));
   }
 
-  healthCheck(slot: SlotRef): Promise<HealthResult> {
-    return this.pending("healthCheck", this.slotGuard(slot));
+  async healthCheck(slot: SlotRef): Promise<HealthResult> {
+    assertSlotOwned(slot, this.owned);
+    const { result, ms } = await this.call("healthCheck", { slot: { flavor: slot.flavor, slot: slot.slot } });
+    try {
+      return { ok: result.ok, ms, detail: result.detail, checks: parseChecks(result.checks), marker: parseMarker(result.marker) };
+    } catch (err) {
+      throw malformed("healthCheck", (err as Error).message);
+    }
   }
 
   async writeStamp(slot: SlotRef, stamp: SlotStamp): Promise<HostResult> {

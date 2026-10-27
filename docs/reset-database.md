@@ -54,7 +54,8 @@ The ticket's list shrank after the spike (ticket 09's record, plan change):
 - **No URL is patched**: the Vault item's `VAULT_URL_PATTERN` is relative to the alias.
 - **`root` and `admin` passwords** are not randomised here. SQL cannot do it (an MD5 written into `[USER].password`
   after an edit was refused, spike 06); it is an AML `edit` through the slot's server as `root`, after the pools
-  start (ticket 32), and the broker keeps the free slot's random `root` password in the host secret store (ticket 34).
+  start: the health check's `login` check (ticket 32, `docs/health.md`), which keeps the free slot's random `root`
+  password in the host secret store as `slot-<key>-<NN>-root` (for ticket 34).
 - **The allowlist** is enforced by the broker and the script deriving every name from a registered flavor and a slot
   number, and by SQL Server itself: the restore is not a procedure but the broker's login is in no server role, so it
   can restore only over a database it owns, which only `create_slot_database` (name-checked, ticket 22) makes.
@@ -98,4 +99,4 @@ slot `12sp9-31` (provisioned through the broker, 25.8 s; no pool uses slot 31):
 The golden check (the `golden`-level manifest verify) takes longer than the restore itself. `resetTree` (ticket 30)
 verifies the same golden in the same reset, so a cheaper hash read here is an option once both are in.
 
-This step leaves the `root` and `admin` passwords as the golden has them (not tested by a login: no licence is stored, so no slot can log in yet); randomising them is ticket 32 (above).
+This step leaves the `root` and `admin` passwords as the golden has them (not tested by a login: no licence is stored, so no slot can log in yet); the health check randomises them (`docs/health.md`).

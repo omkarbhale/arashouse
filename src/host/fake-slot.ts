@@ -51,7 +51,7 @@ export class FakeSlotServer {
       const rest = path.slice(prefix.length);
       const status = this.options.statuses?.[rest] ?? this.options.status ?? 200;
       if (status !== 200) return send(res, status, this.options.errorBody ?? "");
-      if (rest === "/DBList.aspx") {
+      if (rest === "/Server/DBList.aspx") {
         const ids = (this.options.databases ?? []).map((d) => `<DB id="${d}" />`).join("");
         return send(res, 200, `<?xml version="1.0"?><DBList>${ids}</DBList>`);
       }

@@ -121,6 +121,8 @@ export interface FakeSlotState {
   treeDirty: boolean;
   /** The database marker; null when the database is not a golden restore. */
   dbMarker: string | null;
+  /** The marker's reset time (ISO); null with no marker. */
+  dbMarkerAt: string | null;
   stamp: SlotStamp | null;
   /** The per-lease credentials' handle, never the secret. */
   credentials: SecretRef | null;
@@ -237,7 +239,10 @@ export class FakeHost implements HostDriver {
   dirty(slot: SlotRef, part: DirtyPart): void {
     const state = this.stateOf(slot);
     if (part === "tree") state.treeDirty = true;
-    else if (part === "database") state.dbMarker = null;
+    else if (part === "database") {
+      state.dbMarker = null;
+      state.dbMarkerAt = null;
+    }
     else if (state.stamp) state.stamp = { ...state.stamp, goldenHash: "other-golden" };
     else throw new Error(`slot ${slotId(slot)} has no stamp to dirty`);
   }
@@ -292,6 +297,7 @@ export class FakeHost implements HostDriver {
         treeHash: hash,
         treeDirty: false,
         dbMarker: hash,
+        dbMarkerAt: new Date(this.clock.now()).toISOString(),
         stamp: this.stampOf(slot, hash),
         credentials: null,
         deployed: [],
@@ -352,6 +358,7 @@ export class FakeHost implements HostDriver {
         state.dbMarker = backup.hash;
         // The golden database carries none of a lease's credentials (ticket 34).
         state.credentials = null;
+        state.dbMarkerAt = new Date(this.clock.now()).toISOString();
         return { ok: true, detail: `database of ${slotId(slot)} restored from golden` };
       },
     );
@@ -408,6 +415,7 @@ export class FakeHost implements HostDriver {
       () => {
         const state = this.stateOf(slot);
         state.dbMarker = null;
+        state.dbMarkerAt = null;
         state.restored.push(stagedBak);
         return { ok: true, detail: `restored a backup over the database of ${slotId(slot)}` };
       },
@@ -454,6 +462,7 @@ export class FakeHost implements HostDriver {
         ok: failed.length === 0,
         detail: failed.length === 0 ? `${checks.length} checks passed` : `failed: ${failed.join(", ")}`,
         checks,
+        marker: { goldenHash: state.dbMarker, resetAt: state.dbMarkerAt },
       };
     });
   }

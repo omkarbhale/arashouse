@@ -44,5 +44,7 @@ describe("the broker's DPAPI secret store", () => {
     expect(storedSecretKind("licence-14")).toBe("licence");
     expect(storedSecretKind("slot-35-07-reg")).toBe("sql-login");
     expect(storedSecretKind("slot-12sp9-01-root")).toBe("aras-login");
+    expect(storedSecretKind("ootb-root-12sp9")).toBe("aras-login");
+    expect(() => storedSecretKind("slot-35-07-admin")).toThrow(/no stored secret is named like/);
   });
 });

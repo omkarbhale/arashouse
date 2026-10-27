@@ -6,6 +6,7 @@ import { mappedRoot, type MappedRoot } from "../broker/mapped-fs.fixture.js";
 import type { BrokerRequest } from "../broker/protocol.js";
 import { registerBaselineVerbs } from "../broker/baseline-verbs.js";
 import { SlotLocks, registerSlotVerbs } from "../broker/provision.js";
+import { registerHealthVerb } from "../broker/health.js";
 import { registerResetVerbs } from "../broker/reset-tree.js";
 import { FAKE_GOLDEN_HASH, FakeSlotSystem } from "../broker/slot-system.fixture.js";
 import { registerCoreVerbs, type BrokerSystem } from "../broker/verbs.js";
@@ -44,9 +45,13 @@ beforeEach(() => {
   };
   slots = new FakeSlotSystem(ROOT);
   const locks = new SlotLocks();
-  broker = registerResetVerbs(
-    registerSlotVerbs(
-      registerBaselineVerbs(registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), system), system),
+  broker = registerHealthVerb(
+    registerResetVerbs(
+      registerSlotVerbs(
+        registerBaselineVerbs(registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath }), system), system),
+        slots,
+        locks,
+      ),
       slots,
       locks,
     ),
@@ -147,15 +152,15 @@ describe("BrokerHost against an in-process broker", () => {
         | "resetTree"
         | "writeStamp"
         | "setLeaseCredentials"
+        | "healthCheck"
       >,
       () => Promise<unknown>
     > = {
       deployCode: () => host.deployCode(s1, `${ROOT}\\staging\\l\\code`),
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
       backupDatabase: () => host.backupDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
-      healthCheck: () => host.healthCheck(s1),
     };
-    expect(Object.keys(calls).length + 15).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 16).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -291,6 +296,31 @@ describe("BrokerHost against an in-process broker", () => {
     expect(transport.requests).toHaveLength(sent);
   });
 
+  it("health-checks a slot through the broker's healthCheck verb: every check named and timed, and the marker", async () => {
+    expect(await rejection(host.healthCheck(s1))).toMatchObject({ kind: "Refused", message: "slot 12sp9-01 is not provisioned" });
+    const golden = slots.manifest("12sp9").manifestHash;
+    slots.goldenState = { state: "ok", hash: golden };
+    await host.provisionSlot(s1);
+    const health = await host.healthCheck(s1);
+    expect(health).toMatchObject({ ok: true, detail: expect.stringMatching(/^12sp9-01 is healthy \(9 checks in /) });
+    expect(health.checks.map((c) => [c.name, c.ok])).toEqual(
+      ["stamp", "client", "dblist", "oauth", "tree", "configs", "marker", "version", "login"].map((name) => [name, true]),
+    );
+    expect(health.checks.every((c) => typeof c.ms === "number")).toBe(true);
+    expect(health.marker).toEqual({ goldenHash: golden, resetAt: expect.stringMatching(/^\d{4}-/) });
+    expect(transport.requests.at(-1)).toMatchObject({ verb: "healthCheck", slot: s1 });
+    expect(transport.requests.at(-1)?.args).toBeUndefined();
+
+    slots.databaseMarkers.delete("arashouse_12sp9_01");
+    const unmarked = await host.healthCheck(s1);
+    expect(unmarked.ok).toBe(false);
+    expect(unmarked.checks.find((c) => c.name === "marker")).toMatchObject({ ok: false, detail: "the database carries no marker" });
+    expect(unmarked.marker).toEqual({ goldenHash: null, resetAt: null });
+    const sent = transport.requests.length;
+    expect((await rejection(host.healthCheck({ flavor: "OLM_Local" as never, slot: 1 }))).kind).toBe("Refused");
+    expect(transport.requests).toHaveLength(sent);
+  });
+
   it("verifies a golden through the broker's baselineVerify verb", async () => {
     expect(await host.baselineVerify("12sp9")).toMatchObject({ ok: false, level: "golden", detail: "the 12sp9 baseline is not built" });
     const golden = root.local(`${ROOT}\\golden\\12sp9`);
@@ -329,6 +359,14 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
     const stamp = { slotId: "23-01", flavor: "23", goldenHash: null, lastResetAt: null };
     const other = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", stamp } }));
     expect((await rejection(other.readStamp(s1))).message).toMatch(/readStamp is malformed/);
+  });
+
+  it("a health check whose checks or marker have the wrong shape", async () => {
+    const health = (result: Record<string, unknown>) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", ...result } }));
+    expect((await rejection(health({ checks: "all fine" }).healthCheck(s1))).message).toMatch(/healthCheck is malformed: checks is not a list/);
+    expect((await rejection(health({ checks: [{ name: "stamp", ok: "yes", detail: "" }] }).healthCheck(s1))).message).toMatch(/a check has the wrong fields/);
+    expect((await rejection(health({ checks: [], marker: { goldenHash: 7, resetAt: null } }).healthCheck(s1))).message).toMatch(/marker has the wrong fields/);
+    expect((await health({ checks: [], marker: null }).healthCheck(s1)).marker).toBeNull();
   });
 
   it("a listed slot that is not the tool's", async () => {

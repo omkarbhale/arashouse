@@ -24,7 +24,7 @@ import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenL
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
 import type { ArasHttp } from "./aras-http.js";
-import type { GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
+import type { DatabaseReading, GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 
 export const FAKE_GOLDEN_HASH = "9".repeat(64);
@@ -73,6 +73,11 @@ export class FakeSlotSystem implements SlotSystem {
   readonly databaseMarkers = new Map<string, DatabaseMarker>();
   /** The version rows a restored database holds. */
   databaseVersion: Record<string, string> = { VersionMajor: "12", VersionMinor: "0", VersionServicePack: "SP9", VersionBuild: "24090" };
+  /** The page `warm` answers for a URL with `readBody` (DBList.aspx lists the slot's database by default). */
+  pageBody: (url: string) => string = (url) => {
+    const alias = /\/(ah-[a-z0-9]+-\d{2})\//.exec(url)?.[1] ?? "";
+    return `<DBList><DB id="${alias.replace(/^ah-/, "arashouse_").replace(/-/g, "_")}"/></DBList>`;
+  };
   /** Overrides parts of what `resetDatabase` answers. */
   resetAnswer: Partial<Extract<DatabaseReset, { state: "restored" }>> = {};
   /** What `golden` answers. */
@@ -193,9 +198,10 @@ export class FakeSlotSystem implements SlotSystem {
     return this.agentInstalled ? { installed: true, port: agentPort(slot) } : { installed: false };
   }
 
-  async restoreDatabase(slot: SlotRef, logins: SlotLogins): Promise<void> {
+  async restoreDatabase(slot: SlotRef, logins: SlotLogins, marker: DatabaseMarker): Promise<void> {
     this.record("restoreDatabase", slot);
     this.objects.add(`database ${databaseName(slot)}`);
+    this.databaseMarkers.set(databaseName(slot), marker);
     for (const role of ["dbo", "reg"] as const) {
       const login = loginName(slot, role);
       this.objects.add(`login ${login}`);
@@ -229,12 +235,22 @@ export class FakeSlotSystem implements SlotSystem {
     return { pools: 7, agent: this.agentInstalled || hadAgent ? "stopped" : "none" };
   }
 
-  async warm(url: string, timeoutMs: number): Promise<WarmAnswer> {
+  async warm(url: string, timeoutMs: number, readBody?: boolean): Promise<WarmAnswer> {
     this.record("warm");
     void timeoutMs;
     this.warmed.push(url);
-    return this.warmAnswer(url);
+    const answer = this.warmAnswer(url);
+    return readBody === true && answer.status !== undefined ? { body: this.pageBody(url), ...answer } : answer;
   }
+
+  async readDatabase(slot: SlotRef): Promise<DatabaseReading> {
+    this.record("readDatabase", slot);
+    if (!this.objects.has(`database ${databaseName(slot)}`)) return { state: "missing" };
+    const marker = this.databaseMarkers.get(databaseName(slot));
+    const read: Record<string, string> = marker ? { [DATABASE_MARKER.goldenHash]: marker.goldenHash, [DATABASE_MARKER.resetAt]: marker.resetAt } : {};
+    return { state: "read", marker: read, version: { ...this.databaseVersion } };
+  }
+
 
   async quiesce(slot: SlotRef): Promise<boolean> {
     this.record("quiesce", slot);

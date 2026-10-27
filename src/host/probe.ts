@@ -47,7 +47,7 @@ export interface SlotProbe {
   readonly client: ProbeCheck;
   /** `GET OAuthServer/.well-known/openid-configuration` answers 200. */
   readonly oauth: ProbeCheck;
-  /** `GET DBList.aspx` lists exactly this slot's one database. */
+  /** `GET Server/DBList.aspx` lists exactly this slot's one database. */
   readonly dbList: DbListCheck;
 }
 
@@ -136,7 +136,7 @@ export async function probeSlot(url: string, database: string, options: ProbeOpt
   const [clientAnswer, oauthAnswer, dbAnswer] = await Promise.all([
     anonymousGet(`${base}/Client/`, { timeoutMs }),
     anonymousGet(`${base}/OAuthServer/.well-known/openid-configuration`, { timeoutMs }),
-    anonymousGet(`${base}/DBList.aspx`, { timeoutMs, readBody: true }),
+    anonymousGet(`${base}/Server/DBList.aspx`, { timeoutMs, readBody: true }),
   ]);
   const ms = Math.round(performance.now() - started);
 

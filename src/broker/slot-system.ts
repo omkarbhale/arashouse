@@ -17,7 +17,7 @@ import { arasHttp } from "./aras-http.js";
 import { dpapiSecretStore } from "./dpapi-store.js";
 import type { BrokerFs } from "./fs.js";
 import { readManifest, verifyGolden, verifyTree } from "./manifest-fs.js";
-import type { GoldenCheck, SlotLogins, SlotSystem, TreeReset } from "./provision.js";
+import type { DatabaseReading, GoldenCheck, SlotLogins, SlotSystem, TreeReset } from "./provision.js";
 import { runPsScript } from "./ps-step.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 import { renderSlotStepsScript, type SlotStep } from "./slot-steps.js";
@@ -49,6 +49,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+const texts = (v: unknown): Record<string, string> =>
+  typeof v === "object" && v !== null && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, String(x)])) : {};
 
 export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem {
   const local = (path: string) => options.fs.localPath(path);
@@ -107,8 +109,8 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
       const r = await slotStep("agent", slot);
       return r.installed === true ? { installed: true, port: Number(r.port) } : { installed: false };
     },
-    async restoreDatabase(slot, logins: SlotLogins) {
-      await slotStep("database", slot, { secrets: { dbo: logins.dbo.reveal(), reg: logins.reg.reveal() } });
+    async restoreDatabase(slot, logins: SlotLogins, marker: DatabaseMarker) {
+      await slotStep("database", slot, { marker, secrets: { dbo: logins.dbo.reveal(), reg: logins.reg.reveal() } });
     },
     async start(slot, { agent }) {
       const r = await slotStep("start", slot, { agent });
@@ -118,15 +120,18 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
     async resetDatabase(slot, marker: DatabaseMarker): Promise<DatabaseReset> {
       const r = await slotStep("reset-database", slot, { marker });
       if (r.missing === true) return { state: "missing" };
-      const texts = (v: unknown): Record<string, string> =>
-        typeof v === "object" && v !== null && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, String(x)])) : {};
       return { state: "restored", restoreMs: Number(r.restoreMs), killed: Number(r.killed), access: String(r.access), marker: texts(r.marker), version: texts(r.version) };
     },
     async stop(slot) {
       const r = await slotStep("stop", slot);
       return { pools: Number(r.pools), agent: r.agent === "stopped" ? "stopped" : "none" };
     },
-    warm: (url, timeoutMs) => anonymousGet(url, { timeoutMs }),
+    warm: (url, timeoutMs, readBody) => anonymousGet(url, { timeoutMs, readBody: readBody === true }),
+    async readDatabase(slot): Promise<DatabaseReading> {
+      const r = await slotStep("read-database", slot);
+      if (r.missing === true) return { state: "missing" };
+      return { state: "read", marker: texts(r.marker), version: texts(r.version) };
+    },
     async quiesce(slot) {
       return (await slotStep("quiesce", slot)).provisioned === true;
     },

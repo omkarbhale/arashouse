@@ -32,12 +32,13 @@ returning (ticket 43 gives it helpers); after `return` the holder may assume the
 
    So a burst of returns and gets never deadlocks, and a machine shut down with dirty slots still
    works the next day.
-4. **Dirty detection before handing out** (belt and braces, `checkClean` in `lease.ts`; ticket 32
-   owns the markers): a `free` slot is handed out only if its stamp carries the golden hash the state
-   recorded, that hash is the flavor's current golden manifest hash (when the host can name it; a
-   slot reset from an older golden is dirty), names no lease, records a reset time, and the host's
-   health check (tree and database marker against the stamp, applications online) passes. A slot that fails goes to `dirty` and is
-   reset first: by the same `get` if it waits, by a worker otherwise.
+4. **Dirty detection before handing out** (belt and braces, `checkClean` in `lease.ts`, ticket 32): a
+   `free` slot is handed out only if its stamp, its database marker and the state record agree on the
+   golden hash, that hash is the flavor's current golden manifest hash (when the host can name it; a
+   slot reset from an older golden is dirty), the stamp names no lease, the stamp's and the marker's
+   reset times are no earlier than the end of the slot's last lease (`last_lease_ended_at`), and the
+   host's health check passes (`docs/health.md`). A slot that fails goes to `dirty` and is reset
+   first: by the same `get` if it waits, by a worker otherwise.
 
 A slot whose `get` failed after it was reserved (a host error while writing the lease's stamp or
 credentials) also goes to `dirty`, and a worker is started for it.
@@ -53,8 +54,8 @@ path, and in `repair` (`docs/cli.md`).
 | `quiesce` | `quiesce` | Stops the agent and the application pools and waits for the slot's processes (spike 06: the pool stop releases every lock and closes Aras's SQL sessions). Below. |
 | `database` | `resetDatabase` | Restores the golden `db\ootb.bak` over the slot database as its owner, maps its users again and writes the marker (ticket 31, `docs/reset-database.md`). |
 | `tree` | `resetTree` | Mirrors the golden tree, clears the runtime state, renders the configs, verifies, and writes a fresh stamp (ticket 30). Below. |
-| `start` | `startSlot` | Starts the slot's pools and warms them, without the agent (`docs/start-stop.md`; `get --agent` starts it). |
-| `health` | `healthCheck`, `readStamp` | The health check must pass, and the stamp must carry the golden hash, no lease and a reset time (ticket 32). |
+| `start` | `startSlot` | Starts the slot's pools and warms them (`Client/`, `Server/DBList.aspx`, OAuth discovery), without the agent (`docs/start-stop.md`; `get --agent` starts it). |
+| `health` | `healthCheck`, `readStamp` | The health check must pass: server, tree, configs, marker, version, and `root`'s login with a one-time password, which is what makes the free slot's `root` and `admin` passwords random (`docs/health.md`). The stamp must carry the golden hash, no lease and a reset time. A failed check is retried once, then quarantines the slot with the checks named. |
 
 Then the golden is read again: if its hash changed during the reset (a `baseline build -Replace`
 promoted a new one), the slot goes back to `dirty`. Otherwise, under the lock, the slot moves

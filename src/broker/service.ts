@@ -12,6 +12,7 @@ import { guarded } from "../host/owned.js";
 import { FileAudit, type AuditSink } from "./audit.js";
 import { registerBaselineVerbs } from "./baseline-verbs.js";
 import { SlotLocks, registerSlotVerbs, type SlotSystem } from "./provision.js";
+import { registerHealthVerb } from "./health.js";
 import { registerResetVerbs } from "./reset-tree.js";
 import { windowsSlotSystem } from "./slot-system.js";
 import { Broker } from "./broker.js";
@@ -76,6 +77,7 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
   const locks = new SlotLocks();
   registerSlotVerbs(broker, slotSystem, locks);
   registerResetVerbs(broker, slotSystem, locks);
+  registerHealthVerb(broker, slotSystem, locks);
   const token = newToken();
   await writeTokenFile(options.tokenPath ?? brokerTokenFile(root), token);
   const server = await servePipe({ path: options.pipePath ?? PIPE_PATH, token, broker, clock: options.clock, onError: options.onError });

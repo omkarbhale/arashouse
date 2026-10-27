@@ -39,7 +39,7 @@ describe("probeSlot", () => {
     for (const c of [probe.client, probe.oauth, probe.dbList]) expect(c.ms).toBeGreaterThanOrEqual(0);
     expect(probe.ms).toBeGreaterThanOrEqual(0);
     expect([...s.requests].sort()).toEqual(
-      [`/${alias}/Client/`, `/${alias}/DBList.aspx`, `/${alias}/OAuthServer/.well-known/openid-configuration`].sort(),
+      [`/${alias}/Client/`, `/${alias}/Server/DBList.aspx`, `/${alias}/OAuthServer/.well-known/openid-configuration`].sort(),
     );
   });
 

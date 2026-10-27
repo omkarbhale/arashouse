@@ -10,7 +10,7 @@
 
 import { win32 } from "node:path";
 import { OOTB_OWNER, compareDenyList, goldenJson, type DenyListDiff, type DenyListSnapshot } from "../core/baseline.js";
-import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type EditSecrets } from "../core/edits.js";
+import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type EditList, type EditSecrets } from "../core/edits.js";
 import { FLAVORS, type FlavorKey } from "../core/flavors.js";
 import { licenceSecretName } from "../core/licence.js";
 import type { Manifest, ManifestDiff } from "../core/manifest.js";
@@ -68,7 +68,20 @@ export interface WarmAnswer {
   readonly status?: number;
   readonly ms: number;
   readonly error?: string;
+  /** The body, only when asked for (capped at 64 KiB). */
+  readonly body?: string;
 }
+
+/** The slot database's marker and version rows, read for the health check (ticket 32). */
+export type DatabaseReading =
+  | { readonly state: "missing" }
+  | {
+      readonly state: "read";
+      /** The marker's extended properties that exist, by name (`DATABASE_MARKER`). */
+      readonly marker: Readonly<Record<string, string>>;
+      /** The `innovator.VARIABLE` rows `VersionMajor`, `VersionMinor`, `VersionServicePack` and `VersionBuild`. */
+      readonly version: Readonly<Record<string, string>>;
+    };
 
 /** What the reset's `reset-tree` step did on a quiesced slot: the mirror, then the runtime state it leaves. */
 export type TreeReset =
@@ -101,14 +114,16 @@ export interface SlotSystem {
   createIis(slot: SlotRef): Promise<number>;
   /** The agent service of the golden's `service.json`, if it has one. */
   createAgent(slot: SlotRef): Promise<{ readonly installed: boolean; readonly port?: number }>;
-  /** The database from the golden's `ootb.bak`, its two logins and their users. */
-  restoreDatabase(slot: SlotRef, logins: SlotLogins): Promise<void>;
+  /** The database from the golden's `ootb.bak`, its two logins and their users, and `marker` written. */
+  restoreDatabase(slot: SlotRef, logins: SlotLogins, marker: DatabaseMarker): Promise<void>;
   /** Starts the slot's pools, and its agent service when asked and the slot has one (ticket 33). */
   start(slot: SlotRef, options: { readonly agent: boolean }): Promise<StartInfo>;
   /** Stops the slot's agent and pools and waits for its worker processes to end. */
   stop(slot: SlotRef): Promise<StopInfo>;
-  /** One anonymous GET of a slot URL on this machine, for the warm-up after a start. */
-  warm(url: string, timeoutMs: number): Promise<WarmAnswer>;
+  /** One anonymous GET of a slot URL on this machine, for the warm-up after a start and the health check; the body when `readBody`. */
+  warm(url: string, timeoutMs: number, readBody?: boolean): Promise<WarmAnswer>;
+  /** The slot database's marker and version rows, read only (ticket 32). */
+  readDatabase(slot: SlotRef): Promise<DatabaseReading>;
   /** The same stop, failing when anything of the slot still runs after the wait; false when the slot has no folder. */
   quiesce(slot: SlotRef): Promise<boolean>;
   /** On a quiesced slot: the mirror from golden, then the runtime folders, the vault folder and ASP.NET's temporary files cleared. */
@@ -207,16 +222,21 @@ export interface RenderedConfigs {
   readonly files: readonly { readonly file: string; readonly bytes: Uint8Array }[];
 }
 
-/**
- * Renders the golden's edit list into the slot's config files, from the golden's bytes. The licence comes from the
- * host's store (`licence-<line>`); without one the key stays blank, as in golden, and the detail says so.
- */
-export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, logins: SlotLogins): Promise<RenderedConfigs> {
+/** The golden's edit list (`golden\<key>\edits.json`), which must be the slot's flavor's. */
+export async function goldenEditList(system: SlotSystem, slot: SlotRef, root: string): Promise<EditList> {
   const layout = goldenLayout(slot.flavor, root);
   const listBytes = await system.readFile(layout.edits);
   if (listBytes === null) throw new Error(`${layout.edits} does not exist`);
   const list = parseEditList(JSON.parse(new TextDecoder().decode(listBytes)));
   if (list.flavor !== slot.flavor) throw new Error(`${layout.edits} is the edit list of flavor ${list.flavor}`);
+  return list;
+}
+
+/**
+ * The secrets the edit list names, as a render uses them: the slot's login passwords, and the licence from the host's
+ * store (`licence-<line>`; blank, as in golden, without one). `licensed` says whether a key was stored.
+ */
+export async function configSecrets(system: SlotSystem, slot: SlotRef, list: EditList, logins: SlotLogins): Promise<{ secrets: EditSecrets; licensed: boolean }> {
   const needed = secretsNeeded(list);
   const licence = needed.some((h) => h === "licence" || h === "licence_act_key")
     ? await system.secrets.get(licenceSecretName(FLAVORS[slot.flavor].licence.line))
@@ -229,7 +249,18 @@ export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: str
     // The `act_key` that goes with a stored key is not kept yet: a slot that must log in needs it (docs/baselines.md).
     licence_act_key: blank,
   };
-  const secrets: EditSecrets = Object.fromEntries(needed.map((h) => [h, available[h]]));
+  return { secrets: Object.fromEntries(needed.map((h) => [h, available[h]])), licensed: licence !== undefined };
+}
+
+/**
+ * Renders the golden's edit list into the slot's config files, from the golden's bytes. The licence comes from the
+ * host's store (`licence-<line>`); without one the key stays blank, as in golden, and the detail says so.
+ */
+export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, logins: SlotLogins): Promise<RenderedConfigs> {
+  const layout = goldenLayout(slot.flavor, root);
+  const list = await goldenEditList(system, slot, root);
+  const needed = secretsNeeded(list);
+  const { secrets, licensed } = await configSecrets(system, slot, list, logins);
   const slotDir = win32.dirname(stampFile(slot, root));
   let applied = 0;
   const files = editListFiles(list);
@@ -243,7 +274,7 @@ export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: str
     await system.writeFile(win32.join(slotDir, ...parts), rendered.bytes);
     written.push({ file, bytes: rendered.bytes });
   }
-  const note = needed.includes("licence") && licence === undefined ? `; no licence key is stored for line ${FLAVORS[slot.flavor].licence.line}, so the slot cannot log in yet` : "";
+  const note = needed.includes("licence") && !licensed ? `; no licence key is stored for line ${FLAVORS[slot.flavor].licence.line}, so the slot cannot log in yet` : "";
   return { detail: `${files.length} files, ${applied} edits${note}`, files: written };
 }
 
@@ -333,7 +364,8 @@ export async function provisionSlotOnHost(system: SlotSystem, slot: SlotRef, nam
     step = "database";
     const logins = await timings.run(step, async () => {
       const l = await loginPasswords(system.secrets, slot);
-      await system.restoreDatabase(slot, l);
+      // The marker a reset writes too (ticket 32): the health check holds a slot's database to its stamp.
+      await system.restoreDatabase(slot, l, { goldenHash: golden.hash, resetAt: new Date(system.now()).toISOString() });
       return l;
     });
     step = "configs";

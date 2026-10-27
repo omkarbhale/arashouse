@@ -108,10 +108,22 @@ export interface HealthCheckEntry {
   readonly name: string;
   readonly ok: boolean;
   readonly detail: string;
+  /** How long the check took, where the host measures it. */
+  readonly ms?: number;
+}
+
+/** The database marker as the health check read it back (ticket 32): what the last reset or provision wrote. */
+export interface MarkerReading {
+  /** `arashouse.golden_hash`; null when the database carries none. */
+  readonly goldenHash: string | null;
+  /** `arashouse.reset_at`, an ISO time; null when the database carries none. */
+  readonly resetAt: string | null;
 }
 
 export interface HealthResult extends HostResult {
   readonly checks: readonly HealthCheckEntry[];
+  /** The slot database's marker; null when the database could not be read, absent when the host does not report it. */
+  readonly marker?: MarkerReading | null;
 }
 
 export interface BaselineBuildResult extends HostResult {

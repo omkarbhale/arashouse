@@ -58,6 +58,11 @@ export interface Slot {
   readonly golden_hash: string | null;
   readonly last_reset_at: string | null;
   readonly last_reset_ms: number | null;
+  /**
+   * When the slot's last lease ended (it left `leased`); absent before its first lease. A free slot is handed out only
+   * when its stamp and database marker were reset no earlier (ticket 32's dirty detection, `checkClean`).
+   */
+  readonly last_lease_ended_at?: string;
   readonly quarantine_reason?: string;
   readonly reset?: ResetInfo;
 }
@@ -179,13 +184,14 @@ function requireText(label: string, value: unknown): string {
  * not allow. The fields that belong to a status come and go with it: the lease exists only while
  * `leased`, the quarantine reason only while `quarantined`, and the reset record only from
  * `resetting` until the slot is next clean (kept through `dirty` only when the reset's worker crashed).
+ * Leaving `leased` records the time as `last_lease_ended_at`.
  */
 export function transitionSlot(slot: Slot, request: TransitionRequest, context: TransitionContext = {}): Slot {
   const from = slot.status;
   if (!canTransition(from, request.to)) throw new IllegalTransitionError(slot.id, from, request.to);
   const now = (context.now ?? new Date()).toISOString();
   const { lease: _lease, quarantine_reason: _reason, reset: _reset, ...kept } = slot;
-  const base = { ...kept, status: request.to };
+  const base = { ...kept, ...(from === "leased" ? { last_lease_ended_at: now } : {}), status: request.to };
   switch (request.to) {
     case "provisioning":
       return { ...base, golden_hash: null, last_reset_at: null, last_reset_ms: null };
@@ -271,6 +277,7 @@ export function serialiseState(state: State): string {
       golden_hash: s.golden_hash,
       last_reset_at: s.last_reset_at,
       last_reset_ms: s.last_reset_ms,
+      ...(s.last_lease_ended_at !== undefined ? { last_lease_ended_at: s.last_lease_ended_at } : {}),
       ...(s.quarantine_reason !== undefined ? { quarantine_reason: s.quarantine_reason } : {}),
       ...(s.reset
         ? {
@@ -359,6 +366,8 @@ function parseSlot(path: string, key: string, raw: unknown): Slot {
   if (last_reset_ms !== null && (typeof last_reset_ms !== "number" || !Number.isFinite(last_reset_ms))) {
     fail(path, `${where}.last_reset_ms is not a number or null`);
   }
+  const last_lease_ended_at = raw.last_lease_ended_at === undefined ? undefined : str(path, `${where}.last_lease_ended_at`, raw.last_lease_ended_at);
+  if (last_lease_ended_at !== undefined && Number.isNaN(Date.parse(last_lease_ended_at))) fail(path, `${where}.last_lease_ended_at is not a time`);
   const quarantine_reason = raw.quarantine_reason === undefined ? undefined : str(path, `${where}.quarantine_reason`, raw.quarantine_reason);
   if ((slotStatus === "quarantined") !== (quarantine_reason !== undefined)) {
     fail(path, `${where} has a quarantine reason exactly when it is quarantined`);
@@ -385,6 +394,7 @@ function parseSlot(path: string, key: string, raw: unknown): Slot {
     golden_hash,
     last_reset_at,
     last_reset_ms: last_reset_ms as number | null,
+    ...(last_lease_ended_at !== undefined ? { last_lease_ended_at } : {}),
     ...(quarantine_reason !== undefined ? { quarantine_reason } : {}),
     ...(reset ? { reset } : {}),
   };

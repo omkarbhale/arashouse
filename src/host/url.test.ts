@@ -69,7 +69,7 @@ describe("hostAddress", () => {
     const loopback = await slotServer();
     const address = await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address });
     expect(address).toBe(gateway.address);
-    expect(gateway.requests).toEqual([`/${alias}/Client/`, `/${alias}/DBList.aspx`]);
+    expect(gateway.requests).toEqual([`/${alias}/Client/`, `/${alias}/Server/DBList.aspx`]);
     expect(loopback.requests).toEqual([]);
   });
 

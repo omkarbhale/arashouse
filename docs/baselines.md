@@ -159,7 +159,10 @@ golden without the login check; the login is then first proven on a slot (ticket
 `arashouse baseline build <key> --replace` marks every `free`, `resetting` or `provisioning` slot of the flavor
 `dirty` before it writes the bundle, so none is handed out against the old golden; a leased slot goes dirty when it
 is returned, and a quarantined or disabled one is reset by `repair` or `enable`. The captain then runs the script
-with `-Apply -Replace`. Without `-Replace` the script refuses an existing golden.
+with `-Apply -Replace`. Without `-Replace` the script refuses an existing golden. A slot reset from the old golden
+in between is not handed out after the promote: `get` compares its golden hash with the current one, and `promote`
+holds `golden-build\<key>.promoting` while it moves folders, during which a reset gives its slot back dirty
+(`docs/reset.md`).
 
 ## Measured: the first `12sp9` golden (2026-10-27)
 

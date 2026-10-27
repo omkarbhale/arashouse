@@ -458,6 +458,19 @@ describe("operator commands (ticket 16)", () => {
     expect(corrupt.stdout).toMatch(/fail {2}state: the state file .* is unusable/);
   });
 
+  it("doctor --json prints its checks as one object, with the same exit code", async () => {
+    await seed({ "23": 1 });
+    const r = await cli(["doctor", "--json"]);
+    expect(r.code, r.stdout).toBe(0);
+    const report = JSON.parse(r.stdout) as { ok: boolean; exitCode: number; findings: { level: string; check: string; message: string }[] };
+    expect(report.ok).toBe(true);
+    expect(report.exitCode).toBe(0);
+    expect(report.findings).toContainEqual({ level: "ok", check: "slot 23-01", message: "free and clean" });
+    const down = await cli(["doctor", "--json"], { ARASHOUSE_HOST: "" });
+    expect(down.code).toBe(1);
+    expect((JSON.parse(down.stdout) as { ok: boolean }).ok).toBe(false);
+  });
+
   it("refuses every deny-listed name with exit 7, and takes usage errors with exit 2", async () => {
     await seed({ "23": 1 });
     for (const args of [
@@ -479,9 +492,9 @@ describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
-    const commands = ["get", "return", "status", "flavors", "run", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
+    const commands = ["get", "return", "status", "flavors", "run", "setup", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
     for (const command of commands) expect(overview.stdout).toContain(`  ${command}`);
-    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable"]) {
+    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "setup", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable"]) {
       const r = await cli([command, "--help"]);
       expect(r.code, command).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));

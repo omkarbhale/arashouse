@@ -7,6 +7,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import { FLAVOR_KEYS, getFlavor } from "../core/flavors.js";
@@ -46,6 +47,7 @@ import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
 import { selectHost, type SelectedHost } from "./host.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { runWithLease } from "./run.js";
+import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle } from "./setup.js";
 
 export const DEBUG_ENV = "ARASHOUSE_DEBUG";
 
@@ -97,15 +99,24 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "`return` starts it detached; it is not needed by hand. Without --slot it resets the dirty slots.",
     "Exit 5 if the named slot was quarantined, 6 if the host did not answer (docs/reset.md).",
   ],
-  doctor: [
-    "usage: arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes]",
+  setup: [
+    "usage: arashouse setup [--out <dir>]",
     "",
-    "Checks the state file against the slot stamps, the broker, the SQL login, free disk and RAM,",
+    "Writes setup-host.ps1 and the broker build it installs to <dir> (default: arashouse-setup in the",
+    "Windows temp folder) and prints how to run it. The captain runs it once, in an elevated PowerShell:",
+    "without -Apply it only prints what it would change. It creates the install root's folders and their",
+    "ACLs, lists missing prerequisites, and installs the ArasHouseBroker service (docs/setup.md).",
+  ],
+  doctor: [
+    "usage: arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]",
+    "",
+    "Checks the host setup, the state file against the slot stamps, the broker, the SQL login, free disk and RAM,",
     "the media and baselines, orphaned slots (on the host with no record) and resets with no live",
     "worker. Exits 1 when a check fails and was not fixed. --fix re-starts stalled resets, marks a",
     "free slot that is not clean dirty, and with --yes removes orphans. --rebuild-state rebuilds the",
     "state from the slot stamps (a dry run without --yes; the old file is set aside). --deep verifies",
-    "each baseline at the full level (every file's SHA-256) instead of the fast level.",
+    "each baseline at the full level (every file's SHA-256) instead of the fast level. --json prints",
+    "{ ok, exitCode, findings } instead of the lines.",
   ],
   repair: [
     "usage: arashouse repair <slot> [--rebuild]",
@@ -157,7 +168,8 @@ const OVERVIEW: readonly string[] = [
   "  reset-worker [--slot <slot>]                               reset returned slots (return starts it)",
   "",
   "Operator commands (destructive ones are dry runs without --yes):",
-  "  doctor [--fix] [--rebuild-state] [--deep] [--yes]          check the pool against the host",
+  "  setup [--out <dir>]                                        write the one-time, elevated host setup script",
+  "  doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json] check the pool against the host",
   "  repair <slot> [--rebuild]                                  reset a quarantined slot from golden",
   "  destroy <slot> [--yes] [--include-leased]                  remove a slot from the host and the pool",
   "  prune [--yes]                                              destroy disabled and orphaned slots",
@@ -266,6 +278,7 @@ async function operatorDeps(ctx: Context): Promise<OperatorDeps> {
     reset: await resetDeps(ctx, selected),
     startWorker: (slot) => spawnResetWorker(ctx.env, slot),
     media: (flavor) => mediaPresent(flavor, { env: ctx.env }),
+    setup: selected.kind === "broker" ? () => observeSetup() : undefined,
   };
 }
 
@@ -396,10 +409,41 @@ function oneSlot(parsed: ParsedArgs, command: string): string {
 }
 
 async function cmdDoctor(ctx: Context, args: readonly string[]): Promise<number> {
-  const parsed = parseArgs(args, { fix: "flag", "rebuild-state": "flag", deep: "flag", yes: "flag" });
+  const parsed = parseArgs(args, { fix: "flag", "rebuild-state": "flag", deep: "flag", yes: "flag", json: "flag" });
   noPositionals(parsed, "doctor");
   const o = parsed.options;
-  return printResult(ctx, await doctor(await operatorDeps(ctx), { fix: o.fix === true, rebuildState: o["rebuild-state"] === true, deep: o.deep === true, yes: o.yes === true }));
+  const result = await doctor(await operatorDeps(ctx), { fix: o.fix === true, rebuildState: o["rebuild-state"] === true, deep: o.deep === true, yes: o.yes === true });
+  if (o.json !== true) return printResult(ctx, result);
+  printJson(ctx.io, { ok: result.exitCode === EXIT_CODES.ok, exitCode: result.exitCode, findings: result.findings ?? [] });
+  return result.exitCode;
+}
+
+async function cmdSetup(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { out: "value" });
+  noPositionals(parsed, "setup");
+  const outDir = stringOption(parsed, "out") ?? join(await windowsTempDir(), "arashouse-setup");
+  const flavors = await flavorsToCheck((flavor) => mediaPresent(flavor, { env: ctx.env }));
+  const bundle = await writeSetupBundle({
+    outDir,
+    distDir: DIST_DIR,
+    packageJson: PACKAGE_JSON,
+    version: version(),
+    worker: await workerIdentity(),
+    flavors,
+  });
+  const script = (await defaultRun("wslpath", ["-w", bundle.script]).catch(() => bundle.script)).trim();
+  for (const line of [
+    `wrote ${script} and the broker build it installs (${bundle.files} files, each pinned by SHA-256)`,
+    `it checks the prerequisites of ${flavors.join(", ")} and changes nothing without -Apply`,
+    "in an elevated Windows PowerShell (Run as administrator):",
+    `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}"           # the plan`,
+    `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}" -Apply    # make the changes`,
+    "then, from WSL: arashouse doctor (docs/setup.md)",
+  ]) {
+    ctx.io.out(line);
+  }
+  if (!/^[A-Za-z]:\\/.test(script)) ctx.io.err(`arashouse: ${script} is not on a Windows drive; copy its folder to one before running it`);
+  return EXIT_CODES.ok;
 }
 
 async function cmdRepair(ctx: Context, args: readonly string[]): Promise<number> {
@@ -444,6 +488,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   run: cmdRun,
   media: cmdMedia,
   "reset-worker": cmdResetWorker,
+  setup: cmdSetup,
   doctor: cmdDoctor,
   repair: cmdRepair,
   destroy: cmdDestroy,

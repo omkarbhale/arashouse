@@ -19,7 +19,8 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 | `arashouse run --lease <lease_id> -- <command ...>` | Runs a command with the lease's connection in its environment. |
 | `arashouse media check [<flavor>...] [--json] [--write-sums]` | Checks the installers (`docs/media-check.md`). |
 | `arashouse reset-worker [--slot <slot>]` | Resets returned slots; `return` starts it detached (`docs/reset.md`). |
-| `arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes]` | Checks the pool against the host; see [Operator commands](#operator-commands). |
+| `arashouse setup [--out <dir>]` | Writes the one-time host setup script, which the captain runs elevated (`docs/setup.md`). |
+| `arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]` | Checks the pool against the host; see [Operator commands](#operator-commands). |
 | `arashouse repair <slot> [--rebuild]` | Resets a quarantined slot from golden; the way out of `quarantined`. |
 | `arashouse destroy <slot> [--yes] [--include-leased]` | Removes a slot from the host and the pool. |
 | `arashouse prune [--yes]` | Destroys the `disabled` and orphaned slots. |
@@ -119,14 +120,19 @@ What a person, or firstmate, uses when something is wrong. Source: `src/core/ope
 - A command refused because of the slot's status (destroying a leased slot, disabling one being
   reset, repairing one that is not quarantined) exits 7 and changes nothing.
 
-### `doctor [--fix] [--rebuild-state] [--deep] [--yes]`
+### `doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]`
 
 One line per check, `ok`, `warn` or `fail`, then a summary; it exits 1 when a check failed and was
-not fixed, else 0. It checks:
+not fixed, else 0. With `--json` it prints `{ ok, exitCode, findings }` instead, each finding
+`{ level, check, message }` (plus `fixed` and `resolved` when `--fix` acted), with the same exit
+code. It checks:
 
 | check | fails or warns when |
 |---|---|
 | `state` | the state file is unusable |
+| `setup` | the install root is missing, `setup-host.ps1` has not been applied (no `broker\setup-host.json`), or its last run did not finish (a folder's ACL, the root's ACL, the broker service); only with the broker host (`docs/setup.md`) |
+| `prerequisites` | the last setup run found a prerequisite of a flavor in `media/` missing (warn) |
+| `setup acl` | from WSL, the worker can list a folder it should be kept out of (`secrets\`, `golden\`, ...) or cannot list `slots\`, `staging\` or `broker\` |
 | `broker` | the broker does not answer `ping` (the host checks below are then skipped) |
 | `sql` | the broker cannot connect to SQL Server with its login |
 | `disk`, `ram` | free disk is under `min_free_disk_gb`, free RAM under `min_free_ram_mb` (warn; `docs/governor.md`) |

@@ -190,6 +190,34 @@ export function brokerTokenFile(root: string = DEFAULT_INSTALL_ROOT): string {
   return win32.join(brokerDir(root), "client.token");
 }
 
+/** The broker's Windows service, and its virtual account `NT SERVICE\ArasHouseBroker` (ticket 03). */
+export const BROKER_SERVICE_NAME = "ArasHouseBroker";
+
+/** `<root>\broker\app`: the installed `dist\`; its `package.json` sits one level up, as in the repo. */
+export function brokerAppDir(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(brokerDir(root), "app");
+}
+
+/** `<root>\broker\app\broker\index.js`: what the service runs. */
+export function brokerEntryScript(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(brokerAppDir(root), "broker", "index.js");
+}
+
+/** `<root>\broker\ArasHouseBroker.exe`: the service wrapper `arashouse setup` compiles; it runs the entry script under Node. */
+export function brokerServiceExe(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(brokerDir(root), `${BROKER_SERVICE_NAME}.exe`);
+}
+
+/** `<root>\logs\broker-service.log`: the broker's stderr, appended by the service wrapper. */
+export function brokerServiceLog(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(logsDir(root), "broker-service.log");
+}
+
+/** `<root>\broker\setup-host.json`: the last `setup-host.ps1` result, which `arashouse doctor` reads (ticket 21). */
+export function setupRecordFile(root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(brokerDir(root), "setup-host.json");
+}
+
 /** A stored secret's name: lower-case, digits and '-', so it is safe as a file name (`licence-14`). */
 const SECRET_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 

@@ -133,7 +133,11 @@ creates its login). It never opens a TCP port to SQL. `hostInfo` runs a fixed `S
 ## Running it
 
 `index.ts` runs only on Windows. It vets the root (`C:\aras_installations`), writes the token, registers the
-verbs and serves the pipe until it is stopped. Ticket 21 installs it: the built `dist\` and `package.json`
-copied to `<root>\broker\app\`, the service `ArasHouseBroker` (installed with `node-windows`, as the virtual
-account `NT SERVICE\ArasHouseBroker`) and the ACLs above. The tests run the same code on Linux: the broker
+verbs and serves the pipe until it is stopped. `arashouse setup` installs it (ticket 21, `docs/setup.md`): the
+built `dist\` copied to `<root>\broker\app\` and `package.json` to `<root>\broker\` (where `dist\`'s modules
+find it, as in the repo), a small service wrapper `<root>\broker\ArasHouseBroker.exe` that runs
+`node.exe <root>\broker\app\broker\index.js`, the service `ArasHouseBroker` as the virtual account
+`NT SERVICE\ArasHouseBroker` (a member of Administrators, restarted on failure), and the ACLs above. The wrapper
+replaces the planned `node-windows` install, which names its service `<name>.exe` and so could not give the
+service the virtual account `NT SERVICE\ArasHouseBroker`. The tests run the same code on Linux: the broker
 on a Unix socket, its disk mapped to a temporary folder (`src/broker/*.test.ts`, `src/host/broker-host.test.ts`).

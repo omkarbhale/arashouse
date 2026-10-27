@@ -485,6 +485,16 @@ describe("doctor", () => {
     expect(down.lines[1]).toBe("fail  broker: did not answer: the host did not answer; the host checks were skipped");
   });
 
+  it("reports the host setup before the broker, from what the worker sees", async () => {
+    const p = await pool({ "23": 1 });
+    const none = await doctor({ ...p.deps, setup: async () => ({ record: null, rootExists: false, access: {} }) }, {});
+    expect(none.exitCode).toBe(1);
+    expect(none.lines[1]).toBe("fail  setup: the install root is missing; run `arashouse setup` and the script it writes, elevated (docs/setup.md)");
+    expect(none.lines[2]).toBe("ok    broker: answers (pong)");
+    expect(none.findings).toContainEqual({ level: "fail", check: "setup", message: expect.stringMatching(/^the install root is missing/) });
+    expect((await doctor(p.deps, {})).lines.some((l) => l.includes("setup"))).toBe(false);
+  });
+
   it("fails a flavor in the pool whose baseline does not verify", async () => {
     const p = await pool({ "23": 1 });
     const unbuilt = new FakeHost({ clock: p.clock });

@@ -70,6 +70,8 @@ The steps, in order:
 
    The SQL Server account is read from the `MSSQLSERVER` service definition, not assumed (on this host
    `NT Service\MSSQLSERVER`). If there is no such service, its grants are left out and the run reports an error.
+   When two principals share a SID (a SQL Server running as LocalSystem is SYSTEM), the folder grants that SID
+   the union of their rights once, so a re-run finds no deviation.
    Ticket 25 adds each slot's app-pool identities inside `slots\` and `vaults\` when it provisions a slot.
 4. **Prerequisites.** For each flavor with media in `media/` (every flavor if none can be told), it checks what
    `hostPrerequisites` in `src/core/flavors.ts` names and prints a `missing:` line for each one absent. It installs
@@ -133,4 +135,5 @@ It writes nothing under Program Files (it reads `node.exe` and the ASP.NET Core 
 to folders that are not arashouse's, and reads or writes no secret. The tests (`src/core/setup-host.test.ts`)
 check the script text: every change is inside an `Invoke-Change` block, which only prints without `-Apply`; no
 path outside the root; no Program Files path. `test/setup-host.test.ts` runs it under Windows PowerShell when
-one is reachable (a dry run, the refusals, `-Apply` unelevated, and the wrapper compiling).
+one is reachable (a dry run, the refusals, `-Uninstall -RemoveRoot` leaving a folder that is not arashouse's,
+the folder ACLs set and read back on a scratch root, and the wrapper compiling).

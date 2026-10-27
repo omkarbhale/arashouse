@@ -225,6 +225,37 @@ From WSL as the worker, through the broker (built from this ticket): `arashouse 
 1.7 s (golden level, 23,760 files), `--full` in 23.8 s the first time and 6.5 s warm (every SHA-256), and
 `arashouse doctor` reports `ok baseline 12sp9`.
 
+## Measured: the `23` golden (2026-10-27, ticket 26)
+
+Built in one run through firstmate's elevated gate (the captain's Windows login, no prompt), from `media/23`'s Release 23 CD image
+zip (MSI 424.1 MB, SHA-256 `0010987efd0b...`), with the login and the engine check: the bundle was written with
+`--engine-check` (import-export-libs-js `99c19b98`, the commit spike 07 used), and the whole `<License>` element of
+line 14 came from the captain's Aras28 config, read read-only by a one-off gate wrapper outside the repo (spike 07: the
+14.0 SP18 key serves 14.0.9). The first run passed; every step, in seconds: preflight 2.6, snapshot 1.6 (35 objects
+fingerprinted), msi-copy 1.5, msi-cost 21.2, **install 191.2** (MSI exit 0), pools 68.4, database 1.6, configure 0,
+verify 46.2 (cold start, login and engine check included), stop 10.2, blank-secrets 0, capture-tree 21.4, capture-db
+0.6, metadata 0, **manifest 260.5**, promote 0.1, **remove 270.2**, deny-list 2.0 (all 35 unchanged), seal 64.9.
+**Total 964 s (16.1 minutes)**; `leftovers: []`.
+
+| | |
+|---|---|
+| Server build | `14.0.9.36073` (`Aras.Server.Core.dll`), as the registry says |
+| Patch | none: `Utilities\Aras Innovator 23 Patch.zip` upgrades 14.0.0 to 14.0.8 to the build the MSI already installs (spike 07) |
+| Prerequisites | IIS, .NET Framework 4.7.2+, ASP.NET Core 6 and the ASP.NET Core Module V2 (the 6.0 Hosting Bundle): present, preflight passed |
+| Tree | 26,283 files, 744.7 MB copied; **26,280 files, 744.6 MB in the manifest** (3 runtime files left out) |
+| Manifest hash | `5ec98f8514449ce783721a28ea493f8359e0cdbfe87420eded29b3a506470e87` |
+| IIS | 6 applications (no `/NotificationServer`, unlike `12sp9`): `/ah-build-23` and `/Client`, `/Server`, `/OAuthServer`, `/SelfServiceReporting`, `/Vault` |
+| Edit list | the same eight config files as `12sp9` (spike 07): no extra OAuth, vault or agent file |
+| Databases | `Core140.bak` 12.0 MB and `CoreAndSolutions140.bak` 14.5 MB (shipped); `ootb.bak` 82.1 MB (after the checks and the login, `COPY_ONLY`) |
+| Agent | none (`service.json`: `installed: false`) |
+| Login check | passed: an OAuth password grant as `root` with the shipped password |
+| Engine check | passed: `aras-pkg export --engine 14.0.7` of the shipped `Part` ItemType (login gate and version probe) |
+
+`DBList.aspx` is at `/<alias>/Server/DBList.aspx` in `23` as in `12sp9`. From WSL as the worker, through the broker:
+`arashouse baseline verify 23` passed in 2.1 s (golden level, 26,280 files), `--full` in 11.6 s, and `arashouse
+doctor` reports `ok baseline 23`. The `35` golden below was built before the engine check existed; its `-Replace`
+rebuild (ticket 25's `ootb.bak` owner change asks for one) can run it with `--engine-check`.
+
 ## Measured: the `35` golden (2026-10-27, ticket 27)
 
 Built on the laptop through firstmate's elevated gate in one run, with no change to the builder, from
@@ -260,6 +291,6 @@ files), `--full` in 28.0 s the first time and 8.0 s warm, and `arashouse doctor`
   its tree and vault, including the files of `OAuthServer\App_Data`), or its OAuth server cannot open its SQLite file.
 - **`DBList.aspx` lives at `/<alias>/Server/DBList.aspx`** in `12sp9` and `35` (the MSI's File table; `/<alias>/DBList.aspx`
   answered 404 on the build). The WSL probe (`src/host/probe.ts`, `docs/slot-url.md`, ticket 29) asks
-  `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, after checking `23`.
+  `/<alias>/DBList.aspx`; ticket 32 (or a fix to 29) should use the `/Server` path, which `23` shares (ticket 26).
 - A slot's licence needs the whole `<License>` element, not `lic_key` alone (run 5): ticket 25's edit list adds
   `act_key` (`{{secret:licence_act_key}}`), `lic_type` and `company`, and the secret store keeps the four together.

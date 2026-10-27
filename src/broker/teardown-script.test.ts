@@ -90,6 +90,17 @@ describe("teardown.ps1 (generated)", () => {
     expect(main.indexOf("if (-not $sql.ok) { throw ")).toBeLessThan(main.indexOf("$hostRun = Invoke-Child"));
   });
 
+  it("counts a tool folder it cannot list (the worker's view of golden\\, vaults\\, golden-build\\) as unread, not empty", () => {
+    const left = body("Get-Leftovers");
+    expect(left).toContain("$hidden = @($SlotsDir, $VaultsDir, ($Root + '\\golden'), $GoldenBuildDir | Where-Object { (Test-Path -LiteralPath $_) -and -not (Test-Listable $_) })");
+    expect(left).toContain('foreach ($h in $hidden) { $left.unread += "folders: $h cannot be listed here" }');
+    expect(left.indexOf("$hidden =")).toBeLessThan(left.indexOf("Get-ChildNames"));
+    const reads = left.split("\n").filter((l) => l.includes("Get-ChildNames "));
+    expect(reads).toHaveLength(2);
+    expect(left).toMatch(/^\s*try \{ \$left\.goldens = .*\} catch \{ \$left\.goldens = @\(\) \}$/m);
+    for (const l of reads) expect(l).toMatch(/^\s*try \{ .*Get-ChildNames .*\} catch \{/);
+  });
+
   it("lists SQL Server only by the arashouse_ filter and the two exact logins", () => {
     const sql = body("Get-SqlNames");
     const selects = sql.split("\n").filter((l) => /SELECT/.test(l));

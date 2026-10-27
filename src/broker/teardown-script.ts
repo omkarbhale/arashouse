@@ -265,6 +265,10 @@ function Get-IisNames {
     }
 }
 
+function Test-Listable([string]$Dir) {
+    try { Get-ChildItem -LiteralPath $Dir -Force -ErrorAction Stop | Out-Null; return $true } catch { return $false }
+}
+
 function Get-ChildNames([string]$Dir, [int]$Depth) {
     # The entries under $Dir, $Depth levels down, relative to the root (slots\\12sp9\\01), one per line of output; none when $Dir is absent.
     if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return }
@@ -286,15 +290,19 @@ function Get-Leftovers {
     # Server unreachable) is reported as unread rather than as empty. (Assigned with if/else, not $(if ...): a subexpression turns
     # an empty array into $null and a one-item array into the item.)
     $left = [ordered]@{ unread = @() }
-    $left.slotFolders = @(@(Get-ChildNames $SlotsDir 2) + @(Get-ChildNames $VaultsDir 1))
+    # The tool's folders are closed to the worker (golden\\, vaults\\, golden-build\\): one that cannot be listed is unread, not empty.
+    $hidden = @($SlotsDir, $VaultsDir, ($Root + '\\golden'), $GoldenBuildDir | Where-Object { (Test-Path -LiteralPath $_) -and -not (Test-Listable $_) })
+    foreach ($h in $hidden) { $left.unread += "folders: $h cannot be listed here" }
+    try { $left.slotFolders = @(@(Get-ChildNames $SlotsDir 2) + @(Get-ChildNames $VaultsDir 1)) } catch { $left.slotFolders = @() }
     try { $iis = Get-IisNames } catch { $iis = $null; $left.unread += "IIS: $($_.Exception.Message)" }
     try { $sql = Get-SqlNames } catch { $sql = $null; $left.unread += "SQL Server: $($_.Exception.Message)" }
     $services = @(Get-CimInstance Win32_Service | ForEach-Object { $_.Name })
     if ($iis) { $left.slotIis = @(@($iis.slotApplications) + @($iis.slotPools)) } else { $left.slotIis = @() }
     $left.slotServices = @($services | Where-Object { $_ -match $SlotService } | Sort-Object)
     if ($sql) { $left.slotSql = @(@($sql.slotDatabases) + @($sql.slotLogins)) } else { $left.slotSql = @() }
-    $left.goldens = @($GoldenDirs.Keys | Where-Object { Test-Path -LiteralPath $GoldenDirs[$_] } | ForEach-Object { 'golden\\' + $_ })
-    $left.buildFolders = @(Get-ChildNames $GoldenBuildDir 1 | Where-Object { ($_ -split '\\\\')[-1] -match $BuildFolder })
+    try { $left.goldens = @($GoldenDirs.Keys | Where-Object { Test-Path -LiteralPath $GoldenDirs[$_] } | ForEach-Object { 'golden\\' + $_ }) } catch { $left.goldens = @() }
+    try { $building = @(Get-ChildNames $GoldenBuildDir 1) } catch { $building = @() }
+    $left.buildFolders = @($building | Where-Object { ($_ -split '\\\\')[-1] -match $BuildFolder })
     if ($iis) { $left.buildIis = @(@($iis.buildApplications) + @($iis.buildPools)) } else { $left.buildIis = @() }
     if ($sql) { $left.buildSql = @(@($sql.buildDatabases) + @($sql.buildLogins)); $left.setupSql = @($sql.setupSql) } else { $left.buildSql = @(); $left.setupSql = @() }
     $left.broker = @($services | Where-Object { $_ -ieq $BrokerService })

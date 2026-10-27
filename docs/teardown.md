@@ -145,8 +145,23 @@ Read-only, as the worker, on 2026-10-28:
   to the host's instance) refused on that slot's database `arashouse_12sp9_31`. It reported IIS and the deny-list as
   unread without elevation.
 
-The full cycle the ticket asks for has not been run yet: setup, provision one slot, teardown, and the host compared
-with the pre-setup inventory from `spike/00-preflight.ps1`. On this host, `teardown --yes` destroys every slot of
-the pool, whichever lane made it. `teardown.ps1 -Apply` then removes the broker and the SQL objects that every lane
-uses, until `arashouse setup` and `setup-sql` are run again. It is a captain sitting, for when the captain wants
-everything gone.
+  The same dry run from the bundle `teardown` writes, for the real root, refused on the slot's database and logins.
+  It also reported `vaults\`, `golden\` and `golden-build\` as unread, since the worker cannot list them; with
+  `-Apply`, an unread kind stops the run before any change.
+
+**The full cycle is deferred.** The ticket asks for a full cycle on the host: setup, provision one slot, teardown, and
+the host compared with the pre-setup inventory from `spike/00-preflight.ps1`. It has not been run, by firstmate's
+decision of 2026-10-28, because other lanes are using the pool. On this host, `teardown --yes` destroys every slot of
+the pool, whichever lane made it. `teardown.ps1 -Apply` then removes the broker and the SQL objects every lane uses,
+until `setup-host.ps1 -Apply` and `setup-sql.ps1 -Apply` are run again.
+
+Firstmate will run the cycle through its elevated gate on a quiet host before the v1 readiness sign-off (ticket 51),
+without `-Goldens`:
+1. `arashouse teardown --yes`
+2. `teardown.ps1 -Apply`
+3. the inventory compared
+4. `host\setup-host.ps1 -Apply` and `sql\setup-sql.ps1 -Apply` from the same bundle, to restore the broker and the SQL
+   objects
+
+A bundle is staged for it at `%TEMP%\arashouse-teardown\`. `arashouse teardown --yes` writes it again from the build
+at hand.

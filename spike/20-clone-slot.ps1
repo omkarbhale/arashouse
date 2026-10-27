@@ -121,8 +121,9 @@ try {
         $roles = @(Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT u.name AS usr, r.name AS role FROM $db.sys.database_role_members m JOIN $db.sys.database_principals r ON r.principal_id = m.role_principal_id JOIN $db.sys.database_principals u ON u.principal_id = m.member_principal_id WHERE u.name IN ('innovator','innovator_regular')"))
         Add-SpikeFact 'restoredUserRoles' @($roles | ForEach-Object { $_.usr + ':' + $_.role })
         try {
-            $vaults = @(Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT name, vault_url FROM $db.innovator.[VAULT]"))
-            Add-SpikeFact 'vaultUrls' @($vaults | ForEach-Object { [ordered]@{ name = $_.name; url = $_.vault_url } })
+            # 12.0: VAULT_URL_PATTERN, relative to the alias ($[HTTP_PATH_SERVER]), so a renamed slot needs no update.
+            $vaults = @(Invoke-SpikeSql -Connection $ctx.conn -Query ("SELECT name, vault_url_pattern FROM $db.innovator.[VAULT]"))
+            Add-SpikeFact 'vaultUrls' @($vaults | ForEach-Object { [ordered]@{ name = $_.name; urlPattern = $_.vault_url_pattern } })
         } catch { Add-SpikeFact 'vaultUrls' 'not readable' }
     }
 

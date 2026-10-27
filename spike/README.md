@@ -47,6 +47,7 @@ Run scripts with `powershell -ExecutionPolicy Bypass -File C:\aras_installations
 | 1 | `01-init-folders.ps1 -Apply` | yes | none | creates `spike\`, `spike\out\`, `staging\`; modify for the worker on `spike\` and `staging\` only |
 | 2 | `scripts/spike-sync.sh [--media <flavor>]` | no | none | scripts and installer media onto the host |
 | 3 | `00-preflight.ps1 -Apply` | no | none | read-only inventory; first run also writes the deny-list baseline (16-hex prefixes of the install roots' config hashes) |
+| 3b | `09-new-product-code.ps1 -Apply` | no | none | a copy of the MSI in `staging\<flavor>\instance\` with new ProductCode, ProductID, UpgradeCode and package code; without it the MSI reconfigures the captain's install of the same release |
 | 4 | `10-baseline-install.ps1 -Apply` | yes | `sa`, Aras root password; licence only with `-WithLicence` | ticket 05 steps 2 to 4: unattended install, install directory outside Program Files, what the MSI created, version check |
 | 4b | `10-baseline-install.ps1 -Suffix c -DatabaseMode None -Apply` | yes | Aras root password | ticket 05 step 3: does `INSTALL_DATABASE=0` work (then restore the `.bak` by hand or with 20) |
 | 5 | `20-clone-slot.ps1 -Apply` | yes | `sa`, Aras root password | ticket 05 step 5: second instance side by side |
@@ -57,7 +58,7 @@ Run scripts with `powershell -ExecutionPolicy Bypass -File C:\aras_installations
 | 10 | `90-teardown.ps1 -Apply` | yes | `sa` | removes everything with a spike prefix |
 | 11 | `00-preflight.ps1 -Apply` | no | none | `denyListUnchangedSinceBaseline` must be `true` |
 
-Steps 4 to 6 are ticket 05, steps 7 to 9 are ticket 06 and may share its sitting. Ticket 07 repeats steps 3, 4, 5 and 10 with
+Steps 3b to 6 are ticket 05, steps 7 to 9 are ticket 06 and may share its sitting. Ticket 07 repeats steps 3, 3b, 4, 5 and 10 with
 `-Flavor 23`; ticket 08 with `-Flavor 35` when its media exists.
 
 ## Things the first sitting is expected to learn (the scripts record them; they do not guess)

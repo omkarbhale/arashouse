@@ -40,10 +40,11 @@ const spikeScript = (name: string) => join(spikeDir, name);
 const describeWithPs = ps ? describe : describe.skip;
 
 describe("spike scripts (static)", () => {
-  it("has the eight scripts of the ticket plus the folder initialiser", () => {
+  it("has the eight scripts of the ticket, the folder initialiser and the product-code step", () => {
     expect(scripts).toEqual([
       "00-preflight.ps1",
       "01-init-folders.ps1",
+      "09-new-product-code.ps1",
       "10-baseline-install.ps1",
       "20-clone-slot.ps1",
       "30-licence-reuse.ps1",

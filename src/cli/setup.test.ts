@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { ROOT_FOLDERS } from "../core/setup-host.js";
-import { collectAppFiles, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, wslPathOf } from "./setup.js";
+import { collectAppFiles, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript, wslPathOf } from "./setup.js";
 
 const dir = await mkdtemp(join(tmpdir(), "arashouse-setup-"));
 afterAll(() => rm(dir, { recursive: true, force: true }));
@@ -85,6 +85,24 @@ describe("arashouse setup: the bundle", () => {
     expect(wslPathOf("C:\\aras_installations")).toBe("/mnt/c/aras_installations");
     expect(wslPathOf("D:\\a\\b\\")).toBe("/mnt/d/a/b");
     expect(() => wslPathOf("\\\\server\\share")).toThrow(/not a Windows drive path/);
+  });
+});
+
+describe("arashouse setup-sql: the script", () => {
+  it("writes setup-sql.ps1 (CRLF, ASCII), replaces an earlier one, and refuses a folder holding anything else", async () => {
+    const outDir = join(dir, "sql");
+    const path = await writeSetupSqlScript({ outDir, version: "0.0.0" });
+    expect(path).toBe(join(outDir, "setup-sql.ps1"));
+    const text = await readFile(path, "utf8");
+    expect(text).toMatch(/^[\x00-\x7f]*$/);
+    expect(text.replace(/\r\n/g, "")).not.toContain("\n");
+    expect(text).toContain("$AdminDatabase = 'arashouse_admin'");
+    await writeSetupSqlScript({ outDir, version: "0.0.1" });
+    expect(await readdir(outDir)).toEqual(["setup-sql.ps1"]);
+    expect(await readFile(path, "utf8")).toContain("$ToolVersion = '0.0.1'");
+
+    await writeFile(join(outDir, "notes.txt"), "mine");
+    await expect(writeSetupSqlScript({ outDir, version: "0.0.0" })).rejects.toThrow(/holds notes\.txt/);
   });
 });
 

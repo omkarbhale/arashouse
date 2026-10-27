@@ -5,7 +5,7 @@
 import { win32 } from "node:path";
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import { MAX_SLOT, STAMP_FILE_NAME, slotId, type SlotRef } from "../core/names.js";
-import type { HostInfo, ListedSlot, SlotStamp } from "../host/driver.js";
+import type { HostInfo, ListedSlot, SlotStamp, SqlLoginInfo } from "../host/driver.js";
 import { HostError, isHostError } from "../host/errors.js";
 import { assertSlotOwned } from "../host/owned.js";
 import type { Broker, VerbContext } from "./broker.js";
@@ -24,8 +24,8 @@ export interface BrokerSystem {
   /** For example `Windows_NT 10.0.26100`. */
   os(): string;
   freeRamBytes(): number;
-  /** Whether the broker's SQL login connects (sql-probe.ts on the host). */
-  sqlReachable(): Promise<boolean>;
+  /** The broker's SQL login as it reads itself, or null when it cannot connect (sql-probe.ts on the host). */
+  sqlLogin(): Promise<SqlLoginInfo | null>;
 }
 
 const MB = 1024 * 1024;
@@ -57,13 +57,14 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
     .register("hostInfo", {
       target: "none",
       run: async (ctx: VerbContext): Promise<WireResult> => {
-        const [freeBytes, sqlReachable] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlReachable()]);
+        const [freeBytes, sqlLogin] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlLogin()]);
         const info: HostInfo = {
           os: system.os(),
           freeRamMb: Math.floor(system.freeRamBytes() / MB),
           freeDiskGb: Math.floor((freeBytes / GB) * 10) / 10,
           brokerVersion: system.brokerVersion,
-          sqlReachable,
+          sqlReachable: sqlLogin !== null,
+          sqlLogin,
         };
         return { ok: true, detail: hostInfoDetail(info), info };
       },

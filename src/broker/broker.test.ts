@@ -41,7 +41,7 @@ beforeEach(() => {
     brokerVersion: "9.9.9",
     os: () => "Windows_NT 10.0.26100",
     freeRamBytes: () => 3.5 * 1024 * 1024 * 1024,
-    sqlReachable: async () => true,
+    sqlLogin: async () => ({ login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 }),
   };
   broker = registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath, audit }), system);
 });
@@ -61,7 +61,7 @@ describe("the core verbs", () => {
 
   it("hostInfo reports the OS, free RAM and disk, the version and SQL", async () => {
     const info = result(await ask({ verb: "hostInfo" })).info as Record<string, unknown>;
-    expect(info).toMatchObject({ os: "Windows_NT 10.0.26100", freeRamMb: 3584, brokerVersion: "9.9.9", sqlReachable: true });
+    expect(info).toMatchObject({ os: "Windows_NT 10.0.26100", freeRamMb: 3584, brokerVersion: "9.9.9", sqlReachable: true, sqlLogin: { sysadmin: false, procedures: 5 } });
     expect(typeof info.freeDiskGb).toBe("number");
     expect(info.freeDiskGb as number).toBeGreaterThanOrEqual(0);
   });

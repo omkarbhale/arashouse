@@ -54,7 +54,7 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
     brokerVersion: options.system?.brokerVersion ?? packageVersion(),
     os: options.system?.os ?? (() => `${type()} ${release()}`),
     freeRamBytes: options.system?.freeRamBytes ?? freemem,
-    sqlReachable: options.system?.sqlReachable ?? powershellSqlProbe(),
+    sqlLogin: options.system?.sqlLogin ?? powershellSqlProbe(),
   };
   const broker = registerCoreVerbs(
     new Broker({

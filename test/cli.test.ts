@@ -492,9 +492,9 @@ describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
-    const commands = ["get", "return", "status", "flavors", "run", "setup", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
+    const commands = ["get", "return", "status", "flavors", "run", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable", "help", "version"];
     for (const command of commands) expect(overview.stdout).toContain(`  ${command}`);
-    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "setup", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable"]) {
+    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "force-return", "disable", "enable"]) {
       const r = await cli([command, "--help"]);
       expect(r.code, command).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));

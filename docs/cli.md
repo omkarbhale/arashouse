@@ -20,6 +20,7 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 | `arashouse media check [<flavor>...] [--json] [--write-sums]` | Checks the installers (`docs/media-check.md`). |
 | `arashouse reset-worker [--slot <slot>]` | Resets returned slots; `return` starts it detached (`docs/reset.md`). |
 | `arashouse setup [--out <dir>]` | Writes the one-time host setup script, which the captain runs elevated (`docs/setup.md`). |
+| `arashouse setup-sql [--out <dir>]` | Writes the one-time SQL Server setup script, which a `sysadmin` login runs (`docs/setup-sql.md`). |
 | `arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]` | Checks the pool against the host; see [Operator commands](#operator-commands). |
 | `arashouse repair <slot> [--rebuild]` | Resets a quarantined slot from golden; the way out of `quarantined`. |
 | `arashouse destroy <slot> [--yes] [--include-leased]` | Removes a slot from the host and the pool. |
@@ -134,7 +135,8 @@ code. It checks:
 | `prerequisites` | the last setup run found a prerequisite of a flavor in `media/` missing (warn) |
 | `setup acl` | from WSL, the worker can list a folder it should be kept out of (`secrets\`, `golden\`, ...) or cannot list `slots\`, `staging\` or `broker\` |
 | `broker` | the broker does not answer `ping` (the host checks below are then skipped) |
-| `sql` | the broker cannot connect to SQL Server with its login |
+| `sql` | the broker cannot connect to SQL Server with its login (`docs/setup-sql.md`) |
+| `sql login` | the broker's SQL login is in `sysadmin` or `dbcreator`, or cannot execute all five `arashouse_admin` procedures; warns when the broker predates ticket 22 and does not report them |
 | `disk`, `ram` | free disk is under `min_free_disk_gb`, free RAM under `min_free_ram_mb` (warn; `docs/governor.md`) |
 | `media <flavor>` | the flavor's media is missing or its folder cannot be found (warn; `media check` is the full check) |
 | `baseline <flavor>` | the golden does not verify at the fast level (the full level, every file's SHA-256, with `--deep`): fail if the pool has slots of the flavor, else warn |

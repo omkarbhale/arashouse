@@ -25,6 +25,7 @@ import {
   slotNames,
   slotNumber,
   sqlDataDir,
+  databaseFiles,
   stagingDir,
   stampFile,
   vaultDir,
@@ -58,6 +59,15 @@ describe("derived names", () => {
     expect(stagingDir("lease-1")).toBe("C:\\aras_installations\\staging\\lease-1");
     expect(sqlDataDir()).toBe("C:\\aras_installations\\sqldata");
     expect(slotDir(ref, "D:\\ah")).toBe("D:\\ah\\slots\\12sp9\\03");
+  });
+
+  it("puts a database's two files under sqldata (ticket 22), and only the tool's databases", () => {
+    expect(databaseFiles(databaseName(ref))).toEqual({
+      data: "C:\\aras_installations\\sqldata\\arashouse_12sp9_03.mdf",
+      log: "C:\\aras_installations\\sqldata\\arashouse_12sp9_03_log.ldf",
+    });
+    expect(databaseFiles("arashouse_admin", "D:\\ah").data).toBe("D:\\ah\\sqldata\\arashouse_admin.mdf");
+    for (const bad of ["OLM_Local", "arashouse_x;y", "arashouse_..\\x"]) expect(() => databaseFiles(bad)).toThrow(/not one of the tool's database names/);
   });
 
   it("names a flavor's baseline install (ticket 24), which its golden config files still name", () => {

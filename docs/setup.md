@@ -22,7 +22,8 @@ ticket 44 (`docs/host-tuning.md`).
    ```
 
 3. From WSL: `arashouse doctor` (or `doctor --json`). The `setup`, `prerequisites`, `setup acl` and `broker` checks
-   should pass. The `sql` check fails until ticket 22 creates the broker's SQL login.
+   should pass. The `sql` check fails until `arashouse setup-sql` creates the broker's SQL login (ticket 22,
+   `docs/setup-sql.md`).
 
 `arashouse setup` must run as the worker user, the Windows user WSL interop runs as. It reads that user's name and
 SID with `whoami.exe /user` and writes them into the script, so the ACLs name the user whose workers lease slots.
@@ -115,7 +116,7 @@ folder's ACL as planned, no prerequisite missing for `12sp9`, `23` or `35`, and 
 WSL as the worker:
 
 - `arashouse doctor --json`: `setup`, `prerequisites`, `setup acl`, `broker` (`arashouse-broker 0.0.0`), `disk`
-  and `ram` ok. `sql` fails until ticket 22 creates the broker's login; the baselines warn until ticket 28 adds
+  and `ram` ok. `sql` failed until ticket 22 created the broker's login (`docs/setup-sql.md`); the baselines warn until ticket 28 adds
   `baselineVerify`.
 - `ls /mnt/c/aras_installations/secrets`: `Permission denied`.
 - `ping` through `node.exe <root>\broker\app\broker\client.js` from WSL: about 0.27 s.

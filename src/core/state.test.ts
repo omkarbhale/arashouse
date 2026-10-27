@@ -118,8 +118,9 @@ describe("what a transition records", () => {
   it("counts reset attempts until the slot is clean", () => {
     const first = transitionSlot(slotIn("dirty"), { to: "resetting", pid: 11 }, ctx);
     expect(first.reset).toEqual({ started_at: NOW.toISOString(), pid: 11, attempt: 1 });
-    const interrupted = transitionSlot(first, { to: "dirty" }, ctx);
+    const interrupted = transitionSlot(first, { to: "dirty", crashed: true }, ctx);
     expect(interrupted.reset?.attempt).toBe(1);
+    expect(transitionSlot(first, { to: "dirty" }, ctx).reset).toBeUndefined();
     const second = transitionSlot(interrupted, { to: "resetting", pid: 12 }, ctx);
     expect(second.reset?.attempt).toBe(2);
     const free = transitionSlot(second, { to: "free", golden_hash: "g2", reset_ms: 4999.6 }, ctx);
@@ -182,6 +183,15 @@ describe("the state file bytes", () => {
     delete raw.next_ticket;
     delete raw.queue;
     expect(parseState(JSON.stringify(raw))).toMatchObject({ next_ticket: 1, queue: [] });
+  });
+
+  it("round-trips a reset worker's start time, and reads a reset record written without one", () => {
+    const resetting = transitionSlot(slotIn("dirty"), { to: "resetting", pid: 21, start_time: "8812345" }, ctx);
+    expect(resetting.reset).toEqual({ started_at: NOW.toISOString(), pid: 21, start_time: "8812345", attempt: 1 });
+    expect(parseState(serialiseState(stateWith(resetting))).slots["23-02"]?.reset).toEqual(resetting.reset);
+    const unknown = transitionSlot(slotIn("dirty"), { to: "resetting", pid: 22, start_time: null }, ctx);
+    expect(unknown.reset).toEqual({ started_at: NOW.toISOString(), pid: 22, attempt: 1 });
+    expect(parseState(serialiseState(stateWith(unknown))).slots["23-02"]?.reset).toEqual(unknown.reset);
   });
 
   it("round-trips the lease, with its bootstrap", () => {

@@ -1,10 +1,11 @@
 // Which host driver the CLI talks to. `ARASHOUSE_HOST=fake` selects the fake host (the CLI tests use
 // it); otherwise the broker on Windows, whose client does not exist yet (tickets 20 and 21), so every
 // host call fails as unreachable with a hint. Commands that need no host (`status`, `return`, `run`)
-// work either way.
+// work either way; a reset needs it (with the broker missing, a slot stays dirty until it is there).
 
-import { FLAVOR_KEYS } from "../core/flavors.js";
+import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import { UsageError, type LeaseHost } from "../core/lease.js";
+import type { GoldenSet, ResetHost } from "../core/reset.js";
 import type { StateStore } from "../core/store.js";
 import type { HostDriver } from "../host/driver.js";
 import { HostError } from "../host/errors.js";
@@ -17,13 +18,15 @@ export const HOST_ENV = "ARASHOUSE_HOST";
 export const FAKE_FAULTS_ENV = "ARASHOUSE_FAKE_FAULTS";
 
 /** The host calls the CLI makes. */
-export type CliHost = LeaseHost & Pick<HostDriver, "baselineVerify">;
+export type CliHost = LeaseHost & ResetHost & Pick<HostDriver, "baselineVerify">;
 
 export interface SelectedHost {
   readonly kind: "fake" | "broker";
   readonly host: CliHost;
   /** The URL of a slot as seen from WSL, from its web alias. */
   readonly resolveUrl: (alias: string) => Promise<string>;
+  /** The flavor's golden tree and backup, for a reset (tickets 28, 30 and 31). */
+  readonly golden: (flavor: FlavorKey) => Promise<GoldenSet>;
 }
 
 export function hostKind(env: NodeJS.ProcessEnv): "fake" | "broker" {
@@ -53,7 +56,12 @@ async function fakeHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<Sele
     for (const fault of parsed as Fault[]) host.injectFault(fault);
   }
   const address = env[HOST_ADDR_ENV]?.trim() || "127.0.0.1";
-  return { kind: "fake", host, resolveUrl: async (alias) => slotUrl(address, alias) };
+  return {
+    kind: "fake",
+    host,
+    resolveUrl: async (alias) => slotUrl(address, alias),
+    golden: async (flavor) => ({ tree: host.golden(flavor), backup: host.backup(flavor) }),
+  };
 }
 
 const NO_BROKER = "the arashouse broker is not installed on Windows yet (arashouse setup, tickets 20 and 21)";
@@ -70,9 +78,18 @@ const brokerHost: CliHost = {
   healthCheck: unavailable,
   setLeaseCredentials: unavailable,
   baselineVerify: unavailable,
+  quiesce: unavailable,
+  resetDatabase: unavailable,
+  resetTree: unavailable,
+  startSlot: unavailable,
 };
 
 export async function selectHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {
   if (hostKind(env) === "fake") return fakeHost(env, store);
-  return { kind: "broker", host: brokerHost, resolveUrl: async (alias) => slotUrl(await hostAddress(alias, { env }), alias) };
+  return {
+    kind: "broker",
+    host: brokerHost,
+    resolveUrl: async (alias) => slotUrl(await hostAddress(alias, { env }), alias),
+    golden: unavailable,
+  };
 }

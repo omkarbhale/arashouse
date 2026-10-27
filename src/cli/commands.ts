@@ -1,9 +1,11 @@
 // The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `help`, `version`
-// (and `media check`, ticket 18), thin over the lease core. Output rules: no command prints a
+// (and `media check`, ticket 18, and `reset-worker`, ticket 14), thin over the lease core. Output rules: no command prints a
 // password except `get --json`, once; `--verbose` never adds a secret; an error is one line plus a
 // hint, with the stack only under `ARASHOUSE_DEBUG=1`. The exit codes are docs/cli.md's table.
 
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import { FLAVOR_KEYS, getFlavor } from "../core/flavors.js";
 import { GuardError } from "../core/guards.js";
@@ -20,6 +22,9 @@ import {
 } from "../core/lease.js";
 import { LeaseFileStore } from "../core/lease-files.js";
 import { LicenceRequiredError, SECRET_REQUIRED_EXIT_CODE } from "../core/licence.js";
+import { loadConfig } from "../core/config.js";
+import { parseSlotId, slotId } from "../core/names.js";
+import { type ResetDeps, describeOutcome, resetHooks, runResetWorker } from "../core/reset.js";
 import { redactError } from "../core/redact.js";
 import { StateStore } from "../core/store.js";
 import { createMsiReader, windowsTempDir } from "../host/msi.js";
@@ -30,6 +35,9 @@ import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { runWithLease } from "./run.js";
 
 export const DEBUG_ENV = "ARASHOUSE_DEBUG";
+
+/** `off` stops `return` (and `get`) from starting a detached reset worker; a lazy reset in `get` still runs. */
+export const RESET_WORKER_ENV = "ARASHOUSE_RESET_WORKER";
 
 export interface CliIo {
   out(line: string): void;
@@ -69,6 +77,13 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "Example: arashouse run --lease <lease_id> -- aras-pkg export ./out Item:<id>",
   ],
   media: [MEDIA_USAGE, "", "Are a flavor's installers there, intact and the right version? (docs/media-check.md)"],
+  "reset-worker": [
+    "usage: arashouse reset-worker [--slot <slot>]",
+    "",
+    "Resets <slot> (dirty -> resetting -> free, or quarantined), then every other dirty slot it can.",
+    "`return` starts it detached; it is not needed by hand. Without --slot it resets the dirty slots.",
+    "Exit 5 if the named slot was quarantined, 6 if the host did not answer (docs/reset.md).",
+  ],
   help: ["usage: arashouse help [<command>]"],
   version: ["usage: arashouse version"],
 };
@@ -84,6 +99,7 @@ const OVERVIEW: readonly string[] = [
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
   "  run --lease <lease_id> -- <command ...>                    run a command with the lease's ARAS_* environment",
   "  media check [<flavor>...] [--json] [--write-sums]          check the installers",
+  "  reset-worker [--slot <slot>]                               reset returned slots (return starts it)",
   "  help [<command>]                                           this text, or one command's",
   "  version                                                    the arashouse version",
   "",
@@ -148,9 +164,32 @@ async function host(ctx: Context): Promise<SelectedHost> {
   return selected;
 }
 
+/** The CLI entry a detached reset worker runs; absent when the CLI is not built (source runs in tests). */
+const CLI_ENTRY = fileURLToPath(new URL("./index.js", import.meta.url));
+
+/** Starts `arashouse reset-worker --slot <slot>` detached, with no output, and does not wait for it. */
+function spawnResetWorker(env: NodeJS.ProcessEnv, slot: string): void {
+  if (env[RESET_WORKER_ENV] === "off" || !existsSync(CLI_ENTRY)) return;
+  const child = spawn(process.execPath, [CLI_ENTRY, "reset-worker", "--slot", slot], { detached: true, stdio: "ignore", env });
+  child.on("error", () => undefined);
+  child.unref();
+}
+
+async function resetDeps(ctx: Context, selected: SelectedHost): Promise<ResetDeps> {
+  return { store: ctx.store, host: selected.host, golden: selected.golden, config: await loadConfig({ home: ctx.store.paths.home }) };
+}
+
 async function leaseDeps(ctx: Context): Promise<LeaseDeps> {
   const selected = await host(ctx);
-  return { store: ctx.store, host: selected.host, secrets: new LeaseFileStore(ctx.store.paths.home), resolveUrl: selected.resolveUrl };
+  const reset = await resetDeps(ctx, selected);
+  return {
+    store: ctx.store,
+    host: selected.host,
+    secrets: new LeaseFileStore(ctx.store.paths.home),
+    resolveUrl: selected.resolveUrl,
+    config: reset.config,
+    reset: resetHooks(reset, (slot) => spawnResetWorker(ctx.env, slot)),
+  };
 }
 
 function noPositionals(parsed: ParsedArgs, command: string): void {
@@ -211,7 +250,7 @@ async function cmdStatus(ctx: Context, args: readonly string[]): Promise<number>
   const parsed = parseArgs(args, { json: "flag" });
   noPositionals(parsed, "status");
   if (ctx.verbose) ctx.io.err(`arashouse: state in ${ctx.store.paths.home}`);
-  const report = await leaseStatus({ store: ctx.store });
+  const report = await leaseStatus({ store: ctx.store, config: await loadConfig({ home: ctx.store.paths.home }) });
   if (parsed.options.json === true) printJson(ctx.io, report);
   else for (const line of formatStatus(report)) ctx.io.out(line);
   return EXIT_CODES.ok;
@@ -246,6 +285,26 @@ async function cmdMedia(ctx: Context, args: readonly string[]): Promise<number> 
   return runMediaCheck(rest, { readMsi: createMsiReader(), scratchDir }, ctx.io);
 }
 
+async function cmdResetWorker(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { slot: "value" });
+  noPositionals(parsed, "reset-worker");
+  const named = stringOption(parsed, "slot");
+  let first: string | undefined;
+  if (named !== undefined) {
+    try {
+      first = slotId(parseSlotId(named));
+    } catch {
+      throw new UsageError(`"${named}" is not a slot id (<flavor>-<NN>)`);
+    }
+  }
+  const outcomes = await runResetWorker(await resetDeps(ctx, await host(ctx)), first);
+  for (const outcome of outcomes) ctx.io.out(describeOutcome(outcome));
+  const own = outcomes.find((o) => o.slot === first);
+  if (own?.kind === "quarantined") return EXIT_CODES.resetFailed;
+  if (outcomes.some((o) => o.kind === "dirty")) return EXIT_CODES.hostUnreachable;
+  return EXIT_CODES.ok;
+}
+
 const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) => Promise<number>>> = {
   get: cmdGet,
   return: cmdReturn,
@@ -253,6 +312,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   flavors: cmdFlavors,
   run: cmdRun,
   media: cmdMedia,
+  "reset-worker": cmdResetWorker,
 };
 
 /** Splits off what follows `--` (only `run` has it), so the global flags are looked for before it. */

@@ -2,23 +2,24 @@
 
 `src/core/lease.ts` is the lease core, modelled on `treehouse get/return/status`. There is no daemon:
 every operation takes the state lock (`src/core/store.ts`), reads the state and writes it back. The
-CLI that wraps it is in `docs/cli.md`; the reset that makes a returned slot free again is ticket 14.
+CLI that wraps it is in `docs/cli.md`; the reset that makes a returned slot free again is
+`docs/reset.md` (ticket 14).
 
 > "The philosophy is that Aras are disposable, and anything durable should be taken out by whoever
 > took the lease before giving it back."
 > "It doesn't necessarily clean it up ON freeing the lease, but the worker can assume it has cleaned
 > up. The rest is implementation detail."
 
-So `return` marks the slot `dirty` and exits. A returned slot is never handed out until it is `free`
-again; whoever returns a lease may assume its slot is gone.
+So `return` marks the slot `dirty`, starts a detached reset worker and exits. A returned slot is never
+handed out until it is `free` again; whoever returns a lease may assume its slot is gone.
 
 ## `getLease(deps, { flavor, holder, waitSeconds })`
 
 1. Reads the state and takes the lowest-numbered `free` slot of the flavor. `dirty`, `resetting`,
    `quarantined`, `provisioning` and `disabled` slots are never handed out.
 2. **Dirty check**, before the slot is touched: the host's stamp must carry the golden hash the state
-   recorded and no lease, and the host's `healthCheck` must pass. A slot that fails is marked `dirty`
-   (with the reason in the event log) and the next one is tried. A `Quarantine` host error quarantines
+   recorded, no lease and a reset time, and the host's `healthCheck` must pass. A slot that fails is
+   marked `dirty` (with the reason in the event log) and the next one is tried. A `Quarantine` host error quarantines
    the slot; a `Retryable` one skips it for this attempt. Ticket 32 owns the markers behind the check.
 3. The host's free RAM is asked (`hostInfo`) and the governor gives a first answer on the unlocked
    state, so a caller it refuses does not probe a slot. Under the lock, the governor is asked again and the slot moves `free -> leased` with a fresh lease id
@@ -28,13 +29,16 @@ again; whoever returns a lease may assume its slot is gone.
    as `lease-<lease_id>`; the slot's stamp is written with the lease id (so `doctor --rebuild-state`
    can recover the lease); the host sets the credentials from the handle (`setLeaseCredentials`); the
    URL is looked up. If any of this fails the lease is abandoned: the password is deleted and the slot
-   goes to `dirty` (or `quarantined` for a `Quarantine` error), and the call fails with the error's code.
+   goes to `dirty` (or `quarantined` for a `Quarantine` error, and a reset worker is started for a
+   dirty one), and the call fails with the error's code.
 5. Two `get` calls from one holder get two slots. `status` shows the holder on each.
 
 When no slot can be handed out: `--wait 0` (the default) fails at once with exit 3 and a message such
 as `no 12sp9 slot is free: 3 slots, 1 leased, 1 resetting, 1 quarantined`; `--wait N` takes a queue
 ticket, polls the state every second for up to N seconds and fails with the same message if none
-appears.
+appears. When none is free but one is `dirty`, `get` resets it (`docs/reset.md`): itself, and waits
+on it, with `--wait N`; through a detached worker, failing at once with `...; 12sp9-02 is being
+reset`, without.
 
 **The governor** (`docs/governor.md`): `max_active` leased slots across all flavors, the host's
 `min_free_ram_mb`, and the `get --wait` queue served in ticket order. A refusal reads, for example,
@@ -59,13 +63,14 @@ or log.
 - **ABA protection.** If the slot is leased and its lease id is not the one passed, the call exits 4
   and changes nothing (not even the event log). If the slot is no longer leased (returned, being
   reset, free), the caller's lease is already returned.
-- Marks the slot `dirty`, deletes the lease's password from the secret store, and returns. It does not
-  call the host and does not reset. The slot's stamp keeps the lease id until the reset rewrites it.
+- Marks the slot `dirty`, deletes the lease's password from the secret store, starts a detached
+  reset worker (`arashouse reset-worker --slot <slot>`, `docs/reset.md`) and returns. It does not call
+  the host and does not reset. The slot's stamp keeps the lease id until the reset rewrites it.
 - Returning twice is a no-op, exit 0, message `already returned`. So is returning a lease id the state
   does not hold.
 - `waitSeconds` (the CLI's `--wait`) blocks until the slot is `free` again (or was leased again, which
   means it passed through `free`), for scripts and tests. A slot that is quarantined or disabled, or
-  not free within the time, exits 5. Nothing here starts the reset; ticket 14 does.
+  not free within the time, exits 5. The worker `return` started does the reset.
 
 ## `leaseStatus(deps)` / `status --json`: `docs/schemas/status.schema.json`
 

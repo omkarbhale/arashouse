@@ -1,5 +1,7 @@
 // The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `help`, `version`
-// (and `media check`, ticket 18, and `reset-worker`, ticket 14), thin over the lease core. Output rules: no command prints a
+// (and `media check`, ticket 18, and `reset-worker`, ticket 14), thin over the lease core, and the
+// operator commands (`doctor`, `repair`, `destroy`, `prune`, `force-return`, `disable`, `enable`,
+// ticket 16), thin over operator.ts. Output rules: no command prints a
 // password except `get --json`, once; `--verbose` never adds a secret; an error is one line plus a
 // hint, with the stack only under `ARASHOUSE_DEBUG=1`. The exit codes are docs/cli.md's table.
 
@@ -23,13 +25,24 @@ import {
 import { LeaseFileStore } from "../core/lease-files.js";
 import { LicenceRequiredError, SECRET_REQUIRED_EXIT_CODE } from "../core/licence.js";
 import { loadConfig } from "../core/config.js";
+import {
+  type OperatorDeps,
+  type OperatorResult,
+  destroySlot,
+  disableSlot,
+  doctor,
+  enableSlot,
+  forceReturn,
+  prune,
+  repairSlot,
+} from "../core/operator.js";
 import { parseSlotId, slotId } from "../core/names.js";
 import { type ResetDeps, describeOutcome, resetHooks, runResetWorker } from "../core/reset.js";
 import { redactError } from "../core/redact.js";
 import { StateStore } from "../core/store.js";
 import { createMsiReader, windowsTempDir } from "../host/msi.js";
 import { parseArgs, parseSeconds, stringOption, type ParsedArgs } from "./args.js";
-import { buildFlavors, formatFlavors } from "./flavors.js";
+import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
 import { selectHost, type SelectedHost } from "./host.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { runWithLease } from "./run.js";
@@ -84,6 +97,48 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "`return` starts it detached; it is not needed by hand. Without --slot it resets the dirty slots.",
     "Exit 5 if the named slot was quarantined, 6 if the host did not answer (docs/reset.md).",
   ],
+  doctor: [
+    "usage: arashouse doctor [--fix] [--rebuild-state] [--deep] [--yes]",
+    "",
+    "Checks the state file against the slot stamps, the broker, the SQL login, free disk and RAM,",
+    "the media and baselines, orphaned slots (on the host with no record) and resets with no live",
+    "worker. Exits 1 when a check fails and was not fixed. --fix re-starts stalled resets, marks a",
+    "free slot that is not clean dirty, and with --yes removes orphans. --rebuild-state rebuilds the",
+    "state from the slot stamps (a dry run without --yes; the old file is set aside). --deep verifies",
+    "each baseline at the full level (every file's SHA-256) instead of the fast level.",
+  ],
+  repair: [
+    "usage: arashouse repair <slot> [--rebuild]",
+    "",
+    "The way out of quarantined: resets <slot> from golden (database and tree), then health-checks it.",
+    "--rebuild first recreates its IIS application and database shell. Exit 5 if it is quarantined again.",
+  ],
+  destroy: [
+    "usage: arashouse destroy <slot> [--yes] [--include-leased]",
+    "",
+    "Removes the slot's application, pools, service, folders and database, and its record. A dry run",
+    "without --yes. A leased slot is refused (exit 7) unless --include-leased is given; its lease is lost.",
+  ],
+  prune: [
+    "usage: arashouse prune [--yes]",
+    "",
+    "Lists, and with --yes destroys, the slots that are disabled or orphaned (on the host with no",
+    "record). Never by age: a lease has no expiry.",
+  ],
+  "force-return": [
+    "usage: arashouse force-return <slot> --lease-id <lease> [--yes]",
+    "",
+    "The operator's `return` for a holder that crashed. <lease> is the LEASE column of `arashouse",
+    "status` (or the whole lease id): if the slot holds another lease, it exits 4 and changes nothing.",
+    "The slot is discarded and reset, like `return`. A dry run without --yes.",
+  ],
+  disable: [
+    "usage: arashouse disable <slot>",
+    "",
+    "Takes the slot out of rotation and stops it on the host (to give its RAM back). A leased slot is",
+    "refused (exit 7): return or force-return it first.",
+  ],
+  enable: ["usage: arashouse enable <slot>", "", "Puts a disabled slot back in rotation; it is reset before it is handed out."],
   help: ["usage: arashouse help [<command>]"],
   version: ["usage: arashouse version"],
 };
@@ -100,6 +155,16 @@ const OVERVIEW: readonly string[] = [
   "  run --lease <lease_id> -- <command ...>                    run a command with the lease's ARAS_* environment",
   "  media check [<flavor>...] [--json] [--write-sums]          check the installers",
   "  reset-worker [--slot <slot>]                               reset returned slots (return starts it)",
+  "",
+  "Operator commands (destructive ones are dry runs without --yes):",
+  "  doctor [--fix] [--rebuild-state] [--deep] [--yes]          check the pool against the host",
+  "  repair <slot> [--rebuild]                                  reset a quarantined slot from golden",
+  "  destroy <slot> [--yes] [--include-leased]                  remove a slot from the host and the pool",
+  "  prune [--yes]                                              destroy disabled and orphaned slots",
+  "  force-return <slot> --lease-id <lease> [--yes]             return a crashed holder's lease",
+  "  disable <slot>                                             take a slot out of rotation",
+  "  enable <slot>                                              put a disabled slot back (through a reset)",
+  "",
   "  help [<command>]                                           this text, or one command's",
   "  version                                                    the arashouse version",
   "",
@@ -189,6 +254,18 @@ async function leaseDeps(ctx: Context): Promise<LeaseDeps> {
     resolveUrl: selected.resolveUrl,
     config: reset.config,
     reset: resetHooks(reset, (slot) => spawnResetWorker(ctx.env, slot)),
+  };
+}
+
+async function operatorDeps(ctx: Context): Promise<OperatorDeps> {
+  const selected = await host(ctx);
+  return {
+    store: ctx.store,
+    host: selected.host,
+    secrets: new LeaseFileStore(ctx.store.paths.home),
+    reset: await resetDeps(ctx, selected),
+    startWorker: (slot) => spawnResetWorker(ctx.env, slot),
+    media: (flavor) => mediaPresent(flavor, { env: ctx.env }),
   };
 }
 
@@ -305,6 +382,60 @@ async function cmdResetWorker(ctx: Context, args: readonly string[]): Promise<nu
   return EXIT_CODES.ok;
 }
 
+function printResult(ctx: Context, result: OperatorResult): number {
+  for (const line of result.lines) ctx.io.out(line);
+  return result.exitCode;
+}
+
+/** The one slot an operator command takes. */
+function oneSlot(parsed: ParsedArgs, command: string): string {
+  const [slot, extra] = parsed.positionals;
+  if (slot === undefined) throw new UsageError(`${command} needs a slot (<flavor>-<NN>), as \`arashouse status\` shows it`);
+  if (extra !== undefined) throw new UsageError(`${command} takes one slot, not "${extra}" too`);
+  return slot;
+}
+
+async function cmdDoctor(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { fix: "flag", "rebuild-state": "flag", deep: "flag", yes: "flag" });
+  noPositionals(parsed, "doctor");
+  const o = parsed.options;
+  return printResult(ctx, await doctor(await operatorDeps(ctx), { fix: o.fix === true, rebuildState: o["rebuild-state"] === true, deep: o.deep === true, yes: o.yes === true }));
+}
+
+async function cmdRepair(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { rebuild: "flag" });
+  const slot = oneSlot(parsed, "repair");
+  return printResult(ctx, await repairSlot(await operatorDeps(ctx), { slot, rebuild: parsed.options.rebuild === true }));
+}
+
+async function cmdDestroy(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { yes: "flag", "include-leased": "flag" });
+  const slot = oneSlot(parsed, "destroy");
+  return printResult(ctx, await destroySlot(await operatorDeps(ctx), { slot, yes: parsed.options.yes === true, includeLeased: parsed.options["include-leased"] === true }));
+}
+
+async function cmdPrune(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { yes: "flag" });
+  noPositionals(parsed, "prune");
+  return printResult(ctx, await prune(await operatorDeps(ctx), { yes: parsed.options.yes === true }));
+}
+
+async function cmdForceReturn(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { "lease-id": "value", yes: "flag" });
+  const slot = oneSlot(parsed, "force-return");
+  return printResult(ctx, await forceReturn(await operatorDeps(ctx), { slot, leaseId: stringOption(parsed, "lease-id"), yes: parsed.options.yes === true }));
+}
+
+async function cmdDisable(ctx: Context, args: readonly string[]): Promise<number> {
+  const slot = oneSlot(parseArgs(args, {}), "disable");
+  return printResult(ctx, await disableSlot(await operatorDeps(ctx), slot));
+}
+
+async function cmdEnable(ctx: Context, args: readonly string[]): Promise<number> {
+  const slot = oneSlot(parseArgs(args, {}), "enable");
+  return printResult(ctx, await enableSlot(await operatorDeps(ctx), slot));
+}
+
 const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) => Promise<number>>> = {
   get: cmdGet,
   return: cmdReturn,
@@ -313,6 +444,13 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   run: cmdRun,
   media: cmdMedia,
   "reset-worker": cmdResetWorker,
+  doctor: cmdDoctor,
+  repair: cmdRepair,
+  destroy: cmdDestroy,
+  prune: cmdPrune,
+  "force-return": cmdForceReturn,
+  disable: cmdDisable,
+  enable: cmdEnable,
 };
 
 /** Splits off what follows `--` (only `run` has it), so the global flags are looked for before it. */

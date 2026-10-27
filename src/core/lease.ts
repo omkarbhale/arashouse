@@ -246,14 +246,14 @@ function describeNone(flavor: FlavorKey, slots: readonly Slot[]): string {
   return `no ${flavor} slot is free: ${slots.length} slot${slots.length === 1 ? "" : "s"}, ${parts.join(", ")}`;
 }
 
-type Clean = { readonly clean: true; readonly stamp: SlotStamp } | { readonly clean: false; readonly reason: string };
+export type Clean = { readonly clean: true; readonly stamp: SlotStamp } | { readonly clean: false; readonly reason: string };
 
 /**
  * The dirty check that runs before a free slot is handed out (ticket 32 owns the markers): the
  * stamp must carry the golden hash the state recorded and no lease, and the host's health check
  * (tree, database marker and applications against that stamp) must pass.
  */
-async function checkClean(host: LeaseHost, slot: Slot): Promise<Clean> {
+export async function checkClean(host: Pick<LeaseHost, "readStamp" | "healthCheck">, slot: Slot): Promise<Clean> {
   const ref = { flavor: slot.flavor, slot: slot.number };
   const { stamp } = await host.readStamp(ref);
   if (stamp === null) return { clean: false, reason: "the slot has no stamp" };
@@ -693,6 +693,9 @@ export async function leaseStatus(deps: Pick<LeaseDeps, "store" | "now" | "confi
   return buildStatus(state, { now: (deps.now ?? (() => new Date()))(), config: deps.config, isWaiterAlive: deps.isWaiterAlive });
 }
 
+/** A lease held this long is marked "old" in the human `status`; nothing reclaims it (no expiry, the captain's answer 5). */
+export const OLD_LEASE_SECONDS = 24 * 3600;
+
 /** `2h13m`, `4m05s`, `37s`. */
 export function formatAge(seconds: number): string {
   if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}m`;
@@ -711,13 +714,19 @@ export function formatStatus(report: StatusReport): string[] {
       r.status,
       cell(r.holder),
       cell(r.lease),
-      r.lease_age_seconds === null ? "-" : formatAge(r.lease_age_seconds),
+      r.lease_age_seconds === null ? "-" : `${formatAge(r.lease_age_seconds)}${r.lease_age_seconds >= OLD_LEASE_SECONDS ? " old" : ""}`,
       r.last_reset_ms === null ? "-" : `${(r.last_reset_ms / 1000).toFixed(1)}s`,
     ]);
   }
   const widths = table[0]!.map((_, i) => Math.max(...table.map((row) => (row[i] ?? "").length)));
   const lines = table.map((row) => row.map((c, i) => c.padEnd(widths[i] ?? 0)).join("  ").trimEnd());
   for (const r of report.slots) if (r.quarantine_reason !== null) lines.push(`quarantined ${r.slot}: ${r.quarantine_reason}`);
+  for (const r of report.slots) {
+    if (r.lease_age_seconds === null || r.lease_age_seconds < OLD_LEASE_SECONDS) continue;
+    lines.push(
+      `old lease ${r.slot}: held by ${cell(r.holder)} for ${formatAge(r.lease_age_seconds)}; nothing reclaims it. If its holder is gone: arashouse force-return ${r.slot} --lease-id ${cell(r.lease)} --yes`,
+    );
+  }
   for (const key of FLAVOR_KEYS) {
     const t = report.flavors[key];
     lines.push(`${key}: ${t.free} free of ${t.total} (${t.leased} leased, ${t.dirty} dirty, ${t.resetting} resetting, ${t.quarantined} quarantined)`);

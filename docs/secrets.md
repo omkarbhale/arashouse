@@ -19,10 +19,10 @@ One module family handles every secret, in `src/core/secret.ts`, `redact.ts`, `s
 3. otherwise asks once at a hidden prompt (`Aras licence key for line 14 (not needed if you do not use 14.x): `), stores the answer, and never asks again; steps that need the same key at the same moment share one prompt;
 4. with no TTY, or an empty answer, throws `LicenceRequiredError` (exit code 8) and never guesses.
 
-`forgetLicence(line, store)` backs `arashouse licence forget <line>`. `licenceStatus` and `formatLicenceStatus` back `doctor`'s `licence line 14: present`: the key's presence is reported as a boolean only.
+`forgetLicence(line, store)` is for an `arashouse licence forget <line>` command, which does not exist yet. `licenceStatus` backs `doctor`'s `licence line 14: present` once `doctor` is given the host's store (tickets 20 and 21): the key's presence is reported as a boolean only.
 
 `licence.required` is provisional (`to-install` for every flavor) until ticket 09 reports whether install, login or neither needs a key, and whether one key serves `23` and `35`; the registry is data, so the answer changes one line per flavor.
 
 ## Not here
 
-The worker commands and the exit-code table are in `docs/cli.md`; `licence forget` and `doctor` are ticket 16; the DPAPI store and its ACLs are tickets 20 and 21; the `sa` prompt is ticket 22; setting the lease password in the slot's database and forgetting it at reset is ticket 34.
+The worker commands and the exit-code table are in `docs/cli.md`; `doctor` is in `docs/cli.md`; the DPAPI store and its ACLs are tickets 20 and 21; the `sa` prompt is ticket 22; setting the lease password in the slot's database and forgetting it at reset is ticket 34.

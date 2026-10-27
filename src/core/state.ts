@@ -124,7 +124,8 @@ export function isLeaseId(value: unknown): value is string {
  * Ticket 14 decides when `dirty` and `resetting` slots are reset.
  */
 export const TRANSITIONS: Readonly<Record<SlotStatus, readonly SlotStatus[]>> = {
-  provisioning: ["free", "quarantined", "disabled"],
+  // provisioning -> dirty: `repair --rebuild` re-provisioned the slot and resets it before use.
+  provisioning: ["free", "dirty", "quarantined", "disabled"],
   // free -> dirty: the stamp or database marker no longer matches the golden, so reset before use.
   free: ["leased", "dirty", "quarantined", "disabled"],
   leased: ["dirty", "quarantined"],
@@ -243,7 +244,7 @@ export class StateCorruptError extends Error {
     readonly path: string,
     detail: string,
   ) {
-    super(`the state file ${path} is unusable (${detail}); run \`arashouse doctor --rebuild-state\``);
+    super(`the state file ${path} is unusable (${detail}); run \`arashouse doctor --rebuild-state --yes\``);
     this.name = "StateCorruptError";
   }
 }

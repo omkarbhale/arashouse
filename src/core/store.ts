@@ -42,7 +42,7 @@ export function resolveStorePaths(env: NodeJS.ProcessEnv = process.env): StorePa
 export interface StoreEvent {
   readonly ts: string;
   readonly pid: number;
-  readonly event: "transition" | "queue-join" | "queue-leave" | "state-replaced" | LockEvent["event"];
+  readonly event: "transition" | "slot-removed" | "queue-join" | "queue-leave" | "state-replaced" | LockEvent["event"];
   readonly slot?: string;
   /** The queue ticket of a `queue-join` or `queue-leave`. */
   readonly ticket?: number;
@@ -163,6 +163,26 @@ export class Transaction {
       ...(next.quarantine_reason !== undefined ? { reason: next.quarantine_reason } : note !== undefined ? { reason: note } : {}),
     });
     return next;
+  }
+
+  /**
+   * Drops a slot's record (`arashouse destroy`, ticket 16); throws on an unknown slot. Not a status
+   * move: the slot leaves the pool, and the event records the status it had and its lease, if any.
+   */
+  removeSlot(id: string, note: string): Slot {
+    const slot = this.slots[id];
+    if (!slot) throw new Error(`no slot "${id}"`);
+    delete this.slots[id];
+    this.pending.push({
+      ts: this.env.now().toISOString(),
+      pid: this.env.pid,
+      event: "slot-removed",
+      slot: id,
+      from: slot.status,
+      ...(slot.lease ? { lease: slot.lease.lease_id.slice(0, 8), holder: slot.lease.holder } : {}),
+      reason: note,
+    });
+    return slot;
   }
 
   /** The `get --wait` callers, in ticket order, as this transaction sees them. */

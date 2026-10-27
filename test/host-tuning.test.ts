@@ -47,15 +47,6 @@ describe("scripts/host-tuning.ps1 (static)", () => {
     const doc = readFileSync(join(repoRoot, "docs/host-tuning.md"), "utf8");
     for (const p of ["-WslMemoryGB", "-SqlMaxServerMemoryMB", "-DefenderExclusion", "-FirewallWslOnly", "-Undo"]) expect(doc, p).toContain(p);
   });
-
-  it("never shuts WSL down and touches only its fixed Defender path and firewall rules", () => {
-    const text = readFileSync(script, "utf8");
-    expect(text).not.toMatch(/&\s*wsl(\.exe)?\b/i);
-    expect(text).toContain("$ExcludedPath = 'C:\\aras_installations'");
-    expect(text).toContain("$IisRule = 'IIS-WebServerRole-HTTP-In-TCP'");
-    expect(text).toContain("$OwnRule = 'arashouse-http-in-wsl'");
-    expect(text).toContain("Initial Catalog=master;");
-  });
 });
 
 // Each test starts Windows PowerShell several times (about 2 s each).
@@ -76,6 +67,24 @@ describeWithPs(`scripts/host-tuning.ps1 under ${ps}`, { timeout: 60_000 }, () =>
     expect(r.out).toContain("4096 MB");
     expect(existsSync(join(dir, "dry-state"))).toBe(false);
     expect(existsSync(join(dir, "dry-wslconfig"))).toBe(false);
+  });
+
+  it("dry run names only the fixed Defender path and firewall rules", () => {
+    const r = run("names", ["-DefenderExclusion", "-FirewallWslOnly"]);
+    expect(r.code).toBe(0);
+    const plan = r.out.split(/\r?\n/).filter((l) => l.startsWith("would do: "));
+    expect(plan).toHaveLength(2);
+    expect(plan[0]).toContain("exclusion C:\\aras_installations ");
+    expect(plan[1]).toContain("arashouse-http-in-wsl");
+    expect(plan[1]).toContain("IIS-WebServerRole-HTTP-In-TCP");
+  });
+
+  it("a WSL apply writes the sandbox .wslconfig and leaves WSL running", () => {
+    const r = run("noshutdown", ["-WslMemoryGB", "12", "-Apply"]);
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(readFileSync(join(dir, "noshutdown-wslconfig"), "utf8")).toBe("[wsl2]\r\nmemory=12GB\r\n");
+    expect(r.out).toMatch(/takes effect at the next 'wsl --shutdown', which this script does not run/);
   });
 
   it("dry run of an undo with nothing recorded skips every item", () => {

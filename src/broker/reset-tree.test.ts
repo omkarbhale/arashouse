@@ -102,7 +102,7 @@ describe("resetTree", () => {
     expect(result.detail).toMatch(
       new RegExp(
         `^reset the tree of 12sp9-01 to golden ${hash.slice(0, 12)} in \\d+\\.\\d s \\(robocopy 0\\.3, clearing 0\\.1: 1 runtime, 1 vault and 1 ASP\\.NET temporary entries cleared; ` +
-          `configs: 8 files, \\d+ edits; no licence key is stored for line 12, so the slot cannot log in yet; \\d+ files verified; golden [\\d.]+, mirror [\\d.]+, configs [\\d.]+, verify [\\d.]+, stamp [\\d.]+\\)$`,
+          `configs: 9 files, \\d+ edits; no licence key is stored for line 12, so the slot cannot log in yet; \\d+ files verified; golden [\\d.]+, mirror [\\d.]+, configs [\\d.]+, verify [\\d.]+, stamp [\\d.]+\\)$`,
       ),
     );
   });

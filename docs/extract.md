@@ -71,7 +71,7 @@ arashouse extract db --lease <id> --to <file.bak>
 
 Writes a `COPY_ONLY` backup of the leased slot's database (`arashouse_<key>_<NN>`) to `<file.bak>`. `COPY_ONLY`
 leaves the database's own backup sequence alone. The file is a normal SQL Server backup: `RESTORE DATABASE` it
-anywhere, or give it to `get --bootstrap`'s restore (ticket 39) on a later lease of the same flavor.
+anywhere, or give it to `get --restore` (ticket 39, `docs/restore.md`) on a later lease of the same flavor.
 
 1. The CLI makes `<root>\staging\<lease_id>\` (the worker may change `staging\`, ticket 21) and names a new file in it,
    `extract-db-<8 hex>.bak`.

@@ -51,6 +51,7 @@ import { parseArgs, parseSeconds, stringOption, type ParsedArgs } from "./args.j
 import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
 import { selectHost, type CliHost, type SelectedHost } from "./host.js";
 import { deployCodeOnLease, formatOutcomes, localInstallRoot, planSource, refusedDeploy, type CodeDeployReport, type CodeRules, type PlannedSource } from "./code.js";
+import { assertNoGitTargets, checkGitTool, formatGitOutcome, gitBaselineOnLease, refusedBaseline, selectGitTool, type GitReport } from "./git.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { parsePasswordFd, writePasswordFd } from "./password-fd.js";
 import { runWithLease } from "./run.js";
@@ -77,7 +78,7 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
   get: [
     "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]",
     "                     [--code <dir|zip>[:<subpath>]]... [--allow-config] [--allow-servers] [--atomic]",
-    "                     [--import <manifest|folder> [<import options>]]... [--keep-on-fail]",
+    "                     [--import <manifest|folder> [<import options>]]... [--keep-on-fail] [--git]",
     "                     [--restore <backup.bak | profile> [--allow-foreign-origin] [--skip-version-check]]",
     "",
     `Leases a clean slot of <flavor> (${FLAVOR_KEYS.join(", ")}) to <task>. With --json, stdout is the`,
@@ -102,6 +103,20 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "order given and before the imports; a deploy a guard refuses is refused before the lease is taken (exit 7).",
     "If a deploy fails, the lease is still held and shown, no import runs, and get exits 10; with --atomic it is",
     "returned (and reset) instead.",
+    "--git makes the slot's Innovator\\ tree a git repository last, as `git-baseline` does: its one commit is the",
+    "tree as handed over (with the code deployed), so `git status` and `git diff` show only what changes after.",
+    "A failed baseline keeps the lease and exits 10, like a failed deploy (--atomic returns it).",
+  ],
+  "git-baseline": [
+    "usage: arashouse git-baseline --lease <lease_id> [--json]",
+    "",
+    "Makes the leased slot's Innovator\\ tree a git repository whose one commit is the tree as it is now, by",
+    "\"arashouse <arashouse@localhost>\": git status and git diff then show only what changed after. A generated",
+    ".gitignore leaves out the secrets and identity files, the files that tie the tree to the slot and the files",
+    "the server writes as it runs; a commit that would hold a secret is refused. Git for Windows builds it, as",
+    "you (ARASHOUSE_WINDOWS_GIT says where git.exe is); the slot is recycled when it is put in place. The repository",
+    "has no remote, and returning the lease removes it. Exit 7 when refused (nothing changed), 10 when it failed",
+    "(the lease is still held). See docs/git-baseline.md.",
   ],
   "deploy-code": [
     "usage: arashouse deploy-code --lease <lease_id> <dir|zip>[:<subpath>]... [--allow-config] [--allow-servers] [--json]",
@@ -274,7 +289,9 @@ const OVERVIEW: readonly string[] = [
   "      [--agent]                                             ... with its agent service started",
   "      [--code <dir|zip>[:<subpath>]]... [--atomic]          ... with code deployed into it",
   "      [--restore <backup.bak | profile>]                    ... brought up from a SQL Server backup",
+  "      [--git]                                               ... and its tree committed as a git baseline",
   "  deploy-code --lease <lease_id> <dir|zip>[:<subpath>]...   deploy code into a leased slot",
+  "  git-baseline --lease <lease_id> [--json]                   make a held lease's tree a git repository",
   "  return <lease_id> [--wait[=<seconds>]] [--quiet]           give a lease back (its slot is discarded)",
   "  status [--json]                                            every slot and its holder",
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
@@ -307,8 +324,8 @@ const OVERVIEW: readonly string[] = [
   "Options for every command: --help, --verbose (more detail on stderr, never a secret).",
   "Exit codes: 0 ok, 1 other failure, 2 usage, 3 no slot available, 4 lease mismatch,",
   "5 reset failed, 6 host unreachable, 7 refused by a guard, 8 a secret is needed and no terminal",
-  "can ask, 9 an import failed, 10 a code deploy failed after the lease was taken; `run` passes its",
-  "command's code through. See docs/cli.md.",
+  "can ask, 9 an import failed, 10 a code deploy or git baseline failed after the lease was taken; `run`",
+  "passes its command's code through. See docs/cli.md.",
 ];
 
 /** What to try next, by exit code; printed under the error line. */
@@ -382,10 +399,11 @@ async function resetDeps(ctx: Context, selected: SelectedHost): Promise<ResetDep
   return { store: ctx.store, host: selected.host, golden: selected.golden, config: await loadConfig({ home: ctx.store.paths.home }) };
 }
 
-async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "resolveUrl"> & { readonly host: CliHost }> {
+async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "resolveUrl" | "kind"> & { readonly host: CliHost }> {
   const selected = await host(ctx);
   const reset = await resetDeps(ctx, selected);
   return {
+    kind: selected.kind,
     store: ctx.store,
     host: selected.host,
     secrets: new LeaseFileStore(ctx.store.paths.home),
@@ -441,6 +459,7 @@ const GET_OPTIONS = {
   "allow-config": "flag",
   "allow-servers": "flag",
   atomic: "flag",
+  git: "flag",
 } as const;
 
 /** `--allow-config` and `--allow-servers`, which only a deploy takes. */
@@ -473,9 +492,11 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   const keepOnFail = parsed.options["keep-on-fail"] === true;
   if (keepOnFail && steps.length === 0) throw new UsageError("--keep-on-fail goes with --import");
   const codeTexts = parsed.lists.code ?? [];
-  for (const flag of ["allow-config", "allow-servers", "atomic"]) {
+  const git = parsed.options.git === true;
+  for (const flag of ["allow-config", "allow-servers"]) {
     if (parsed.options[flag] === true && codeTexts.length === 0) throw new UsageError(`--${flag} goes with --code`);
   }
+  if (parsed.options.atomic === true && codeTexts.length === 0 && !git) throw new UsageError("--atomic goes with --code or --git");
   // Checked before the lease is taken, so a descriptor that is not open costs no slot.
   const passwordFd = fdText === undefined ? undefined : parsePasswordFd(fdText);
   const restoreValue = stringOption(parsed, "restore");
@@ -500,6 +521,12 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   const imports = steps.length === 0 ? [] : prepareImports(steps, { flavor: flavor as FlavorKey, env: ctx.env, verbose: ctx.verbose });
   const apkgCheck = steps.length === 0 ? undefined : requireArasPkg(ctx.env);
   const deps = await leaseDeps(ctx);
+  // And the git baseline: no --code may write the repository's place, and git must run (ticket 53).
+  const gitTool = git ? selectGitTool(deps.kind, ctx.env, localInstallRoot(ctx.env)) : undefined;
+  if (gitTool !== undefined) {
+    assertNoGitTargets(sources);
+    await checkGitTool(gitTool, ctx.env);
+  }
   const agent = parsed.options.agent === true;
   const grant = await getLease(deps, {
     flavor,
@@ -542,6 +569,19 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
       throw new LeaseError(EXIT_CODES.importFailed, `${failure}; the lease of ${grant.slot} was returned (--keep-on-fail keeps it)`);
     }
   }
+  // The git baseline last, after everything that changes the tree (the bootstrap order: restore, code, imports, git).
+  let baseline: GitReport | undefined;
+  if (gitTool !== undefined && codeFailure === undefined && failure === undefined) {
+    baseline = await gitBaselineOnLease(
+      { store: ctx.store, host: deps.host, git: gitTool, localRoot: localInstallRoot(ctx.env), env: ctx.env },
+      { slot: grant.slot, leaseId: grant.lease_id, flavor: grant.flavor, agent },
+    );
+    if (!baseline.outcome.ok && parsed.options.atomic === true) {
+      await returnLease(deps, { target: grant.lease_id });
+      throw new LeaseError(EXIT_CODES.codeFailed, `the git baseline of ${grant.slot} failed (${baseline.outcome.detail}); --atomic returned the lease, and the slot is reset`);
+    }
+  }
+  const gitFailure = baseline && !baseline.outcome.ok ? `the git baseline failed (${baseline.outcome.detail}); the lease is still held` : undefined;
   if (passwordFd !== undefined) {
     try {
       writePasswordFd(passwordFd, grant.password);
@@ -556,6 +596,10 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
       ctx.io.err(`arashouse: ${codeFailure}: ${returnHint}`);
       return EXIT_CODES.codeFailed;
     }
+    if (gitFailure !== undefined) {
+      ctx.io.err(`arashouse: ${gitFailure}: ${returnHint}`);
+      return EXIT_CODES.codeFailed;
+    }
     if (failure === undefined) return EXIT_CODES.ok;
     ctx.io.err(`arashouse: ${failure}; the lease of ${grant.slot} is kept (--keep-on-fail): ${returnHint}`);
     return EXIT_CODES.importFailed;
@@ -563,7 +607,9 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   if (parsed.options.json === true) {
     printJson(ctx.io, {
       ...renderGetJson(grant, { password: passwordFd === undefined }),
-      ...(deployed === undefined ? {} : { bootstrap: { code: deployed.outcomes } }),
+      ...(deployed === undefined && baseline === undefined
+        ? {}
+        : { bootstrap: { ...(deployed === undefined ? {} : { code: deployed.outcomes }), ...(baseline === undefined ? {} : { git: baseline.outcome }) } }),
       ...(results === undefined ? {} : { imports: results }),
     });
     ctx.io.err(`arashouse: leased ${grant.slot} to ${grant.holder}; ${returnHint}`);
@@ -581,6 +627,7 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
       : `password:  written to descriptor ${passwordFd}`,
     ...(deployed ? formatOutcomes(deployed.outcomes) : []),
     ...(results ?? []).map((r, i) => `import ${i + 1}:  ${r.manifest} (exit ${r.exit_code}; log ${r.log})`),
+    ...(baseline ? [formatGitOutcome(baseline.outcome)] : []),
     returnHint,
   ]) {
     ctx.io.out(line);
@@ -621,6 +668,8 @@ async function cmdDeployCode(ctx: Context, args: readonly string[]): Promise<num
   for (const text of parsed.positionals) sources.push(await planSource(text, rules));
   const slot = Object.values((await ctx.store.read()).slots).find((s) => s.status === "leased" && s.lease?.lease_id === leaseId);
   if (!slot?.lease) throw new LeaseError(EXIT_CODES.leaseMismatch, "that lease is not held (it was returned, or never existed); nothing was deployed");
+  // The lease's git baseline is the holder's record of what changed: a deploy changes the tree, never the repository.
+  if (slot.lease.bootstrap?.git !== undefined) assertNoGitTargets(sources);
   const report = await deployCodeOnLease(
     { store: ctx.store, host: (await host(ctx)).host, localRoot: localInstallRoot(ctx.env) },
     { slot: slot.id, leaseId, agent: slot.lease.bootstrap?.agent === true },
@@ -632,6 +681,29 @@ async function cmdDeployCode(ctx: Context, args: readonly string[]): Promise<num
   if (report.ok) return EXIT_CODES.ok;
   ctx.io.err(`arashouse: the code deploy into ${slot.id} failed (${report.outcomes.at(-1)?.detail ?? "no detail"}); the lease is still held`);
   return refusedDeploy(report) ? EXIT_CODES.refused : EXIT_CODES.codeFailed;
+}
+
+async function cmdGitBaseline(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { lease: "value", json: "flag" });
+  noPositionals(parsed, "git-baseline");
+  const leaseId = stringOption(parsed, "lease");
+  if (leaseId === undefined) throw new UsageError("git-baseline needs --lease <lease_id>");
+  if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
+  const slot = Object.values((await ctx.store.read()).slots).find((s) => s.status === "leased" && s.lease?.lease_id === leaseId);
+  if (!slot?.lease) throw new LeaseError(EXIT_CODES.leaseMismatch, "that lease is not held (it was returned, or never existed); nothing was committed");
+  const selected = await host(ctx);
+  const localRoot = localInstallRoot(ctx.env);
+  const git = selectGitTool(selected.kind, ctx.env, localRoot);
+  await checkGitTool(git, ctx.env);
+  const report = await gitBaselineOnLease(
+    { store: ctx.store, host: selected.host, git, localRoot, env: ctx.env },
+    { slot: slot.id, leaseId, flavor: slot.flavor, agent: slot.lease.bootstrap?.agent === true },
+  );
+  if (parsed.options.json === true) printJson(ctx.io, { slot: slot.id, git: report.outcome });
+  else ctx.io.out(formatGitOutcome(report.outcome));
+  if (report.outcome.ok) return EXIT_CODES.ok;
+  ctx.io.err(`arashouse: the git baseline of ${slot.id} failed (${report.outcome.detail}); the lease is still held`);
+  return refusedBaseline(report) ? EXIT_CODES.refused : EXIT_CODES.codeFailed;
 }
 
 async function cmdReturn(ctx: Context, args: readonly string[]): Promise<number> {
@@ -914,6 +986,7 @@ async function cmdEnable(ctx: Context, args: readonly string[]): Promise<number>
 const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) => Promise<number>>> = {
   get: cmdGet,
   "deploy-code": cmdDeployCode,
+  "git-baseline": cmdGitBaseline,
   return: cmdReturn,
   status: cmdStatus,
   flavors: cmdFlavors,

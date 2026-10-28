@@ -338,6 +338,96 @@ describe("get --code and deploy-code", () => {
   });
 });
 
+describe("get --git and git-baseline (ticket 53)", () => {
+  /** The install root the CLI stages into, with a small `Innovator\` tree in the flavor's slot 01. */
+  async function slotTree(flavor: FlavorKey, count = 1): Promise<{ root: string; env: NodeJS.ProcessEnv }> {
+    const root = join(home, "root");
+    for (let n = 1; n <= count; n++) {
+      const tree = join(root, "slots", flavor, `0${n}`, "Innovator");
+      await mkdir(join(tree, "Client", "scripts"), { recursive: true });
+      await mkdir(join(tree, "Server", "App_Data", "Certificates"), { recursive: true });
+      await writeFile(join(tree, "Client", "scripts", "app.js"), "// app");
+      await writeFile(join(tree, "Server", "App_Data", "Certificates", "InnovatorServer.pfx"), "pfx");
+    }
+    return { root, env: { ARASHOUSE_LOCAL_ROOT: root } };
+  }
+
+  async function slotOf(id: string) {
+    return (await new StateStore({ home }).read()).slots[id];
+  }
+
+  it("commits the tree last, prints the baseline in the contract and records the commit on the lease", async () => {
+    await seed({ "12sp9": 1 });
+    const { root, env } = await slotTree("12sp9");
+    const r = await cli(["get", "12sp9", "--holder", "t", "--json", "--git"], env);
+    expect(r.code, r.stderr).toBe(0);
+    const grant = JSON.parse(r.stdout) as Grant & { bootstrap: { git: { ok: boolean; commit: string; files: number; path: string } } };
+    const validate = await validator("get.schema.json");
+    expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+    expect(grant.bootstrap.git).toMatchObject({ ok: true, files: 2, path: "C:\\aras_installations\\slots\\12sp9\\01\\Innovator" });
+    expect((await slotOf("12sp9-01"))?.lease?.bootstrap).toEqual({ git: grant.bootstrap.git.commit });
+    expect(await readdir(join(root, "staging"))).toEqual([]);
+    const human = await cli(["git-baseline", "--lease", grant.lease_id], env);
+    expect(human.code).toBe(EXIT_CODES.refused);
+    expect(human.stderr).toMatch(/already has a git baseline/);
+  });
+
+  it("refuses --code that writes the repository's place before it takes a lease, and deploy-code onto a baseline", async () => {
+    await seed({ "12sp9": 1 });
+    const { env } = await slotTree("12sp9");
+    const src = join(home, "with-gitignore");
+    await mkdir(src);
+    await writeFile(join(src, ".gitignore"), "*\n");
+    const r = await cli(["get", "12sp9", "--holder", "t", "--git", "--code", src], env);
+    expect(r.code).toBe(EXIT_CODES.refused);
+    expect(r.stderr).toMatch(/writes Innovator\/\.gitignore, which the git baseline makes/);
+    expect((await slotOf("12sp9-01"))?.status).toBe("free");
+    expect((await cli(["get", "12sp9", "--holder", "t", "--atomic"], env)).code).toBe(EXIT_CODES.usage);
+
+    const missing = await cli(["get", "12sp9", "--holder", "t", "--git"], { ...env, ARASHOUSE_GIT: join(home, "no-git") });
+    expect(missing.code).not.toBe(0);
+    expect(missing.stderr).toMatch(/git could not be run/);
+    expect((await slotOf("12sp9-01"))?.status).toBe("free");
+
+    const grant = JSON.parse((await cli(["get", "12sp9", "--holder", "t", "--json", "--git"], env)).stdout) as Grant;
+    const deploy = await cli(["deploy-code", "--lease", grant.lease_id, src], env);
+    expect(deploy.code).toBe(EXIT_CODES.refused);
+    expect(deploy.stderr).toMatch(/which the git baseline makes/);
+  });
+
+  it("git-baseline commits a lease already held, in its contract, and refuses a lease that is not held", async () => {
+    await seed({ "35": 1 });
+    const { env } = await slotTree("35");
+    const grant = await lease("35");
+    const r = await cli(["git-baseline", "--lease", grant.lease_id, "--json"], env);
+    expect(r.code, r.stderr).toBe(0);
+    const report = JSON.parse(r.stdout) as Record<string, unknown>;
+    const validate = await validator("git-baseline.schema.json");
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+    expect(report).toMatchObject({ slot: "35-01", git: { ok: true, files: 2 } });
+    expect((await cli(["git-baseline", "--lease", "f".repeat(32)], env)).code).toBe(EXIT_CODES.leaseMismatch);
+    expect((await cli(["git-baseline"], env)).code).toBe(EXIT_CODES.usage);
+  });
+
+  it("keeps the lease when the baseline fails (exit 10); --atomic returns it", async () => {
+    await seed({ "12sp9": 2 });
+    const { env } = await slotTree("12sp9", 2);
+    const faults = { ARASHOUSE_FAKE_FAULTS: JSON.stringify([{ method: "deployCode", kind: "fail", error: "Retryable", message: "robocopy failed (16)" }]) };
+    const kept = await cli(["get", "12sp9", "--holder", "t", "--json", "--git"], { ...env, ...faults });
+    expect(kept.code).toBe(EXIT_CODES.codeFailed);
+    const grant = JSON.parse(kept.stdout) as Grant & { bootstrap: { git: { ok: boolean; detail: string } } };
+    expect(grant.bootstrap.git).toMatchObject({ ok: false, detail: "robocopy failed (16)" });
+    expect(kept.stderr).toMatch(/the git baseline failed .*; the lease is still held/);
+    expect((await slotOf(grant.slot))?.status).toBe("leased");
+
+    const atomic = await cli(["get", "12sp9", "--holder", "t", "--json", "--atomic", "--git"], { ...env, ...faults });
+    expect(atomic.code).toBe(EXIT_CODES.codeFailed);
+    expect(atomic.stdout).toBe("");
+    expect(atomic.stderr).toMatch(/the git baseline of 12sp9-02 failed .*--atomic returned the lease/);
+    expect((await slotOf("12sp9-02"))?.status).toBe("dirty");
+  });
+});
+
 describe("run --lease", () => {
   it("gives the password to the child's environment and to nothing else", async () => {
     await seed({ "23": 2 });

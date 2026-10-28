@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/git-baseline.schema.json",
+  "title": "arashouse git-baseline --json",
+  "description": "What `arashouse git-baseline --json` prints: the leased slot and its git baseline. It holds no file contents and no secret.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "slot",
+    "git"
+  ],
+  "properties": {
+    "slot": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+-[0-9]{2}$"
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ok",
+        "commit",
+        "files",
+        "path",
+        "detail"
+      ],
+      "description": "A failed baseline exits 10 (or 7 when a guard refused it), with the lease still held.",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "The repository is in the slot's tree and the slot came back up."
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "The baseline commit, once one was made; null when the baseline failed before it."
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Files the commit holds, the generated .gitignore among them."
+        },
+        "path": {
+          "type": "string",
+          "description": "The repository's work tree, the slot's Innovator folder, as a Windows path."
+        },
+        "detail": {
+          "type": "string",
+          "description": "One line: what was done, with its times, or why it failed."
+        }
+      }
+    }
+  }
+}

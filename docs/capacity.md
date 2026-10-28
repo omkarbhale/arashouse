@@ -178,3 +178,21 @@ Nothing here needs ticket 44's WSL cap now; it stays the captain's option if the
   place in the pool until an operator repairs them; whether a health check that only timed out should leave the slot
   `dirty` for a later try instead of counting toward quarantine was left to ticket 56, which made it so: a health check
   that only timed out is tried again with backoff and then leaves the slot `dirty` (`docs/reset.md`, `docs/health.md`).
+
+## A loaded host again (ticket 56, 2026-10-28)
+
+After ticket 56 (a health check that only timed out leaves the slot `dirty`; a WSL interop start that never reached the
+broker is started again), with its broker installed, a proof outside the repo ran six rounds of two leases at once
+(`23`+`35`, `12sp9`+`23`, `12sp9`+`35`, `12sp9` x2, `23` x2, `35` x2; another lane held `12sp9-01` and one more place of
+`max_active` throughout) while it loaded Windows the way ticket 38's other lanes did: six PowerShell CPU burners and four
+loops of `cmd.exe` interop starts (343 burns and 21,170 starts in the 45 minutes), and three loops pinging the broker
+through the interop transport.
+
+| | |
+|---|---|
+| leases | 12, every `get` and `return` exit 0; a `get` took 33 to 708 s (it waited for a slot still resetting) |
+| resets | 15, every one `free`: none left `dirty` by a timed-out health check, none quarantined. Health steps took 63 to 115 s, and 246 and 275 s for the two resets that ran while the CPU load was heaviest |
+| broker pings | 5,595, none failed; the transport started `node.exe` again 0 times, and none of the 21,170 load starts met WSL's `UtilAcceptVsock` failure |
+
+So the run ended with no slot quarantined. Neither failure ticket 56 handles happened in it, so the retries themselves
+are proven offline (`src/core/reset.test.ts`, `src/broker/health.test.ts`, `src/host/broker-host.test.ts`), not here.

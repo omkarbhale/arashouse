@@ -496,7 +496,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
       const refreshed = offline?.ok && offline.refreshToken ? await aras2.refresh(offline.refreshToken) : undefined;
       check("6.the old lease's refresh token is refused", refreshed !== undefined && !refreshed.ok, refreshed === undefined ? "no refresh token" : refreshed.ok ? "a new access token was issued" : refreshed.detail);
       // A known limit, recorded and not checked (docs/e2e-23.md): an access token is a JWT signed with golden's certificate,
-      // so the old lease's is answered on the same slot until it expires; another slot refuses it (it names its database).
+      // so the old lease's is answered on the same slot until it expires; another slot refuses it (it names its database). The fix, a per-reset OAuth signing certificate, is map ticket 54.
       const oldToken = await aras2.apply(token, `<Item type="User" action="get" select="id"><login_name>root</login_name></Item>`);
       record("6.the old lease's access token (observed, a known limit)", true, 0, oldToken.ok ? "answered on the same slot after the reset" : `refused: ${oldToken.fault ?? ""}`);
     }

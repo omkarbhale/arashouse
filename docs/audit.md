@@ -156,7 +156,7 @@ Measured by `audit-probe.ps1` on the host:
 **The repo.**
 
 - Every tracked file and the whole history (`git log --all -p`) were searched for credential shapes: a private key, a
-  quoted password, `Password=`, `-P`, the MD5 of Aras's shipped password, and a `lic_key` or `act_key` with a value.
+  quoted password, a `Password` connection-string key, `-P`, the MD5 of Aras's shipped password, and a `lic_key` or `act_key` with a value.
 - Found only placeholders (`LICENCE-KEY-PLACEHOLDER-*`, template variables) and the Aras MSI's public default
   `innovator` in one test fixture (`src/broker/baseline-build.test.ts`).
 - No installer, backup, `.pfx`, `.cer`, `.dpapi`, `.bin` or key file is tracked (`test/tracked-files.test.ts` also

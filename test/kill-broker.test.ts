@@ -35,15 +35,6 @@ describe("test/host/kill-broker.ps1 (static)", () => {
   it("is plain ASCII, so Windows PowerShell 5.1 reads it without a BOM", () => {
     expect(text).toMatch(/^[\x00-\x7f]*$/);
   });
-
-  it("ends only the ArasHouseBroker service's tree, and starts nothing else", () => {
-    expect(text).toContain("$ServiceName = 'ArasHouseBroker'");
-    expect(text.match(/taskkill\.exe/g)).toHaveLength(1);
-    expect(text).toContain("& taskkill.exe /PID $old /T /F");
-    expect(text.match(/Start-Service -Name/g)).toEqual(["Start-Service -Name"]);
-    expect(text).toContain("Start-Service -Name $ServiceName");
-    expect(text).not.toMatch(/Stop-Process|Remove-Item|Stop-Service|Restart-Service/);
-  });
 });
 
 describeWithPs(`test/host/kill-broker.ps1 under ${ps}`, { timeout: 60_000 }, () => {

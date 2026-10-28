@@ -566,6 +566,30 @@ describe("doctor", () => {
     expect(fixed.exitCode).toBe(0);
   });
 
+  it("does not fail a free slot that a get leases while doctor runs", async () => {
+    const p = await pool({ "23": 1 });
+    let raced = false;
+    // The get lands between doctor's read of the state and its check of the slot's stamp.
+    const host = new Proxy(p.host, {
+      get(target, name) {
+        if (name === "readStamp" && !raced) {
+          return async (ref: Parameters<FakeHost["readStamp"]>[0]) => {
+            raced = true;
+            await take(p, "23", "racer");
+            return target.readStamp(ref);
+          };
+        }
+        const value = Reflect.get(target, name, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const found = await doctor({ ...p.deps, host }, {});
+    expect(raced).toBe(true);
+    expect(found.lines).toContain("ok    slot 23-01: free when doctor read the state, leased since");
+    expect(found.exitCode).toBe(0);
+    expect((await p.status("23-01"))?.status).toBe("leased");
+  });
+
   it("reports the broker, SQL, disk, RAM, media and baselines", async () => {
     const p = await pool({ "23": 1 }, { config: { min_free_disk_gb: 10, min_free_ram_mb: 2048 } });
     const ok = await doctor(p.deps, {});

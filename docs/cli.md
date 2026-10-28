@@ -198,7 +198,7 @@ code. It checks:
 | `media <flavor>` | the flavor's media is missing or its folder cannot be found (warn; `media check` is the full check) |
 | `baseline <flavor>` | the golden does not verify at the fast level (the full level, every file's SHA-256, with `--deep`): fail if the pool has slots of the flavor, else warn |
 | `aras-pkg` | the import tool (`$ARASHOUSE_APKG`, else `aras-pkg` on `PATH`) is not there or does not answer `--version` (warn; only `get --import` and `import` need it); when it is there, the line names where it came from and its version |
-| `slot <id>` | a record whose slot is not on the host; a stamp that belongs to another slot; a `free` slot that is not clean on the host (its stamp, tree, database marker or health; the same check `get` makes); a `resetting` slot whose worker has ended; a `dirty` slot with no reset running (warn); a `quarantined` slot (warn); a lease 24 hours old or more (warn); a lease the stamp does not name (warn) |
+| `slot <id>` | a record whose slot is not on the host; a stamp that belongs to another slot; a `free` slot that is not clean on the host (its stamp, tree, database marker or health; the same check `get` makes), unless a `get` leased it or a reset ran since doctor read the state (ok); a `resetting` slot whose worker has ended; a `dirty` slot with no reset running (warn); a `quarantined` slot (warn); a lease 24 hours old or more (warn); a lease the stamp does not name (warn) |
 | `orphan <id>` | a slot on the host with no record (`arashouse_*` database, `ah-*` application) |
 
 `--fix` re-starts resets: a `resetting` slot whose worker has ended goes back to `dirty`, a `free`

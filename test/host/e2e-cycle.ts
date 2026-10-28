@@ -1,9 +1,10 @@
 // Ticket 35: the whole lease cycle on the host for one flavor, with a deliberately dirtied slot. It proves the
 // captain's promise end to end: "It doesn't necessarily clean it up ON freeing the lease, but the worker can assume it
 // has cleaned up." A returned slot is wiped, and the next lease is clean. Run from WSL, non-elevated, by
-// test/host/e2e-12sp9.test.ts and test/host/e2e-23.test.ts (ARASHOUSE_TEST_E2E=1); every step is recorded in
-// `<out>/cycle-<n>.json` and `.log` for docs/e2e-12sp9.md and docs/e2e-23.md (ticket 36, which adds the 14.x OAuth
-// server's runtime state: its SQLite file, where a lease's refresh token lives, and its data-protection keys).
+// test/host/e2e-12sp9.test.ts, e2e-23.test.ts and e2e-35.test.ts (ARASHOUSE_TEST_E2E=1); every step is recorded in
+// `<out>/cycle-<n>.json` and `.log` for docs/e2e-12sp9.md, docs/e2e-23.md (ticket 36, which adds the 14.x OAuth
+// server's runtime state: its SQLite file, where a lease's refresh token lives, and its data-protection keys) and
+// docs/e2e-35.md (ticket 52, which adds 14.35's import options).
 //
 // It drives the built CLI (`dist/`) as a worker would, and dirties the lease only as a leaseholder could: logged in as
 // root with the lease's password it imports a LIBSJS-SCRATCH package with libs-js `aras-pkg`, adds items through the
@@ -33,9 +34,10 @@ const ROOT_WIN = "C:\\aras_installations";
 const LOCK_SECONDS = 150;
 /**
  * A `get` that should lease at once waits out a dip in the host's free RAM under `min_free_ram_mb` (docs/governor.md),
- * which the laptop's other work causes now and then (ticket 36); a slot the cycle expects is free is leased at once.
+ * which the laptop's other work causes now and then (ticket 36); a slot the cycle expects is free is leased at once. Other
+ * lanes' leases kept it under for more than 300 s once (ticket 52), so it waits up to 15 minutes, as step 7's own `get` does.
  */
-const RAM_WAIT = ["--wait", "300"];
+const RAM_WAIT = ["--wait", "900"];
 
 export interface CycleOptions {
   /** The cycle's number (1, 2, ...): its record files and the path the recovery takes. */
@@ -62,6 +64,11 @@ export interface CycleOptions {
    * leaseholder's editor or tool could.
    */
   readonly lockHolder?: "pool" | "worker";
+  /**
+   * 14.35 only (ticket 52, the libs-js README): a second scratch package imported with `--batch` and `--collect-errors`,
+   * with `--languages` when golden has a language besides `en`. Its items must be gone on the next lease like the rest.
+   */
+  readonly importOptions1435?: boolean;
 }
 
 interface StepRecord {
@@ -352,6 +359,12 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
       server = undefined;
     }
     check("2.the server is the flavor's build", server === getFlavor(flavor).serverBuild, `server ${server ?? "not in the summary"}, registry ${getFlavor(flavor).serverBuild}, engine ${options.engine}`);
+    let goldenLanguages: string[] = [];
+    if (options.importOptions1435) {
+      const langs = await aras.apply(token, `<Item type="Language" action="get" select="code"/>`);
+      goldenLanguages = [...langs.body.matchAll(/<code>([^<]*)<\/code>/g)].map((m) => m[1]!).sort();
+      must("2.golden's languages", goldenLanguages.includes("en"), goldenLanguages.join(", ") || langs.fault || "none");
+    }
 
     const before = { bin: binHashes(A.slot), config: configHash(A.slot) };
     const oauthBefore = options.oauthState ? { files: oauthFiles(A.slot), grants: await persistedGrants(A.slot) } : undefined;
@@ -370,6 +383,49 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     t = Date.now();
     const imp = await cli(["run", "--lease", A.lease_id, "--", "node", options.arasPkg, "import", "--engine", options.engine, "--log", join(out, `cycle-${cycle}-import.log`), join(pkgDir, "imports.mf")]);
     must("3.aras-pkg import of a LIBSJS-SCRATCH package", imp.code === 0, `exit ${imp.code}: ${oneLine(imp).slice(0, 200)}`, since(t));
+
+    // 14.35's AML batch mode and collected errors: five Variables (no Relationships, so batched), read in file order and
+    // sent two at a time. The fourth repeats the second's name, which the server refuses, so its batch fails and falls
+    // back to one by one: the third is applied, the fourth's error is collected, and the run goes on to the fifth. The
+    // names stay under Variable's 32 characters.
+    const batchPkg = `LIBSJS-SCRATCH-B-${TAG}`;
+    const batchVars = [1, 2, 3, 5].map((i) => `AH-E2E-${tag}-B${i}`);
+    if (options.importOptions1435) {
+      const batchDir = join(out, `cycle-${cycle}-batch`);
+      rmSync(batchDir, { recursive: true, force: true });
+      mkdirSync(join(batchDir, batchPkg, "Import", "Variable"), { recursive: true });
+      writeFileSync(join(batchDir, "imports.mf"), `<imports>\n  <package name="${batchPkg}" path="${batchPkg}\\Import" />\n</imports>\n`);
+      const [b1, b2, b3, b5] = batchVars as [string, string, string, string];
+      for (const [file, name] of [["B1", b1], ["B2", b2], ["B3", b3], ["B4", b2], ["B5", b5]]) {
+        writeFileSync(
+          join(batchDir, batchPkg, "Import", "Variable", `AH-E2E-${tag}-${file}.xml`),
+          `<AML>\n <Item type="Variable" id="${newItemId()}" action="add">\n  <default_value>${tag}</default_value>\n  <name>${name}</name>\n </Item>\n</AML>\n`,
+        );
+      }
+      const extra = goldenLanguages.length > 1 ? ["--languages", goldenLanguages.join(",")] : [];
+      const batchLog = join(out, `cycle-${cycle}-batch-import.log`);
+      t = Date.now();
+      const batch = await cli(["run", "--lease", A.lease_id, "--", "node", options.arasPkg, "import", "--engine", options.engine, "--json", "--batch", "--batch-max", "2", "--collect-errors", "--max-errors", "5", ...extra, "--log", batchLog, join(batchDir, "imports.mf")]);
+      let summary: { result?: string; batch?: { size?: number }; collectErrors?: { limit?: number }; messages?: { errors?: number } } = {};
+      try {
+        summary = JSON.parse(batch.stdout) as typeof summary;
+      } catch {
+        summary = {};
+      }
+      // A collected error ends the run as failed (exit 1), after every item was tried.
+      const ranAsAsked = batch.code === 1 && summary.result === "failed" && summary.batch?.size === 2 && summary.collectErrors?.limit === 5 && (summary.messages?.errors ?? 0) > 0;
+      const log = existsSync(batchLog) ? readFileSync(batchLog, "utf8") : "";
+      const fellBack = /Error of import in AML batch mode/.test(log) && /Try to execute AML one by one/.test(log);
+      must(
+        "3.aras-pkg import --batch --batch-max 2 --collect-errors (14.35 only)",
+        ranAsAsked && fellBack,
+        `exit ${batch.code}, result ${summary.result}, batch ${summary.batch?.size}, collect-errors ${summary.collectErrors?.limit}, errors ${summary.messages?.errors}; the failed batch fell back to one by one: ${fellBack}`,
+        since(t),
+      );
+      const counts = await Promise.all(batchVars.map(async (name) => (await aras.apply(token, `<Item type="Variable" action="get" select="id"><name>${name}</name></Item>`)).body.match(/<Item /g)?.length ?? 0));
+      must("3.every good item of the batch import is there once, the one after the error too", counts.every((n) => n === 1), batchVars.map((name, i) => `${name.slice(-2)} x${counts[i]}`).join(", "));
+      record("3.--languages", true, 0, extra.length > 0 ? `the batch import ran with --languages ${goldenLanguages.join(",")}` : `not run: golden has only ${goldenLanguages.join(", ")}`);
+    }
 
     const partNumber = `ARASHOUSE-E2E-${TAG}`;
     const addPart = await aras.apply(token, `<Item type="Part" action="add"><item_number>${partNumber}</item_number><name>arashouse e2e</name></Item>`);
@@ -462,6 +518,10 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     };
     await gone("the imported package's item", `<Item type="Variable" action="get" select="id"><name>${varName}</name></Item>`);
     await gone("the imported package's definition", `<Item type="PackageDefinition" action="get" select="id"><name>${pkgName}</name></Item>`);
+    if (options.importOptions1435) {
+      for (const name of batchVars) await gone(`the batch import's ${name.slice(-2)}`, `<Item type="Variable" action="get" select="id"><name>${name}</name></Item>`);
+      await gone("the batch import's package definition", `<Item type="PackageDefinition" action="get" select="id"><name>${batchPkg}</name></Item>`);
+    }
     await gone("the API item", `<Item type="Part" action="get" select="id"><item_number>${partNumber}</item_number></Item>`);
     await gone("the Language", `<Item type="Language" action="get" select="id"><code>${langCode}</code></Item>`);
     await gone("the User", `<Item type="User" action="get" select="id"><login_name>${userLogin}</login_name></Item>`);

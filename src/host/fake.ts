@@ -73,7 +73,7 @@ export type Fault = FaultBase &
         readonly message?: string;
       }
     | {
-        /** Advance the clock by `ms`, then carry on and succeed. */
+        /** Advance the clock by `ms` (on a `LiveClock`, wait that long), then carry on and succeed. */
         readonly kind: "slow";
         readonly ms: number;
       }
@@ -631,7 +631,7 @@ export class FakeHost implements HostDriver {
       if (fault?.kind === "fail") {
         throw new HostError(fault.error ?? "Retryable", fault.message ?? `injected failure in ${method}`);
       }
-      if (fault?.kind === "slow") this.clock.advance(fault.ms);
+      if (fault?.kind === "slow") await this.clock.elapse(fault.ms);
       if (fault?.kind === "hang") await new Promise<void>((release) => this.hangs.push(release));
       this.clock.advance(this.latencyMs);
       const result = effect();

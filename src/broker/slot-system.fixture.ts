@@ -78,6 +78,7 @@ export class FakeSlotSystem implements SlotSystem {
   aras: ArasHttp = {
     login: async () => ({ ok: true, detail: "token issued" }),
     setPasswords: async (_alias, _database, _as, logins) => ({ ok: true, detail: `edited ${logins.join(" and ")}` }),
+    rekeyUsers: async () => ({ ok: true, detail: "no other User may log in", logins: [] }),
   };
   /** Every call, as `<method>` or `<method> <slot id>`, in order. */
   readonly calls: string[] = [];

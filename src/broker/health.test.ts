@@ -73,7 +73,7 @@ describe("healthCheck", () => {
     const { result, byName } = await check(system);
     expect(result.ok).toBe(true);
     expect(byName.login?.detail).toBe(
-      "root logged in with a one-time password (set with the golden backup's password); root and admin have it, the golden backup's password is refused",
+      "root logged in with a one-time password (set with the golden backup's password); root and admin have it, vadmin and authadmin each have a random password nobody keeps, and the golden backup's password logs in as none of them",
     );
     const stored = await system.secrets.get(slotRootSecretName(s1));
     expect(stored?.kind).toBe("aras-login");
@@ -87,6 +87,12 @@ describe("healthCheck", () => {
       `edit ${ALIAS} root`,
       `login ${ALIAS} root`,
       `login ${ALIAS} root`,
+      `list ${ALIAS}`,
+      `edit ${ALIAS} vadmin`,
+      `edit ${ALIAS} authadmin`,
+      `login ${ALIAS} root`,
+      `login ${ALIAS} vadmin`,
+      `login ${ALIAS} authadmin`,
     ]);
     // Nothing of a password reaches the result.
     expect(JSON.stringify(result)).not.toContain(SHIPPED);
@@ -96,6 +102,59 @@ describe("healthCheck", () => {
     const again = await check(system);
     expect(again.byName.login).toMatchObject({ ok: true, detail: expect.stringContaining("set with the slot's stored password") });
     expect(await system.secrets.get(slotRootSecretName(s1))).not.toBe(stored);
+  });
+
+  it("gives every other User that may log in a random password of its own that is not stored (ticket 57)", async () => {
+    const system = await provisioned({ licence: true, shipped: true });
+    system.aras.logonUsers = ["root", "admin", "vadmin", "authadmin", "clientadmin", "JobAgentUser"];
+    // As the golden ships them, authadmin logs in with the backup's password (ticket 50's check 7).
+    expect(system.aras.logsIn(ALIAS, "authadmin", SHIPPED)).toBe(true);
+    const stored = system.secrets.size;
+    const { result, byName } = await check(system);
+    expect(result.ok).toBe(true);
+    expect(byName.login?.detail).toContain("vadmin, authadmin, clientadmin and JobAgentUser each have a random password nobody keeps");
+    const root = (await system.secrets.get(slotRootSecretName(s1)))!.reveal();
+    const others = ["vadmin", "authadmin", "clientadmin", "JobAgentUser"].map((u) => system.aras.password(ALIAS, u));
+    for (const pw of others) {
+      expect(pw).toMatch(/^[0-9a-f]{32}$/);
+      expect(pw).not.toBe(root);
+      expect(JSON.stringify(result)).not.toContain(pw);
+    }
+    expect(new Set(others).size).toBe(4);
+    for (const user of ["vadmin", "authadmin", "clientadmin", "JobAgentUser"]) expect(system.aras.logsIn(ALIAS, user, SHIPPED)).toBe(false);
+    // Nothing keeps them: the only secret the check adds to the store is root's.
+    expect(system.secrets.size).toBe(stored + 1);
+
+    // The next check gives them new ones again.
+    await check(system);
+    for (const [i, user] of ["vadmin", "authadmin", "clientadmin", "JobAgentUser"].entries()) expect(system.aras.password(ALIAS, user)).not.toBe(others[i]);
+  });
+
+  it("fails when another User cannot be given a random password, or still logs in with the golden backup's password", async () => {
+    const faulty = await provisioned({ licence: true, shipped: true });
+    const rekey = faulty.aras.rekeyUsers.bind(faulty.aras);
+    faulty.aras.rekeyUsers = async (...args) => {
+      faulty.aras.editAnswer = { ok: false, refused: true, detail: "edit of vadmin: Access denied" };
+      return rekey(...args);
+    };
+    const f = await check(faulty);
+    expect(f.failed).toEqual(["login"]);
+    expect(f.byName.login).toMatchObject({ ok: false, detail: "the other Users that may log in could not be re-keyed (edit of vadmin: Access denied)" });
+    expect(f.result.timedOut).toBeUndefined();
+
+    // An edit the server answered but did not apply: authadmin keeps the shipped password, and the check says so.
+    const kept = await provisioned({ licence: true, shipped: true });
+    const set = kept.aras.set.bind(kept.aras);
+    kept.aras.set = (alias, login, password) => (login === "authadmin" ? undefined : set(alias, login, password));
+    const k = await check(kept);
+    expect(k.byName.login).toMatchObject({ ok: false, detail: "the golden backup's password still logs in as authadmin" });
+
+    // The list not answered in time is a timeout like any other request of the check.
+    const slow = await provisioned({ licence: true, shipped: true });
+    slow.aras.rekeyUsers = async () => ({ ok: false, refused: false, detail: "no answer in 120 s", timedOut: true });
+    const s = await check(slow);
+    expect(s.byName.login).toMatchObject({ ok: false, timedOut: true, detail: "the other Users that may log in could not be re-keyed (no answer in 120 s)" });
+    expect(s.result.timedOut).toBe(true);
   });
 
   it("logs in with the golden backup's password again after a reset restored the database", async () => {
@@ -154,10 +213,11 @@ describe("healthCheck", () => {
     const unsure = await provisioned({ licence: true, shipped: true });
     const login = unsure.aras.login.bind(unsure.aras);
     let logins = 0;
-    unsure.aras.login = async (...args) => (++logins === 4 ? CANCELLED : login(...args));
+    // Logins 1 to 4: root with the backup's password, the edit's, the one-time password's and the re-key's; 5 is the refusal.
+    unsure.aras.login = async (...args) => (++logins === 5 ? CANCELLED : login(...args));
     const u = await check(unsure);
-    expect(logins).toBe(4);
-    expect(u.byName.login).toMatchObject({ ok: false, timedOut: true, detail: expect.stringMatching(/^the server did not answer in time whether the golden backup's password is refused/) });
+    expect(logins).toBe(5);
+    expect(u.byName.login).toMatchObject({ ok: false, timedOut: true, detail: expect.stringMatching(/^the server did not answer in time whether the golden backup's password is refused for root/) });
     expect(u.result.timedOut).toBe(true);
   });
 

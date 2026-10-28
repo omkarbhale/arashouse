@@ -33,7 +33,7 @@ end. Questions about the rest of the server are asked as counts filtered by owne
 | 4 | Secrets | **pass**: in the repo, on command lines, in logs, event logs, staging and the WSL state, no secret outside the places designed for it (exception E8) |
 | 5 | Bootstrap inputs | **pass** after F1 (exception E5: no size cap on a deploy) |
 | 6 | Network | **fail, accepted by ticket 44**: slots answer on the LAN (exception E1) |
-| 7 | Defaults: no OOTB login on a free slot | **fail**: `authadmin` logs in with the shipped password on every flavor (proposed ticket 57) |
+| 7 | Defaults: no OOTB login on a free slot | **pass** after ticket 57: `authadmin` logged in with the shipped password on every flavor; the health check now re-keys every User that may log in |
 
 ### 1. Name guards
 
@@ -275,8 +275,8 @@ value was found outside the slots' configs.
 
 This is ticket 44's decision: the captain accepted "Firewall: inbound port 80 from the WSL range only" as **off**
 (`docs/host-tuning.md`), because it would cut LAN access to every IIS site, the captain's own included. Ticket 44 took
-that decision on the premise that "an idle slot has a random, unknown password". Check 7 shows that premise holds for
-`root` and `admin` only.
+that decision on the premise that "an idle slot has a random, unknown password". Check 7 showed that premise held for
+`root` and `admin` only, until ticket 57.
 
 ### 7. Defaults
 
@@ -298,11 +298,26 @@ LAN (check 6). The fix belongs in the reset: re-key, or disable, every shipped u
 on each flavor that the agent, the vault and OAuth still work, so it is proposed as a ticket of its own (57) rather than
 made here.
 
+**Pass after ticket 57 (2026-10-28).** The health check, which runs at the end of every reset and before every `get`,
+now gives every User that may log in other than `root` and `admin` a random password of its own that nobody keeps
+(`docs/health.md`, "The other shipped users"). With a broker built from that change installed through firstmate's
+elevated gate (`setup-host.ps1 -Apply -UpdateBroker`, exit 0), each free slot was leased with `--agent` and returned, so
+every one was reset by it, and then the same script ran on every free slot (`12sp9-02`, `-03`, `23-01`, `-02`, `35-01`,
+`-02`; `12sp9-01` was leased to another task and not touched):
+
+- `root`, `admin`, `authadmin` and `vadmin`, and on `35` `clientadmin` and `JobAgentUser`: **refused** on all six
+  ("Authentication failed for <user>").
+- The stored password hashes of the two free slots of each flavor (equality only; no hash was printed) now **differ**
+  for every User that may log in, the four shipped ones included.
+- On each lease, before its return: `root` logged in with the lease's password (OAuth), a file was uploaded to the
+  vault and read back, and the agent service ran (`get --agent`). The same held on a lease whose pools and agent were
+  stopped and started again after the re-key, so no component depends on a token from before it.
+
 ## Exceptions for the captain
 
 | # | What | Why it is not fixed in the tool |
 |---|---|---|
-| E1 | Slots answer on every interface on port 80, LAN included (check 6) | Ticket 44: narrowing the firewall would change a host-wide setting and cut LAN access to the captain's own IIS sites; the captain kept it off. With ticket 57, no shipped credential is left |
+| E1 | Slots answer on every interface on port 80, LAN included (check 6) | Ticket 44: narrowing the firewall would change a host-wide setting and cut LAN access to the captain's own IIS sites; the captain kept it off. Since ticket 57 (check 7), no shipped credential logs in |
 | E2 | A leaseholder's server code (an Aras Method, a DLL in a deploy) runs as the slot's pool identity, which may write its own slot's tree (`docs/e2e-12sp9.md`) and read whatever `BUILTIN\Users` may read. So the leaseholder's code could rewrite its own `Innovator.xml`, which F1 only stops a deploy from doing, or read another install's `InnovatorServerConfig.xml`, which holds that install's SQL credentials, if the install's ACL lets `Users` read it | Running a leaseholder's code is what a lease is for. Narrowing what `Users` may read in the captain's installs would change them (rule 2), so the audit did not read their ACLs either. The pool identity has no SQL login (check 2), so only credentials read from such a file could reach the captain's databases |
 | E3 | Any process of the worker user (`SG\omkarb`), in any session (every WSL worker, the captain's own shell), can read the broker's token and call every verb | It is the design (`docs/broker.md`): the workers are that user. Another user cannot (check 3) |
 | E4 | The worker user's SQL login `SG\omkarb` is a `sysadmin` without elevation, so any process of that user can reach every database directly, `OLM_Local` included, without arashouse | It is the captain's own SQL configuration, outside the tool. arashouse never uses it except in `setup-sql.ps1` and this audit's SQL script |

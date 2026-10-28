@@ -29,7 +29,7 @@ record. Each check is named in the result, with its milliseconds; `ok` only when
 | `configs` | each edit of the edit list holds in the slot's files (`verifyFile`, `docs/edits.md`), with the slot's names, its stored SQL login passwords, the stored licence and its signing certificate's stored password (`slot-<key>-<NN>-oauth`); and the signing certificate is the slot's own: its pfx is there, every copy of `OAuthServer.cer` is one certificate, and not golden's (`docs/reset.md`). A slot provisioned before ticket 54 has no stored password and fails, so `get` sends it to a reset, which makes one |
 | `marker` | the database carries `arashouse.golden_hash` equal to the stamp's golden hash, and an `arashouse.reset_at` time (one `slot-steps.ps1 -Step read-database` process, read only) |
 | `version` | the `innovator.VARIABLE` rows `VersionMajor` and `VersionBuild` are the flavor's server build (`12.0.0.24090`: 12 and 24090) |
-| `login` | `root` logs in with a one-time password (below) |
+| `login` | `root` logs in with a one-time password, every other User that may log in gets a random password nobody keeps, and the golden backup's password logs in as none of them (below) |
 
 The HTTP, file and database checks run together, so a cold start overlaps the verify; the login runs after them, and not
 at all when the server does not answer. The result also carries the marker as read (`{ goldenHash, resetAt }`, or null
@@ -61,10 +61,12 @@ the `login` check:
    the host's store;
 2. makes a new password (128 random bits, 32 hex characters), stores it as `slot-<key>-<NN>-root` first, then sets it for
    `admin` and `root` (`setPasswords`, logged in as `root` with the password that worked);
-3. logs in as `root` with it, and checks that the golden backup's password is now refused.
+3. logs in as `root` with it;
+4. gives every other User that may log in its own random password (ticket 57, below), and keeps none of them;
+5. checks that the golden backup's password is now refused for `root` and for each of those Users.
 
-So a free slot's `root` and `admin` passwords are random and known only to the host's store, and every health check
-changes them. Ticket 34's lease credentials log in with the stored one, set the lease's password and delete it; the next
+So a free slot's `root` and `admin` passwords are random and known only to the host's store, every other password that
+logs in is random and known to nobody, and every health check changes them all. Ticket 34's lease credentials log in with the stored one, set the lease's password and delete it; the next
 reset restores the golden database, and its health check starts again from the golden backup's password. The check never runs on a stamp that names a
 lease, so it cannot change a leaseholder's password. A destroy deletes the stored password.
 
@@ -76,6 +78,40 @@ every login check runs, and it fails (and quarantines) when neither password wor
 stored by `scripts/store-licence.ps1` (ticket 34b, `docs/secrets.md`); the golden backup's `root` password
 (`ootb-root-<key>`) by `scripts/store-ootb-root.ps1` (ticket 35, below). Until both are stored for a flavor, a slot of a
 line with a stored licence fails its login check.
+
+### The other shipped users (ticket 57)
+
+Ticket 50's audit (`docs/audit.md`, check 7) found that `root` and `admin` were not the only Users a golden ships with
+`logon_enabled = 1`: `vadmin` and `authadmin` on every flavor, and `clientadmin` and `JobAgentUser` on `35`, kept the
+golden's password hashes, the same on every slot, and `authadmin` logged in with the golden backup's `root` password,
+which is Aras's well-known default. So after step 3, still logged in as `root` with the one-time password, the check
+(`rekeyUsers` in `src/broker/aras-http.ts`):
+
+1. lists the Users that may log in: an AML `get` of `User` with `logon_enabled` 1, which must name `root`;
+2. gives each one but `root` and `admin` (compared without case) a password of its own, 128 random bits made for it
+   and dropped once the edit is sent: an AML `edit` of the User by its id, so no name the server holds is put into the
+   AML. Nothing stores these passwords;
+3. then step 5 tries the golden backup's password as each of them, and fails the check when one logs in.
+
+The list is read from the slot every time, so a User the golden ships that this table does not name is re-keyed too.
+A refused list or edit fails the check (the slot is quarantined, as for `root`); one not answered in time times out.
+
+**Why a random password, not `logon_enabled = 0`.** No component of a slot logs in as these users with a password, so
+none needs to know the new one. Read from the slots' own configs (2026-10-28):
+
+| user | used by | how it reaches the server |
+|---|---|---|
+| `vadmin` | the vault server (`VaultServer/vault.config`, `VaultLoginName`); 12.0's replication (`AgentService/replication.config`, disabled) | the OAuth `impersonate` grant of the `VaultServer` client, with its client certificate |
+| `authadmin` | the OAuth server (`OAuthServer/OAuthServer.config`, `AuthenticationAdmin`) | the `impersonate` grant of the `OAuthServer` client, with the signing certificate (ticket 54) |
+| `clientadmin` (`35`) | no config names it; the 14.35 method `Core_SetUserPasswordOnCreation` gives it a random hash when it is added | none with a password |
+| `JobAgentUser` (`35`) | no config names it | none with a password; the agent's `OAuth.config` is the `AgentService` client's certificate |
+
+Every client in `OAuthServer/OAuth.config` but the browser's (`InnovatorClient`) and `IOMApp` has only the
+`impersonate` grant, on all three flavors; the vault's and the agent's own `OAuth.config` sign a JWT bearer assertion
+with their client certificate. The configs' only `password` attributes are those certificates' and the
+`{password}` placeholders of the Basic-authentication templates: no User's password is configured anywhere. Turning the logon off could stop an `impersonate` grant for that user, which a random password
+cannot, so the check re-keys them and leaves `logon_enabled` as the golden has it. A leaseholder who needs to log in as
+one of them sets its password as `root`, as for any User.
 
 ### Storing the golden backup's password
 
@@ -147,10 +183,31 @@ licence and `ootb-root-<key>` were stored (tickets 34b and 35). With both stored
 the login check on every reset and every `get` (`docs/e2e-12sp9.md`): the whole `health` step took 26.0 to 26.8 s after
 a reset's start, and the golden backup's password was refused after it.
 
+## Measured on the host (2026-10-28, ticket 57)
+
+A broker built from ticket 57 was installed through firstmate's elevated gate (`setup-host.ps1 -Apply -UpdateBroker`,
+exit 0). Before it, by hand on one lease of each flavor (`12sp9-02`, `23-01`, `35-01`, with the lease's `root`
+password): `authadmin` logged in with the golden backup's password on each; the re-key took 0.16 to 0.27 s (one list,
+two or four edits); then the shipped password was refused for every User, and `root`'s login, a vault upload and the
+agent's health URL still worked, also after the slot's pools and agent were stopped and started again.
+
+After it, every free slot was leased with `--agent` (two at a time), checked and returned: the shipped password was
+refused for each User on each lease, `root` logged in, the vault took a file, the agent service ran. Once their resets
+finished, ticket 50's check 7 passed on all six free slots (`docs/audit.md`), and the broker's `healthCheck` on each
+passed all nine checks with the login detail, on `35`: "root logged in with a one-time password (set with the slot's
+stored password); root and admin have it, authadmin, clientadmin, JobAgentUser and vadmin each have a random password
+nobody keeps, and the golden backup's password logs in as none of them" (on `12sp9` and `23`, `authadmin and vadmin`).
+
+The `login` check, warm, takes 1.3 to 1.6 s on each flavor (a check of 4.6 to 4.8 s round trip from WSL): root's login,
+the edit, the one-time password's login, the re-key and a refusal per User. On slots whose pools had idled out it took
+6.1 to 15.5 s, most of it the cold OAuth server.
+
 ## Safety
 
 - No password, token or MD5 leaves `aras-http.ts` and the request it is sent in: a refusal is the server's own words,
   redacted; the result names only which password was used ("the golden backup's password").
-- The broker logs in as `root` and sets passwords for `root` and `admin` only, on `localhost` and the slot's own alias.
+- The broker logs in as `root` and sets passwords only for Users that may log in, on `localhost` and the slot's own
+  alias: `root` and `admin` to the stored one-time password, every other one to a random password that is never stored,
+  logged or returned.
 - The new password reaches the host only through the DPAPI store's `secret-put` step (stdin), as the SQL login passwords
   do.

@@ -654,7 +654,7 @@ describe("doctor", () => {
 
   it("prints host settings that would help as advice, never as a failure or a warning (ticket 55)", async () => {
     const p = await pool({ "23": 2 });
-    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 };
+    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 7 };
     // An uncapped SQL Server, and a 15.7 GB WSL VM with 2500 MB free on Windows for three leases of 2048 MB each.
     p.host.setHostInfo({ freeRamMb: 2500, sqlLogin: { ...login, maxServerMemoryMb: 2147483647 } });
     const advised = await doctor({ ...p.deps, wslMemoryMb: () => 16077 }, {});

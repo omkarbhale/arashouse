@@ -319,7 +319,7 @@ const HINTS: Readonly<Record<number, string>> = {
   [EXIT_CODES.leaseMismatch]: "see `arashouse status`; take a new lease with `arashouse get`",
   [EXIT_CODES.resetFailed]: "see `arashouse status` for the slot and its quarantine reason",
   [EXIT_CODES.hostUnreachable]: "is the Windows host up and the arashouse broker running?",
-  [EXIT_CODES.refused]: "arashouse touches only what it owns; check the name",
+  [EXIT_CODES.refused]: "arashouse touches only what it owns and refuses what it cannot use: the line above says which; check the name or the backup",
   [SECRET_REQUIRED_EXIT_CODE]: "run the command again from a terminal",
   [EXIT_CODES.importFailed]: "read the import's log; `get --keep-on-fail` keeps the lease to look at it",
 };

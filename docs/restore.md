@@ -81,6 +81,34 @@ refusal, 6 for a slot that did not stop or start).
 Nothing changes: `return` marks the slot dirty and the reset restores the golden's `ootb.bak` over the database (ticket 31).
 A restored database never reaches another lease. Take out what you need first (the governing principle in `AGENTS.md`).
 
-## Measured on the host
+## Measured on the host (2026-10-28)
 
-To be recorded by this ticket's host proof (below).
+Through firstmate's gate, with the captain's approval of the adopter certificate: `setup-sql.ps1 -Apply -SelfTest` (exit 0:
+the broker's login in no role and holding no right, `CONTROL SERVER` false, 7 of 7 procedures executable, 84 of 84 made-up
+names and paths refused, the direct `RESTORE` and `CREATE DATABASE` refused, the self-test round trip, now with `adopt`, ok),
+then `setup-host.ps1 -Apply -UpdateBroker` (exit 0). `arashouse doctor`: `sql login: ... executes the 7 arashouse_admin
+procedures`, every slot free and clean.
+
+Then, as the worker from WSL, `get 12sp9 --restore <file> --json` (the times are the whole `get`: the lease, the copy to
+staging, the restore and the lease's password), and for each lease handed over: `arashouse run --lease <id> --` a probe that
+logs in as `root` with the lease's password and reads `Variable` items, then `return --wait`:
+
+| backup | what it is | result |
+|---|---|---|
+| `arashouse_t39_scratch.bak` (84 MB) | a 12sp9 scratch database: the CD's `CoreAndSolutions120.bak` restored under another name with a `Variable` row `ARASHOUSE39_MARK` added, backed up on this SQL Server 15 by the worker's own login (so its `dbo` is not the broker) | exit 0 in 104 s; `root` logs in with the lease's password; `ARASHOUSE39_MARK = restored-scratch`, `VersionBuild = 24090`; returned and reset |
+| `Core120.bak` (13 MB) | the CD's own backup, written by SQL Server **11.0** (another SQL version path: upgraded as it is restored) | exit 0; `root` logs in; `VersionBuild = 24090`; returned and reset |
+| `CoreAndSolutions140.bak` | the Release 23 CD's backup, a 23 database | exit 7 in 27 s: `12sp9-02: the restored database is version 14.0 None build 36073, not the 12sp9 server build 12.0.0.24090; it is a 23 database: restore it into a 23 lease (arashouse get 23 --restore ...), or pass --skip-version-check to keep it`; the slot reset |
+| the same, `--skip-version-check` | | restored and started, and `root` logs in, but the 12.0 server refuses the password edit (`Invalid column name 'ZONE'`): exit 7, `the restored database does not work in 12sp9-01, which is reset: ...`; the slot reset, not quarantined |
+| the scratch backup cut to its first 20 MB | a corrupt file | exit 7: `the staged backup cannot be read: read-backup failed (exit 1): VERIFY DATABASE is terminating abnormally ...` (`RESTORE VERIFYONLY`, before the slot is touched) |
+| `arashouse_t39_prod.bak` | the CD's backup restored as `arashouse_t39_prod` and backed up: recorded under a deny-listed name (`prod`) | exit 7: `the backup was taken of the database "arashouse_t39_prod", which is deny-listed (contains "prod"); ... pass --allow-foreign-origin` |
+| the same, `--allow-foreign-origin` | | exit 0 in 123 s (with the wait for a slot); `root` logs in; `VersionBuild = 24090`; returned and reset |
+
+In every case the lease's staging folder was gone afterwards (no `staging\<lease_id>` left), and every slot ended free.
+`status` showed the leases as `restore:custom`.
+
+Two things the proof changed: the first `--skip-version-check` run quarantined the slot (the password edit's refusal is a
+`Quarantine` on a plain `get`); since the restore is the cause, it now sends the slot to be reset and fails with exit 7. And
+the corrupt file's message carries PowerShell's own lines after SQL Server's; it says what failed, not prettily.
+
+The test backups were made by the worker's `sysadmin` login from the CD's backup, as the throw-away databases
+`arashouse_t39_scratch` and `arashouse_t39_prod`, which were dropped again at once; nothing else was touched.

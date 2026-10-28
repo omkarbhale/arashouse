@@ -714,7 +714,8 @@ describe("get --restore", () => {
     // A 12.0 server refusing the password edit on a 23 database kept with --skip-version-check (measured on the host).
     p.host.injectFault({ method: "setLeaseCredentials", kind: "fail", error: "Quarantine", message: "the password edit as root was refused: invalid_grant: Invalid column name 'ZONE'." });
     const err = await failure(getLease(p.deps, { flavor: "12sp9", holder: "t", restore: { ...restore, skipVersionCheck: true } }));
-    expect((err as Error).message).toContain("Invalid column name 'ZONE'");
+    expect((err as Error).message).toBe("the restored database does not work in 12sp9-01, which is reset: the password edit as root was refused: invalid_grant: Invalid column name 'ZONE'.");
+    expect(exitCodeFor(err)).toBe(EXIT_CODES.refused);
     expect(await p.status("12sp9-01")).toBe("dirty");
     // And the restore is not tried on the next slot.
     expect(await p.status("12sp9-02")).toBe("free");

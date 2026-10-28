@@ -525,6 +525,9 @@ async function attemptGet(
     const quarantine = isHostError(err, "Quarantine") && !restoring;
     await abandon(deps, candidate.id, lease.lease_id, quarantine ? { to: "quarantined", reason: redact(err.message) } : { to: "dirty" }, `get failed: ${redact(errorText(err))}`);
     if (quarantine) return { kind: "retry" };
+    if (restoring && isHostError(err, "Quarantine")) {
+      throw asLeaseError(new HostError("Refused", `the restored database does not work in ${candidate.id}, which is reset: ${err.message}`));
+    }
     throw asLeaseError(err);
   }
 }

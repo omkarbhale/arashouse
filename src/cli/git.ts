@@ -79,16 +79,32 @@ export class GitError extends Error {
   }
 }
 
+/**
+ * WSL interop failing to start a Windows program on a busy host ("UtilAcceptVsock: accept4 failed 110"): git never ran,
+ * so it is run again.
+ */
+const INTEROP_LAUNCH_FAILURE = /UtilAcceptVsock|accept4 failed/;
+/** Tries after the first when interop could not start git, and the pause before each. */
+export const INTEROP_RETRIES = 3;
+const INTEROP_RETRY_MS = 2_000;
+
 /** Runs git; its stdout, or a `GitError` with the command's name and git's first lines (redacted). */
-function runGit(tool: GitTool, args: readonly string[], baseEnv: NodeJS.ProcessEnv): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(tool.exe, args, { env: { ...baseEnv, ...tool.env }, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
-      if (error === null) return resolve(stdout);
-      const what = args.find((a) => !a.startsWith("-")) ?? "git";
-      const why = (stderr || error.message).trim().split(/\r?\n/).slice(0, 3).join("; ");
-      reject(new GitError(redact(`git ${what} failed: ${why}`).slice(0, 600)));
+async function runGit(tool: GitTool, args: readonly string[], baseEnv: NodeJS.ProcessEnv, retryMs: number = INTEROP_RETRY_MS): Promise<string> {
+  const once = () =>
+    new Promise<{ ok: true; stdout: string } | { ok: false; why: string }>((resolve) => {
+      execFile(tool.exe, args, { env: { ...baseEnv, ...tool.env }, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+        if (error === null) resolve({ ok: true, stdout });
+        else resolve({ ok: false, why: (stderr || error.message).trim().split(/\r?\n/).slice(0, 3).join("; ") });
+      });
     });
-  });
+  let result = await once();
+  for (let retry = 1; retry <= INTEROP_RETRIES && !result.ok && INTEROP_LAUNCH_FAILURE.test(result.why); retry++) {
+    await new Promise((r) => setTimeout(r, retryMs * retry));
+    result = await once();
+  }
+  if (result.ok) return result.stdout;
+  const what = args.find((a) => !a.startsWith("-")) ?? "git";
+  throw new GitError(redact(`git ${what} failed: ${result.why}`).slice(0, 600));
 }
 
 /** Whether git can be run at all; checked before `get --git` takes a lease. */

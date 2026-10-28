@@ -160,6 +160,19 @@ describe("gitBaselineOnLease", () => {
   });
 });
 
+describe("WSL interop failing to start git", () => {
+  it("runs git again, as git never ran", async () => {
+    const { store, target } = await leased();
+    // Fails the first time as interop does on a busy host, then is git.
+    const stub = join(dir, "flaky-git");
+    const marker = join(dir, "flaked");
+    await writeFile(stub, `#!/bin/sh\nif [ ! -e "${marker}" ]; then : > "${marker}"; echo "<3>WSL (1 - ) ERROR: UtilAcceptVsock:273: accept4 failed 110" >&2; exit 1; fi\nexec git "$@"\n`, { mode: 0o755 });
+    const base = deps(store, copyingHost([]));
+    const report = await gitBaselineOnLease({ ...base, git: { ...base.git, exe: stub } }, target);
+    expect(report.outcome, String(report.error)).toMatchObject({ ok: true, files: 6 });
+  });
+});
+
 describe("selectGitTool", () => {
   it("runs Git for Windows on Windows paths on the host, with the worker's config kept out across interop", () => {
     const tool = selectGitTool("broker", { WSLENV: "FOO/p" }, "/mnt/c/aras_installations");

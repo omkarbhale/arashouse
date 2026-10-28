@@ -29,7 +29,7 @@ git.exe -c safe.directory='*' -C 'C:\aras_installations\slots\23\01\Innovator' d
 ```
 
 WSL's own git works too, read-only, on `/mnt/c/aras_installations/slots/23/01/Innovator`, but every `status` walks the
-tree through `/mnt/c` (half a minute for `12sp9`). The worker can only read `slots\`, so neither can commit there: the
+tree through `/mnt/c` (30 to 85 s on the host, against 0.1 to 0.3 s for Git for Windows). The worker can only read `slots\`, so neither can commit there: the
 holder changes the tree with `deploy-code` and takes the diff out (`docs/extract.md`) before returning the lease.
 
 - `get --git --json` adds `bootstrap.git`, and `git-baseline --json` prints `{ slot, git }`
@@ -89,7 +89,9 @@ git runs as the worker, never as the broker:
    hooks), the repository's settings (below), `add --all` with the generated file as the excludes file, the
    `.gitignore` added, the staged paths checked, one commit on `main` with the message `arashouse baseline <flavor>
    <lease_id>` by `arashouse <arashouse@localhost>`, and the objects repacked into one pack without deltas (seconds; with
-   deltas it was 50 s for `12sp9`), so the broker copies a handful of files rather than one per object.
+   deltas it was 50 s for `12sp9`), so the broker copies a handful of files rather than one per object. When WSL
+   interop cannot start git.exe on a busy host ("UtilAcceptVsock: accept4 failed 110": git never ran), it is started
+   again, three times at most.
 3. **Place.** The broker's `deployCode` (ticket 40) puts `.git\` and `.gitignore` into `Innovator\`, with every guard
    it has for what the worker stages (the stamp names the lease, no link or junction, each file copied from a checked
    handle). It quiesces, copies, and starts and warms the slot, so the slot has recycled and restarted once by the time
@@ -119,3 +121,32 @@ and after a second restart (2026-10-28, `12sp9-01`): the only files that changed
 (rewritten at each start) and `Server/temp/<day>.log`. Both are ignored. Before that lease, the newest files of every
 free slot of each flavor were the ones the reset renders or golden carries: the two `Innovator.xml`, the OAuth server's
 `.cer`, `compile.log`, and for 14.x the `key-*.xml` of `Client\App_Data` and `Server\App_Data`; all are ignored.
+
+**The proof** (2026-10-28): `test/host/git-baseline.test.ts` (`ARASHOUSE_TEST_GIT=1`, procedure in
+`test/host/git-baseline-proof.ts`), from WSL as the worker, non-elevated, on main `79a4047` with this branch's CLI
+(the broker is unchanged: the baseline is placed with `deployCode`). Per flavor, `get <flavor> --code <a one-file client
+overlay> --git`, then the checks below.
+
+| | `12sp9` | `23` | `35` |
+|---|---|---|---|
+| `get --code --git` | 267.8 s | 297.5 s | 351.6 s |
+| the build (git.exe as the worker) | 216.7 s | 230.6 s | 280.9 s |
+| the placement (`deployCode`: 9 files, quiesce, copy, start and warm) | 18.7 s, 189 MB | 25.8 s, 256 MB | 19.4 s, 413 MB |
+| files in the commit (the golden tree, the overlay, `.gitignore`) | 23,061 | 25,205 | 22,901 |
+| protected files in the tree, all ignored, none tracked | 3 | 5 | 8 |
+| `git status`, Git for Windows / WSL git, after `get` | clean, 0.3 s / clean, 84.0 s | clean, 0.3 s / clean, 46.3 s | clean, 0.2 s / clean, 29.5 s |
+| files changed by three rounds of pages, login and item reads with two recycles and restarts between | `compile.log`, `Server/temp/<day>.log` | `compile.log` | `compile.log` |
+| `git status` after that | clean | clean | clean |
+| one client file edited (`deploy-code`) | `git diff`: `Client/javascript/BrowserInfo.js` only | `Client/javascript/dijit/BackgroundIframe.js` only | the same |
+| `return --wait` (the reset and its `fast` verify) | 86.7 s, free | 70.8 s, free | 69.6 s, free |
+| `.git\` and `.gitignore` after the reset | gone | gone | gone |
+
+Each commit was one, by `arashouse <arashouse@localhost>`, with the message `arashouse baseline <flavor> <lease_id>`, on
+`main`, with no remote, and the lease record held `git: <commit>`. The deny-list objects the worker can read were
+unchanged, and no lease password was in any output but `get`'s JSON.
+
+The first run also took `23` and `35`: `23` passed every check up to the edit, where the proof looked for a script at
+the top of `Client\javascript`, which 14.x does not have (the proof now takes one from its subfolders); `35`'s build
+failed when WSL interop could not start git.exe (`git update-index failed: ... UtilAcceptVsock:273: accept4 failed
+110`), and the lease was kept and returned. git is now started again when interop fails that way
+(`src/cli/git.test.ts`), and the second run, above, passed on both.

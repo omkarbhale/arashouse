@@ -211,9 +211,10 @@ export async function runGitProof(out: string, flavors: readonly FlavorKey[]): P
       await statusAll("after logging in, recycling and restarting");
 
       // ---- 3. one client file edited ----------------------------------------------------------------------------
-      const target = files.find((f) => /^Client\/javascript\/[^/]+\.js$/i.test(f));
+      // 12 SP9 has scripts at the top of Client\javascript; 14.x only in its subfolders (dijit, ...).
+      const target = files.find((f) => /^Client\/javascript\/[^/]+\.js$/i.test(f)) ?? files.find((f) => /^Client\/javascript\/.+\.js$/i.test(f));
       if (target === undefined) {
-        record(`${flavor}: a client file to edit`, false, "no Client/javascript/*.js is tracked");
+        record(`${flavor}: a client file to edit`, false, "no Client/javascript/**/*.js is tracked");
       } else {
         const edit = join(out, `${flavor}-edit`);
         rmSync(edit, { recursive: true, force: true });

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/deploy-code.schema.json",
+  "title": "arashouse deploy-code --json",
+  "description": "What `arashouse deploy-code --json` prints: the leased slot and one entry per source deployed, in order. It holds no file contents and no secret.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "slot",
+    "code"
+  ],
+  "properties": {
+    "slot": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+-[0-9]{2}$"
+    },
+    "code": {
+      "type": "array",
+      "description": "Deploys stop at the first that fails; the command then exits 10 (or 7 when a guard refused it), with the lease still held.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "subpath",
+          "ok",
+          "files",
+          "deleted",
+          "detail"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "The folder or zip as the caller named it."
+          },
+          "subpath": {
+            "type": "string",
+            "description": "Where it landed in the slot's tree, `/`-separated; \"\" is the top of the tree."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "The files are in place and the slot came back up."
+          },
+          "files": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Files copied."
+          },
+          "deleted": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Files the deploy.json delete list removed."
+          },
+          "detail": {
+            "type": "string",
+            "description": "One line: what the host did, with its times, or why it failed."
+          }
+        }
+      }
+    }
+  }
+}

@@ -153,8 +153,8 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("the exit codes", () => {
-  it("are the stable table of ticket 13", () => {
-    expect(EXIT_CODES).toEqual({ ok: 0, usage: 2, noSlot: 3, leaseMismatch: 4, resetFailed: 5, hostUnreachable: 6, refused: 7, importFailed: 9 });
+  it("are the stable table of ticket 13, with the bootstrap failures of tickets 41 and 40", () => {
+    expect(EXIT_CODES).toEqual({ ok: 0, usage: 2, noSlot: 3, leaseMismatch: 4, resetFailed: 5, hostUnreachable: 6, refused: 7, importFailed: 9, codeFailed: 10 });
     expect(Object.values(EXIT_CODES)).not.toContain(SECRET_REQUIRED_EXIT_CODE);
   });
 
@@ -619,6 +619,8 @@ describe("get --agent", () => {
     const log = p.host.callLog;
     expect(log.slice(log.indexOf("setLeaseCredentials"))).toEqual(["setLeaseCredentials", "startSlot"]);
     expect(p.host.calls.at(-1)).toMatchObject({ method: "startSlot", target: "23-01", args: { agent: true } });
+    // Recorded on the lease, so a later code deploy starts the agent again after its quiesce (ticket 40).
+    expect((await p.store.read()).slots["23-01"]?.lease?.bootstrap).toEqual({ agent: true });
   });
 
   it("refuses with exit 7 when the slot has no agent, and gives the slot up for reset", async () => {

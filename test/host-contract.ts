@@ -183,7 +183,7 @@ export function hostContractSuite(label: string, make: () => ContractHarness | P
         "/mnt/c/aras_installations/staging/x",
         `${root}\\sqldata\\arashouse_${slot.flavor}_01.mdf`,
       ]) {
-        expect(await thrownKind(() => host.deployCode(slot, path))).toBe("Refused");
+        expect(await thrownKind(() => host.deployCode(slot, path, { leaseId: "c".repeat(32) }))).toBe("Refused");
         expect(await thrownKind(() => host.restoreDatabase(slot, path))).toBe("Refused");
         expect(await thrownKind(() => host.backupDatabase(slot, path))).toBe("Refused");
       }

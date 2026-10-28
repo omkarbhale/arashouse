@@ -22,6 +22,8 @@ import type {
   BaselineBuildResult,
   BaselineVerifyOptions,
   BaselineVerifyResult,
+  DeployOptions,
+  DeployResult,
   GoldenRef,
   HealthCheckEntry,
   HealthResult,
@@ -41,11 +43,12 @@ import type {
 } from "./driver.js";
 import { HostError } from "./errors.js";
 import { VERIFY_LEVELS, type ManifestDiff, type VerifyLevel } from "../core/manifest.js";
-import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, assertStagedPath, type OwnedContext } from "./owned.js";
+import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, assertStagedPath, guarded, type OwnedContext } from "./owned.js";
+import { DEFAULT_CODE_SUBPATH, checkSubpath } from "../core/code-deploy.js";
+import { isLeaseId } from "../core/state.js";
 
 /** The ticket that adds each verb the broker does not have yet. */
 const PENDING: Partial<Record<HostMethod, string>> = {
-  deployCode: "40",
   restoreDatabase: "39",
 };
 
@@ -281,8 +284,18 @@ export class BrokerHost implements HostDriver {
     return { ok: result.ok, ms, detail: result.detail };
   }
 
-  deployCode(slot: SlotRef, stagedPath: string): Promise<HostResult> {
-    return this.pending("deployCode", this.stagedGuard(slot, stagedPath));
+  async deployCode(slot: SlotRef, stagedPath: string, options: DeployOptions): Promise<DeployResult> {
+    assertSlotOwned(slot, this.owned);
+    if (!isLeaseId(options.leaseId)) throw new HostError("Refused", "a deploy names the lease it is for");
+    const staged = assertStagedPath(slot, stagedPath, this.owned, options.leaseId);
+    const subpath = guarded(() => checkSubpath(options.subpath ?? DEFAULT_CODE_SUBPATH));
+    const args = { staged, leaseId: options.leaseId, subpath, allowConfig: options.allowConfig === true, allowServers: options.allowServers === true, agent: options.agent === true };
+    const { result, ms } = await this.call("deployCode", { slot: { flavor: slot.flavor, slot: slot.slot } }, args);
+    const count = (v: unknown) => (Number.isInteger(v) && (v as number) >= 0 ? (v as number) : undefined);
+    const files = count(result.files);
+    const deleted = count(result.deleted);
+    if (files === undefined || deleted === undefined || typeof result.compiledCleared !== "boolean") throw malformed("deployCode", "files, deleted or compiledCleared is missing");
+    return { ok: result.ok, ms, detail: result.detail, files, deleted, compiledCleared: result.compiledCleared };
   }
 
   restoreDatabase(slot: SlotRef, stagedBak: string): Promise<HostResult> {

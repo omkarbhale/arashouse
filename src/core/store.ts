@@ -8,11 +8,13 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { acquireLock, isProcessAlive, type LockEvent, type LockInfo } from "./lock.js";
 import type { SlotRef } from "./names.js";
 import {
+  type BootstrapInfo,
   type Slot,
   type State,
   type TransitionRequest,
   type Waiter,
   StateCorruptError,
+  checkBootstrap,
   emptyState,
   newSlot,
   newLeaseId,
@@ -42,7 +44,7 @@ export function resolveStorePaths(env: NodeJS.ProcessEnv = process.env): StorePa
 export interface StoreEvent {
   readonly ts: string;
   readonly pid: number;
-  readonly event: "transition" | "slot-removed" | "lease-extracted" | "queue-join" | "queue-leave" | "state-replaced" | LockEvent["event"];
+  readonly event: "transition" | "slot-removed" | "lease-extracted" | "bootstrap" | "queue-join" | "queue-leave" | "state-replaced" | LockEvent["event"];
   readonly slot?: string;
   /** The queue ticket of a `queue-join` or `queue-leave`. */
   readonly ticket?: number;
@@ -201,6 +203,27 @@ export class Transaction {
       lease: leaseId.slice(0, 8),
       holder: slot.lease.holder,
       reason: what,
+    });
+    return true;
+  }
+
+  /**
+   * Merges `info` into the bootstrap record of the slot's lease (what a deploy put on it, ticket 40), when the slot is
+   * still leased with `leaseId`; false (and nothing changed) otherwise. Not a status move: the event names the keys only.
+   */
+  recordBootstrap(id: string, leaseId: string, info: BootstrapInfo): boolean {
+    const slot = this.slots[id];
+    if (!slot || slot.status !== "leased" || slot.lease?.lease_id !== leaseId) return false;
+    const bootstrap = checkBootstrap({ ...(slot.lease.bootstrap ?? {}), ...info });
+    this.slots[id] = { ...slot, lease: { ...slot.lease, bootstrap } };
+    this.pending.push({
+      ts: this.env.now().toISOString(),
+      pid: this.env.pid,
+      event: "bootstrap",
+      slot: id,
+      lease: leaseId.slice(0, 8),
+      holder: slot.lease.holder,
+      reason: `recorded ${Object.keys(info).join(", ")}`,
     });
     return true;
   }

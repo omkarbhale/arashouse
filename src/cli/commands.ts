@@ -48,7 +48,8 @@ import { isLeaseId } from "../core/state.js";
 import { createMsiReader, windowsTempDir } from "../host/msi.js";
 import { parseArgs, parseSeconds, stringOption, type ParsedArgs } from "./args.js";
 import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
-import { selectHost, type SelectedHost } from "./host.js";
+import { selectHost, type CliHost, type SelectedHost } from "./host.js";
+import { deployCodeOnLease, formatOutcomes, localInstallRoot, planSource, refusedDeploy, type CodeDeployReport, type CodeRules, type PlannedSource } from "./code.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { parsePasswordFd, writePasswordFd } from "./password-fd.js";
 import { runWithLease } from "./run.js";
@@ -73,6 +74,7 @@ export interface CliIo {
 const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
   get: [
     "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]",
+    "                     [--code <dir|zip>[:<subpath>]]... [--allow-config] [--allow-servers] [--atomic]",
     "                     [--import <manifest|folder> [<import options>]]... [--keep-on-fail]",
     "",
     `Leases a clean slot of <flavor> (${FLAVOR_KEYS.join(", ")}) to <task>. With --json, stdout is the`,
@@ -87,6 +89,21 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "lease with import-export-libs-js (`aras-pkg import`, the flavor's engine), in the order given; the options",
     "after an --import are its own (see `arashouse help import`). A failed import returns the lease and exits 9",
     "with aras-pkg's exit code and log; --keep-on-fail keeps the lease instead, so a human can look (still exit 9).",
+    "--code deploys a folder or zip into the slot's tree once it is leased, as `deploy-code` does, in the",
+    "order given and before the imports; a deploy a guard refuses is refused before the lease is taken (exit 7).",
+    "If a deploy fails, the lease is still held and shown, no import runs, and get exits 10; with --atomic it is",
+    "returned (and reset) instead.",
+  ],
+  "deploy-code": [
+    "usage: arashouse deploy-code --lease <lease_id> <dir|zip>[:<subpath>]... [--allow-config] [--allow-servers] [--json]",
+    "",
+    "Copies a folder or zip over the leased slot's tree (an overlay: nothing else changes), then starts",
+    "and warms the slot again. <subpath> is where it lands in the tree (default Innovator; `.` is the",
+    "top). Only Innovator\\ is written, and VaultServer\\ and OAuthServer\\ with --allow-servers; the",
+    "secrets and identity files (InnovatorServerConfig.xml, *.pfx, *.cer, key-*.xml, vault.config) need",
+    "--allow-config. A deploy.json at the top of the source may list the files to copy (\"files\") and",
+    "files to delete (\"delete\"). Returning the lease discards all of it. Exit 7 when a guard refuses",
+    "(nothing changed), 10 when a deploy failed (the lease is still held). See docs/code-deploy.md.",
   ],
   import: [
     "usage: arashouse import --lease <lease_id> <manifest|folder> [<import options>] [<manifest|folder> [<import options>]]...",
@@ -246,6 +263,8 @@ const OVERVIEW: readonly string[] = [
   "",
   "  get <flavor> --holder <task> [--wait <seconds>] [--json]  lease a clean slot",
   "      [--agent]                                             ... with its agent service started",
+  "      [--code <dir|zip>[:<subpath>]]... [--atomic]          ... with code deployed into it",
+  "  deploy-code --lease <lease_id> <dir|zip>[:<subpath>]...   deploy code into a leased slot",
   "  return <lease_id> [--wait[=<seconds>]] [--quiet]           give a lease back (its slot is discarded)",
   "  status [--json]                                            every slot and its holder",
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
@@ -278,7 +297,8 @@ const OVERVIEW: readonly string[] = [
   "Options for every command: --help, --verbose (more detail on stderr, never a secret).",
   "Exit codes: 0 ok, 1 other failure, 2 usage, 3 no slot available, 4 lease mismatch,",
   "5 reset failed, 6 host unreachable, 7 refused by a guard, 8 a secret is needed and no terminal",
-  "can ask, 9 an import failed; `run` passes its command's code through. See docs/cli.md.",
+  "can ask, 9 an import failed, 10 a code deploy failed after the lease was taken; `run` passes its",
+  "command's code through. See docs/cli.md.",
 ];
 
 /** What to try next, by exit code; printed under the error line. */
@@ -352,7 +372,7 @@ async function resetDeps(ctx: Context, selected: SelectedHost): Promise<ResetDep
   return { store: ctx.store, host: selected.host, golden: selected.golden, config: await loadConfig({ home: ctx.store.paths.home }) };
 }
 
-async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "resolveUrl">> {
+async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "resolveUrl"> & { readonly host: CliHost }> {
   const selected = await host(ctx);
   const reset = await resetDeps(ctx, selected);
   return {
@@ -388,7 +408,23 @@ function printJson(io: CliIo, value: unknown): void {
   io.out(JSON.stringify(value, null, 2));
 }
 
-const GET_OPTIONS = { holder: "value", wait: "value", agent: "flag", json: "flag", "password-fd": "value", "keep-on-fail": "flag" } as const;
+const GET_OPTIONS = {
+  holder: "value",
+  wait: "value",
+  agent: "flag",
+  json: "flag",
+  "password-fd": "value",
+  "keep-on-fail": "flag",
+  code: "list",
+  "allow-config": "flag",
+  "allow-servers": "flag",
+  atomic: "flag",
+} as const;
+
+/** `--allow-config` and `--allow-servers`, which only a deploy takes. */
+function codeRules(parsed: ParsedArgs): CodeRules {
+  return { allowConfig: parsed.options["allow-config"] === true, allowServers: parsed.options["allow-servers"] === true };
+}
 
 function importDeps(ctx: Context, deps: Pick<ImportDeps, "resolveUrl">): ImportDeps {
   return {
@@ -414,23 +450,49 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   const fdText = stringOption(parsed, "password-fd");
   const keepOnFail = parsed.options["keep-on-fail"] === true;
   if (keepOnFail && steps.length === 0) throw new UsageError("--keep-on-fail goes with --import");
+  const codeTexts = parsed.lists.code ?? [];
+  for (const flag of ["allow-config", "allow-servers", "atomic"]) {
+    if (parsed.options[flag] === true && codeTexts.length === 0) throw new UsageError(`--${flag} goes with --code`);
+  }
   // Checked before the lease is taken, so a descriptor that is not open costs no slot.
   const passwordFd = fdText === undefined ? undefined : parsePasswordFd(fdText);
+  // So are the code deploys: each source read and planned, so one a guard refuses costs no slot (ticket 40).
+  const rules = codeRules(parsed);
+  const sources: PlannedSource[] = [];
+  for (const text of codeTexts) sources.push(await planSource(text, rules));
   // So are the imports: their manifests, their options against the flavor's engine, and aras-pkg itself.
   if (steps.length > 0 && !isFlavorKey(flavor)) throw new UsageError(`unknown flavor "${flavor}"; the flavors are ${FLAVOR_KEYS.join(", ")}`);
   const imports = steps.length === 0 ? [] : prepareImports(steps, { flavor: flavor as FlavorKey, env: ctx.env, verbose: ctx.verbose });
   const apkgCheck = steps.length === 0 ? undefined : requireArasPkg(ctx.env);
   const deps = await leaseDeps(ctx);
+  const agent = parsed.options.agent === true;
   const grant = await getLease(deps, {
     flavor,
     holder,
     waitSeconds: wait === undefined ? 0 : parseSeconds(wait, "--wait"),
-    agent: parsed.options.agent === true,
+    agent,
   });
   const returnHint = `return it with: arashouse return ${grant.lease_id}`;
+  // The code first, then the imports (the bootstrap order: restore, code, imports).
+  let deployed: CodeDeployReport | undefined;
+  if (sources.length > 0) {
+    deployed = await deployCodeOnLease(
+      { store: ctx.store, host: deps.host, localRoot: localInstallRoot(ctx.env) },
+      { slot: grant.slot, leaseId: grant.lease_id, agent },
+      sources,
+      rules,
+    );
+    if (!deployed.ok && parsed.options.atomic === true) {
+      // `--atomic`: a lease whose code did not deploy is not handed out; the reset removes what did.
+      await returnLease(deps, { target: grant.lease_id });
+      const last = deployed.outcomes.at(-1);
+      throw new LeaseError(EXIT_CODES.codeFailed, `the code deploy into ${grant.slot} failed (${last?.detail ?? "no detail"}); --atomic returned the lease, and the slot is reset`);
+    }
+  }
+  const codeFailure = deployed && !deployed.ok ? `the code deploy failed (${deployed.outcomes.at(-1)?.detail ?? "no detail"}); the lease is still held, and no import ran` : undefined;
   let results: readonly ImportResult[] | undefined;
   let failure: string | undefined;
-  if (apkgCheck !== undefined) {
+  if (apkgCheck !== undefined && codeFailure === undefined) {
     try {
       ({ results, failure } = await runImports(importDeps(ctx, deps), grant.lease_id, imports));
     } catch (err) {
@@ -454,12 +516,20 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     }
   }
   const finish = (): number => {
+    if (codeFailure !== undefined) {
+      ctx.io.err(`arashouse: ${codeFailure}: ${returnHint}`);
+      return EXIT_CODES.codeFailed;
+    }
     if (failure === undefined) return EXIT_CODES.ok;
     ctx.io.err(`arashouse: ${failure}; the lease of ${grant.slot} is kept (--keep-on-fail): ${returnHint}`);
     return EXIT_CODES.importFailed;
   };
   if (parsed.options.json === true) {
-    printJson(ctx.io, { ...renderGetJson(grant, { password: passwordFd === undefined }), ...(results === undefined ? {} : { imports: results }) });
+    printJson(ctx.io, {
+      ...renderGetJson(grant, { password: passwordFd === undefined }),
+      ...(deployed === undefined ? {} : { bootstrap: { code: deployed.outcomes } }),
+      ...(results === undefined ? {} : { imports: results }),
+    });
     ctx.io.err(`arashouse: leased ${grant.slot} to ${grant.holder}; ${returnHint}`);
     return finish();
   }
@@ -473,6 +543,7 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     passwordFd === undefined
       ? `password:  not shown; use \`arashouse run --lease ${grant.lease_id} -- <command>\``
       : `password:  written to descriptor ${passwordFd}`,
+    ...(deployed ? formatOutcomes(deployed.outcomes) : []),
     ...(results ?? []).map((r, i) => `import ${i + 1}:  ${r.manifest} (exit ${r.exit_code}; log ${r.log})`),
     returnHint,
   ]) {
@@ -501,6 +572,30 @@ async function cmdImport(ctx: Context, args: readonly string[]): Promise<number>
 /** What `return` prints on stderr, unless `--quiet`, when it gives a lease back (ticket 43; the worker guide says the same). */
 export function returnReminder(slot: string): string {
   return `Returning slot ${slot}. Its state will be discarded; anything you want to keep must already be out.`;
+}
+
+async function cmdDeployCode(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { lease: "value", "allow-config": "flag", "allow-servers": "flag", json: "flag" });
+  const leaseId = stringOption(parsed, "lease");
+  if (leaseId === undefined) throw new UsageError("deploy-code needs --lease <lease_id>");
+  if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
+  if (parsed.positionals.length === 0) throw new UsageError("deploy-code needs a folder or zip to deploy: <dir|zip>[:<subpath>]");
+  const rules = codeRules(parsed);
+  const sources: PlannedSource[] = [];
+  for (const text of parsed.positionals) sources.push(await planSource(text, rules));
+  const slot = Object.values((await ctx.store.read()).slots).find((s) => s.status === "leased" && s.lease?.lease_id === leaseId);
+  if (!slot?.lease) throw new LeaseError(EXIT_CODES.leaseMismatch, "that lease is not held (it was returned, or never existed); nothing was deployed");
+  const report = await deployCodeOnLease(
+    { store: ctx.store, host: (await host(ctx)).host, localRoot: localInstallRoot(ctx.env) },
+    { slot: slot.id, leaseId, agent: slot.lease.bootstrap?.agent === true },
+    sources,
+    rules,
+  );
+  if (parsed.options.json === true) printJson(ctx.io, { slot: slot.id, code: report.outcomes });
+  else for (const line of formatOutcomes(report.outcomes)) ctx.io.out(line);
+  if (report.ok) return EXIT_CODES.ok;
+  ctx.io.err(`arashouse: the code deploy into ${slot.id} failed (${report.outcomes.at(-1)?.detail ?? "no detail"}); the lease is still held`);
+  return refusedDeploy(report) ? EXIT_CODES.refused : EXIT_CODES.codeFailed;
 }
 
 async function cmdReturn(ctx: Context, args: readonly string[]): Promise<number> {
@@ -782,6 +877,7 @@ async function cmdEnable(ctx: Context, args: readonly string[]): Promise<number>
 
 const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) => Promise<number>>> = {
   get: cmdGet,
+  "deploy-code": cmdDeployCode,
   return: cmdReturn,
   status: cmdStatus,
   flavors: cmdFlavors,

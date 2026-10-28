@@ -30,6 +30,30 @@
           "log": { "type": "string", "minLength": 1, "description": "The libs-js log: $ARASHOUSE_HOME/logs/<lease_id>-import-<n>.log." }
         }
       }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What `get` did to the lease after taking it; present only when it was asked to (`--code`).",
+      "properties": {
+        "code": {
+          "type": "array",
+          "description": "One entry per `--code`, in order, as docs/schemas/deploy-code.schema.json describes them. Deploys stop at the first that fails; get then exits 10 with the lease still held, and no import runs.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source", "subpath", "ok", "files", "deleted", "detail"],
+            "properties": {
+              "source": { "type": "string" },
+              "subpath": { "type": "string" },
+              "ok": { "type": "boolean" },
+              "files": { "type": "integer", "minimum": 0 },
+              "deleted": { "type": "integer", "minimum": 0 },
+              "detail": { "type": "string" }
+            }
+          }
+        }
+      }
     }
   }
 }

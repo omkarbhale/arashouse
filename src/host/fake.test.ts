@@ -11,6 +11,15 @@ const handle = (ref: string) => ({ secretRef: ref });
 
 const slot = { flavor: "12sp9", slot: 1 } as const;
 const other = { flavor: "23", slot: 2 } as const;
+/** Two lease ids, as `get` makes them. */
+const L1 = "1".repeat(32);
+const L2 = "2".repeat(32);
+
+/** The slot's stamp names `leaseId`, as `get` writes it. */
+async function lease(host: FakeHost, leaseId: string = L1): Promise<void> {
+  const stamp = (await host.readStamp(slot)).stamp!;
+  await host.writeStamp(slot, { ...stamp, leaseId });
+}
 
 async function kindOf(call: () => Promise<unknown>): Promise<string> {
   try {
@@ -51,8 +60,11 @@ describe("FakeHost slots", () => {
 
   it("makes a dirtied slot unhealthy and a full reset heals it", async () => {
     const host = await provisioned();
-    await host.deployCode(slot, `${stagingDir("lease1")}\\build`);
-    await host.restoreDatabase(slot, `${stagingDir("lease1")}\\x.bak`);
+    await lease(host);
+    await host.deployCode(slot, `${stagingDir(L1)}\\code\\1`, { leaseId: L1 });
+    await host.restoreDatabase(slot, `${stagingDir(L1)}\\x.bak`);
+    const stamp = (await host.readStamp(slot)).stamp!;
+    await host.writeStamp(slot, { ...stamp, leaseId: null });
     const dirty = await host.healthCheck(slot);
     expect(dirty.ok).toBe(false);
     expect(dirty.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(["database-marker-matches-stamp", "tree-clean"]);
@@ -143,7 +155,7 @@ describe("FakeHost guards", () => {
     resetDatabase: (h, s) => h.resetDatabase(s, h.backup("12sp9")),
     startSlot: (h, s) => h.startSlot(s, { agent: false }),
     stopSlot: (h, s) => h.stopSlot(s),
-    deployCode: (h, s) => h.deployCode(s, `${stagingDir("l1")}\\x`),
+    deployCode: (h, s) => h.deployCode(s, `${stagingDir("l1")}\\x`, { leaseId: L1 }),
     restoreDatabase: (h, s) => h.restoreDatabase(s, `${stagingDir("l1")}\\x.bak`),
     backupDatabase: (h, s) => h.backupDatabase(s, `${stagingDir("l1")}\\x.bak`),
     healthCheck: (h, s) => h.healthCheck(s),
@@ -194,7 +206,7 @@ describe("FakeHost guards", () => {
       staging,
     ];
     for (const path of bad) {
-      expect(await kindOf(() => host.deployCode(slot, path)), path).toBe("Refused");
+      expect(await kindOf(() => host.deployCode(slot, path, { leaseId: L1 })), path).toBe("Refused");
       expect(await kindOf(() => host.restoreDatabase(slot, path)), path).toBe("Refused");
       expect(await kindOf(() => host.backupDatabase(slot, path)), path).toBe("Refused");
     }
@@ -206,7 +218,7 @@ describe("FakeHost guards", () => {
     const stamp = (await host.readStamp(slot)).stamp!;
     await host.writeStamp(slot, { ...stamp, leaseId: "lease1" });
     const other = `${stagingDir("lease2")}\\x.bak`;
-    expect(await kindOf(() => host.deployCode(slot, other))).toBe("Refused");
+    expect(await kindOf(() => host.deployCode(slot, other, { leaseId: L1 }))).toBe("Refused");
     expect(await kindOf(() => host.restoreDatabase(slot, other))).toBe("Refused");
     expect(await kindOf(() => host.backupDatabase(slot, other))).toBe("Refused");
     expect(await kindOf(() => host.restoreDatabase(slot, `${stagingDir("lease1")}\\x.bak`))).toBe("none");
@@ -226,11 +238,13 @@ describe("FakeHost guards", () => {
   });
 
   it("refuses a staged path with a junction in it", async () => {
-    const staging = stagingDir("lease1");
-    const host = new FakeHost({ isReparsePoint: (p) => p === `${staging}\\link` });
+    const host = new FakeHost({ isReparsePoint: (p) => p === `${stagingDir(L1)}\\link` });
     await host.provisionSlot(slot);
-    expect(await kindOf(() => host.deployCode(slot, `${staging}\\link\\x`))).toBe("Refused");
-    expect(await kindOf(() => host.deployCode(slot, `${staging}\\fine\\x`))).toBe("none");
+    await lease(host);
+    expect(await kindOf(() => host.deployCode(slot, `${stagingDir(L1)}\\link\\x`, { leaseId: L1 }))).toBe("Refused");
+    expect(await kindOf(() => host.deployCode(slot, `${stagingDir(L1)}\\fine\\x`, { leaseId: L1 }))).toBe("none");
+    // Another lease's deploy, from its own staging folder, into a slot this lease holds.
+    expect(await kindOf(() => host.deployCode(slot, `${stagingDir(L2)}\\fine\\x`, { leaseId: L2 }))).toBe("Refused");
   });
 
   it("refuses an install root on the deny-list when constructed", () => {

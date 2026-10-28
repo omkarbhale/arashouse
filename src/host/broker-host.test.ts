@@ -154,13 +154,13 @@ describe("BrokerHost against an in-process broker", () => {
         | "writeStamp"
         | "setLeaseCredentials"
         | "healthCheck"
+        | "deployCode"
       >,
       () => Promise<unknown>
     > = {
-      deployCode: () => host.deployCode(s1, `${ROOT}\\staging\\l\\code`),
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
     };
-    expect(Object.keys(calls).length + 17).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 18).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -170,7 +170,7 @@ describe("BrokerHost against an in-process broker", () => {
     expect((await rejection(host.baselineBuild("olm" as never))).kind).toBe("Refused");
     // A staged path outside the lease's staging folder is refused before the verb's absence is reported, as FakeHost refuses it.
     for (const path of [`${ROOT}\\staging`, `${ROOT}\\golden\\12sp9\\db\\ootb.bak`, "C:\\Program Files (x86)\\Aras\\Innovator\\Server"]) {
-      expect((await rejection(host.deployCode(s1, path))).kind).toBe("Refused");
+      expect((await rejection(host.deployCode(s1, path, { leaseId: "a".repeat(32) }))).kind).toBe("Refused");
       expect((await rejection(host.restoreDatabase(s1, path))).kind).toBe("Refused");
       expect((await rejection(host.backupDatabase(s1, path))).kind).toBe("Refused");
     }

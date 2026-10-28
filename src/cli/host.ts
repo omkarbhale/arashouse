@@ -29,8 +29,8 @@ export const HOST_ENV = "ARASHOUSE_HOST";
 /** With the fake host: a JSON array of `Fault`s to inject (test seam), for example a `readStamp` that fails `Unreachable`. */
 export const FAKE_FAULTS_ENV = "ARASHOUSE_FAKE_FAULTS";
 
-/** The host calls the CLI makes (`backupDatabase` for `extract db`, ticket 43). */
-export type CliHost = LeaseHost & OperatorHost & Pick<HostDriver, "backupDatabase">;
+/** The host calls the CLI makes (`backupDatabase` for `extract db`, ticket 43; `deployCode` for `get --code` and `deploy-code`, ticket 40). */
+export type CliHost = LeaseHost & OperatorHost & Pick<HostDriver, "backupDatabase" | "deployCode">;
 
 export interface SelectedHost {
   readonly kind: "fake" | "broker";

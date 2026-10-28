@@ -26,7 +26,7 @@ const PROTECTED_NAMES = PROTECTED_FILE_PATTERNS.map(globToRegExp);
 /** The files the flavor's edit list renders a secret into (a login password, the licence): protected as well, by path. */
 function secretFiles(flavor: FlavorKey): Set<string> {
   const files = new Set<string>();
-  for (const edit of editList(flavor).edits) if (edit.value.includes("{{secret:")) files.add(edit.file.replace(/\\/g, "/").toLowerCase());
+  for (const edit of editList(flavor).edits) if (/\{\{secret:/.test(edit.value)) files.add(edit.file.replace(/\\/g, "/").toLowerCase());
   return files;
 }
 

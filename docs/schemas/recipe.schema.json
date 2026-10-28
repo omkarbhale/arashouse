@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/recipe.schema.json",
+  "title": "arashouse bootstrap recipe",
+  "description": "A recipe for `arashouse get --bootstrap` and `arashouse bootstrap --lease` (docs/bootstrap.md). Paths are relative to the recipe file. A recipe holds no secret: arashouse also refuses any key, at any depth, that looks like one (password, key, token, secret, ...).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "flavor": {
+      "enum": [
+        "12sp9",
+        "23",
+        "35"
+      ],
+      "description": "The flavor it is for; the command's flavor, or the lease's, must agree."
+    },
+    "restore": {
+      "description": "A backup over the lease's database, as `get --restore` takes it: a .bak path or a profile name.",
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "from"
+          ],
+          "properties": {
+            "from": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "allow_foreign_origin": {
+              "type": "boolean"
+            },
+            "skip_version_check": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "code": {
+      "type": "array",
+      "description": "Folders or zips deployed over the slot's tree in order, as `get --code` does.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "Where it lands in the slot's tree (default Innovator; `.` is the top)."
+          },
+          "allow_config": {
+            "type": "boolean"
+          },
+          "allow_servers": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "import": {
+      "type": "array",
+      "description": "Package manifests imported in order with aras-pkg, as `get --import` does; each key is the option of the same name.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "manifest"
+        ],
+        "properties": {
+          "manifest": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "merge": {
+            "type": "boolean",
+            "description": "true for --merge, false for --no-merge."
+          },
+          "release": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "packages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            }
+          },
+          "os_user": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "languages": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "collect_errors": {
+            "type": "boolean"
+          },
+          "batch": {
+            "type": "boolean"
+          },
+          "timeout": {
+            "type": "integer",
+            "minimum": -1
+          },
+          "engine": {
+            "enum": [
+              "12.0",
+              "14.0.7",
+              "14.35"
+            ]
+          },
+          "skip_version_check": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "git": {
+      "type": "boolean",
+      "default": false,
+      "description": "Make the slot's Innovator\\ tree a git baseline after the imports (`get --git`)."
+    },
+    "agent": {
+      "type": "boolean",
+      "default": false,
+      "description": "Start the slot's agent service (`get --agent`); at get only."
+    },
+    "atomic": {
+      "type": "boolean",
+      "default": true,
+      "description": "A failed step returns the lease (the default); false keeps it, as --keep-on-fail does. At get only."
+    }
+  }
+}

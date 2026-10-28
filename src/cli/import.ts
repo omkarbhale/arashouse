@@ -321,6 +321,12 @@ export async function runImports(deps: ImportDeps, leaseId: string, imports: rea
     const exit = await runChild(deps.apkg.program, args, { env, err: deps.err, output: (line) => deps.err(redact(line)) });
     results.push({ manifest: step.manifest, exit_code: exit, log });
     if (exit !== 0) return { results, failure: `${label} failed: aras-pkg exit ${exit}; its log: ${log}` };
+    // Counted on the lease, so a later restore over it (`arashouse bootstrap --lease`, ticket 42) knows what it discards.
+    await deps.store.update((tx) => {
+      const slot = lease.ARASHOUSE_SLOT;
+      const count = tx.slot(slot)?.lease?.bootstrap?.imports;
+      tx.recordBootstrap(slot, leaseId, { imports: (typeof count === "number" ? count : 0) + 1 });
+    });
     deps.err(`arashouse: ${label} done; its log: ${log}`);
   }
   return { results };

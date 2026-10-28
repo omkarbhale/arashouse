@@ -156,8 +156,8 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("the exit codes", () => {
-  it("are the stable table of ticket 13, with the bootstrap failures of tickets 41 and 40", () => {
-    expect(EXIT_CODES).toEqual({ ok: 0, usage: 2, noSlot: 3, leaseMismatch: 4, resetFailed: 5, hostUnreachable: 6, refused: 7, importFailed: 9, codeFailed: 10 });
+  it("are the stable table of ticket 13, with the bootstrap failures of tickets 41, 42 and 40", () => {
+    expect(EXIT_CODES).toEqual({ ok: 0, usage: 2, noSlot: 3, leaseMismatch: 4, resetFailed: 5, hostUnreachable: 6, refused: 7, importFailed: 9, bootstrapFailed: 9, codeFailed: 10 });
     expect(Object.values(EXIT_CODES)).not.toContain(SECRET_REQUIRED_EXIT_CODE);
   });
 

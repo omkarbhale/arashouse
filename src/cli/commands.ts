@@ -22,8 +22,11 @@ import {
   getLease,
   leaseStatus,
   renderGetJson,
+  restoreLease,
   returnLease,
   type LeaseDeps,
+  type LeaseGrant,
+  type RestoreOutcome,
 } from "../core/lease.js";
 import { LeaseFileStore } from "../core/lease-files.js";
 import { LicenceRequiredError, SECRET_REQUIRED_EXIT_CODE } from "../core/licence.js";
@@ -41,7 +44,7 @@ import {
   prune,
   repairSlot,
 } from "../core/operator.js";
-import { parseSlotId, slotId } from "../core/names.js";
+import { databaseName, parseSlotId, slotId, webAlias } from "../core/names.js";
 import { type ResetDeps, describeOutcome, resetHooks, runResetWorker } from "../core/reset.js";
 import { redactError } from "../core/redact.js";
 import { StateStore } from "../core/store.js";
@@ -63,6 +66,7 @@ import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, worke
 import { folderStaging, hostStaging, resolveRestoreSource } from "./restore.js";
 import { teardownPool, teardownSwitches, type TeardownRequest } from "../core/teardown.js";
 import { writeTeardownBundle } from "./teardown.js";
+import { StepRecorder, assertRecipeGit, bootstrapJson, failureLine, formatSteps, loadRecipe, prepareRecipe, runBootstrap } from "./bootstrap.js";
 
 export const DEBUG_ENV = "ARASHOUSE_DEBUG";
 
@@ -80,6 +84,8 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "                     [--code <dir|zip>[:<subpath>]]... [--allow-config] [--allow-servers] [--atomic]",
     "                     [--import <manifest|folder> [<import options>]]... [--keep-on-fail] [--git]",
     "                     [--restore <backup.bak | profile> [--allow-foreign-origin] [--skip-version-check]]",
+    "       arashouse get [<flavor>] --bootstrap <recipe.json | @name> --holder <task> [--wait <seconds>] [--json]",
+    "                     [--password-fd <n>] [--keep-on-fail]",
     "",
     `Leases a clean slot of <flavor> (${FLAVOR_KEYS.join(", ")}) to <task>. With --json, stdout is the`,
     "lease contract (docs/schemas/get.schema.json) and nothing else; it holds the lease's password,",
@@ -106,6 +112,19 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "--git makes the slot's Innovator\\ tree a git repository last, as `git-baseline` does: its one commit is the",
     "tree as handed over (with the code deployed), so `git status` and `git diff` show only what changes after.",
     "A failed baseline keeps the lease and exits 10, like a failed deploy (--atomic returns it).",
+    "--bootstrap brings the lease up from a recipe (a JSON file, or @name for $ARASHOUSE_HOME/recipes/<name>.json)",
+    "instead of those options: restore, code, import, git, then a health check, each step only when the recipe has it.",
+    "The recipe is checked before a slot is reserved. A step that fails returns the lease (the slot is reset) and exits 9",
+    "naming the step and its log; --keep-on-fail (or \"atomic\": false) keeps it, still exit 9. A failed restore always",
+    "returns it. With --json the contract gains bootstrap.steps. See docs/bootstrap.md.",
+  ],
+  bootstrap: [
+    "usage: arashouse bootstrap --lease <lease_id> <recipe.json | @name> [--yes] [--json]",
+    "",
+    "Applies a recipe (docs/bootstrap.md) to a lease already held, in the same order as `get --bootstrap`: restore,",
+    "code, import, git, health. A restore replaces the lease's database (it says so first) and keeps the lease's",
+    "password; when imports were made onto the lease it needs --yes. A git step is skipped when the lease already has",
+    "a baseline. The recipe's agent and atomic apply at get only: a failed step exits 9 and the lease is kept.",
   ],
   "git-baseline": [
     "usage: arashouse git-baseline --lease <lease_id> [--json]",
@@ -290,6 +309,8 @@ const OVERVIEW: readonly string[] = [
   "      [--code <dir|zip>[:<subpath>]]... [--atomic]          ... with code deployed into it",
   "      [--restore <backup.bak | profile>]                    ... brought up from a SQL Server backup",
   "      [--git]                                               ... and its tree committed as a git baseline",
+  "  get [<flavor>] --bootstrap <recipe.json | @name> --holder <task>  lease a slot brought up from a recipe",
+  "  bootstrap --lease <lease_id> <recipe.json | @name> [--yes]  apply a recipe to a held lease",
   "  deploy-code --lease <lease_id> <dir|zip>[:<subpath>]...   deploy code into a leased slot",
   "  git-baseline --lease <lease_id> [--json]                   make a held lease's tree a git repository",
   "  return <lease_id> [--wait[=<seconds>]] [--quiet]           give a lease back (its slot is discarded)",
@@ -324,7 +345,7 @@ const OVERVIEW: readonly string[] = [
   "Options for every command: --help, --verbose (more detail on stderr, never a secret).",
   "Exit codes: 0 ok, 1 other failure, 2 usage, 3 no slot available, 4 lease mismatch,",
   "5 reset failed, 6 host unreachable, 7 refused by a guard, 8 a secret is needed and no terminal",
-  "can ask, 9 an import failed, 10 a code deploy or git baseline failed after the lease was taken; `run`",
+  "can ask, 9 an import or a bootstrap step failed, 10 a code deploy or git baseline failed after the lease was taken; `run`",
   "passes its command's code through. See docs/cli.md.",
 ];
 
@@ -338,7 +359,7 @@ const HINTS: Readonly<Record<number, string>> = {
   [EXIT_CODES.hostUnreachable]: "is the Windows host up and the arashouse broker running?",
   [EXIT_CODES.refused]: "arashouse touches only what it owns and refuses what it cannot use: the line above says which; check the name or the backup",
   [SECRET_REQUIRED_EXIT_CODE]: "run the command again from a terminal",
-  [EXIT_CODES.importFailed]: "read the import's log; `get --keep-on-fail` keeps the lease to look at it",
+  [EXIT_CODES.importFailed]: "read the log named above; `get --keep-on-fail` keeps the lease to look at it",
 };
 
 export function version(): string {
@@ -399,7 +420,7 @@ async function resetDeps(ctx: Context, selected: SelectedHost): Promise<ResetDep
   return { store: ctx.store, host: selected.host, golden: selected.golden, config: await loadConfig({ home: ctx.store.paths.home }) };
 }
 
-async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "resolveUrl" | "kind"> & { readonly host: CliHost }> {
+async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "resolveUrl" | "kind" | "probe"> & { readonly host: CliHost }> {
   const selected = await host(ctx);
   const reset = await resetDeps(ctx, selected);
   return {
@@ -413,6 +434,7 @@ async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "
     config: reset.config,
     reset: resetHooks(reset, (slot) => spawnResetWorker(ctx.env, slot)),
     golden: selected.golden,
+    probe: selected.probe,
   };
 }
 
@@ -460,7 +482,11 @@ const GET_OPTIONS = {
   "allow-servers": "flag",
   atomic: "flag",
   git: "flag",
+  bootstrap: "value",
 } as const;
+
+/** The options a recipe carries instead (`get --bootstrap`). */
+const RECIPE_CARRIES = ["agent", "restore", "allow-foreign-origin", "skip-version-check", "code", "allow-config", "allow-servers", "atomic", "git"] as const;
 
 /** `--allow-config` and `--allow-servers`, which only a deploy takes. */
 function codeRules(parsed: ParsedArgs): CodeRules {
@@ -482,6 +508,11 @@ function importDeps(ctx: Context, deps: Pick<ImportDeps, "resolveUrl">): ImportD
 async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   const { rest, steps } = splitImports(args, GET_OPTIONS, "--import");
   const parsed = parseArgs(rest, GET_OPTIONS);
+  const recipe = stringOption(parsed, "bootstrap");
+  if (recipe !== undefined) {
+    if (steps.length > 0) throw new UsageError("--import goes in the recipe, not beside --bootstrap");
+    return getWithRecipe(ctx, parsed, recipe);
+  }
   const [flavor, extra] = parsed.positionals;
   if (flavor === undefined) throw new UsageError(`get needs a flavor: ${FLAVOR_KEYS.join(", ")}`);
   if (extra !== undefined) throw new UsageError(`get takes one flavor, not "${extra}" too`);
@@ -615,16 +646,8 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     ctx.io.err(`arashouse: leased ${grant.slot} to ${grant.holder}; ${returnHint}`);
     return finish();
   }
-  const f = getFlavor(grant.flavor);
   for (const line of [
-    `leased ${grant.slot} (${f.release}, engine ${grant.engine}) to ${grant.holder}`,
-    `url:       ${grant.url}`,
-    `database:  ${grant.database}`,
-    `user:      ${grant.user}`,
-    `lease id:  ${grant.lease_id}`,
-    passwordFd === undefined
-      ? `password:  not shown; use \`arashouse run --lease ${grant.lease_id} -- <command>\``
-      : `password:  written to descriptor ${passwordFd}`,
+    ...grantLines(grant, passwordFd),
     ...(deployed ? formatOutcomes(deployed.outcomes) : []),
     ...(results ?? []).map((r, i) => `import ${i + 1}:  ${r.manifest} (exit ${r.exit_code}; log ${r.log})`),
     ...(baseline ? [formatGitOutcome(baseline.outcome)] : []),
@@ -633,6 +656,180 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     ctx.io.out(line);
   }
   return finish();
+}
+
+/** The human lines of a lease: where it is and how to reach it, never the password. */
+function grantLines(grant: LeaseGrant, passwordFd: number | undefined): string[] {
+  const f = getFlavor(grant.flavor);
+  return [
+    `leased ${grant.slot} (${f.release}, engine ${grant.engine}) to ${grant.holder}`,
+    `url:       ${grant.url}`,
+    `database:  ${grant.database}`,
+    `user:      ${grant.user}`,
+    `lease id:  ${grant.lease_id}`,
+    passwordFd === undefined
+      ? `password:  not shown; use \`arashouse run --lease ${grant.lease_id} -- <command>\``
+      : `password:  written to descriptor ${passwordFd}`,
+  ];
+}
+
+/**
+ * `get --bootstrap <recipe>` (ticket 42): the recipe read and every step prepared before a slot is reserved, then the lease
+ * (with the restore inside it), then code, import, git and the health check. A failed step returns the lease unless
+ * `--keep-on-fail` or the recipe's `"atomic": false`; either way it exits 9.
+ */
+async function getWithRecipe(ctx: Context, parsed: ParsedArgs, spec: string): Promise<number> {
+  const [given, extra] = parsed.positionals;
+  if (extra !== undefined) throw new UsageError(`get takes one flavor, not "${extra}" too`);
+  for (const name of RECIPE_CARRIES) {
+    if (parsed.options[name] !== undefined || parsed.lists[name] !== undefined) throw new UsageError(`--${name} goes in the recipe, not beside --bootstrap`);
+  }
+  const holder = stringOption(parsed, "holder");
+  if (holder === undefined) throw new UsageError("get needs --holder <task>: who is taking the lease");
+  const wait = stringOption(parsed, "wait");
+  const waitSeconds = wait === undefined ? 0 : parseSeconds(wait, "--wait");
+  const fdText = stringOption(parsed, "password-fd");
+  const passwordFd = fdText === undefined ? undefined : parsePasswordFd(fdText);
+  const home = ctx.store.paths.home;
+  const prepared = await prepareRecipe(await loadRecipe(spec, home), given, { env: ctx.env, verbose: ctx.verbose });
+  const keep = parsed.options["keep-on-fail"] === true || !prepared.atomic;
+  const deps = await leaseDeps(ctx);
+  const localRoot = localInstallRoot(ctx.env);
+  const git = prepared.git ? selectGitTool(deps.kind, ctx.env, localRoot) : undefined;
+  if (git !== undefined) {
+    assertRecipeGit(prepared);
+    await checkGitTool(git, ctx.env);
+  }
+  // Told by getLease once the restore has run: an object, so what the callback sets is read after.
+  const seen: { restore?: RestoreOutcome } = {};
+  let grant: LeaseGrant;
+  try {
+    grant = await getLease(deps, {
+      flavor: prepared.flavor,
+      holder,
+      waitSeconds,
+      agent: prepared.agent,
+      ...(prepared.restore ? { restore: prepared.restore, onRestore: (outcome: RestoreOutcome) => void (seen.restore = outcome) } : {}),
+    });
+  } catch (err) {
+    const restored = seen.restore;
+    if (restored === undefined) throw err;
+    // The restore ran, so what stopped the get is the restore step's; getLease has given the lease back. A lease whose
+    // database is the backup's and whose password was never set is no use to anyone, so --keep-on-fail cannot keep it.
+    const recorder = new StepRecorder(home, restored.leaseId);
+    const detail = restored.ok ? `restored, then: ${redactError(asLeaseError(err)).message}` : restored.detail;
+    await recorder.record("restore", "failed", restored.ms, detail);
+    await recorder.skipRest(prepared);
+    for (const line of formatSteps(recorder.steps)) ctx.io.err(`arashouse: ${line}`);
+    throw new LeaseError(EXIT_CODES.bootstrapFailed, `${failureLine(recorder.failed!)}; the lease of ${restored.slot} was returned, and the slot is reset`);
+  }
+  const recorder = new StepRecorder(home, grant.lease_id);
+  if (seen.restore) await recorder.record("restore", "ok", seen.restore.ms, seen.restore.detail);
+  const result = await runBootstrap(
+    {
+      store: ctx.store,
+      host: deps.host,
+      localRoot,
+      env: ctx.env,
+      probe: deps.probe,
+      ...(prepared.imports.length > 0 ? { imports: importDeps(ctx, deps) } : {}),
+      ...(git ? { git } : {}),
+    },
+    { slot: grant.slot, leaseId: grant.lease_id, flavor: grant.flavor, agent: prepared.agent, url: grant.url, database: grant.database },
+    prepared,
+    recorder,
+  );
+  const returnHint = `return it with: arashouse return ${grant.lease_id}`;
+  if (result.failed !== undefined && !keep) {
+    for (const line of formatSteps(result.steps)) ctx.io.err(`arashouse: ${line}`);
+    await returnLease(deps, { target: grant.lease_id });
+    throw new LeaseError(EXIT_CODES.bootstrapFailed, `${failureLine(result.failed)}; the lease of ${grant.slot} was returned, and the slot is reset (--keep-on-fail keeps it)`);
+  }
+  if (passwordFd !== undefined) {
+    try {
+      writePasswordFd(passwordFd, grant.password);
+    } catch {
+      await returnLease(deps, { target: grant.lease_id });
+      throw new UsageError(`the password could not be written to descriptor ${passwordFd}; the lease of ${grant.slot} was returned`);
+    }
+  }
+  if (parsed.options.json === true) {
+    printJson(ctx.io, {
+      ...renderGetJson(grant, { password: passwordFd === undefined }),
+      bootstrap: bootstrapJson(prepared, result),
+      ...(result.imports ? { imports: result.imports } : {}),
+    });
+    ctx.io.err(`arashouse: leased ${grant.slot} to ${grant.holder}; ${returnHint}`);
+  } else {
+    for (const line of [...grantLines(grant, passwordFd), `recipe:    ${prepared.path}`, ...formatSteps(result.steps), returnHint]) ctx.io.out(line);
+  }
+  if (result.failed === undefined) return EXIT_CODES.ok;
+  ctx.io.err(`arashouse: ${failureLine(result.failed)}; the lease of ${grant.slot} is kept (--keep-on-fail): ${returnHint}`);
+  return EXIT_CODES.bootstrapFailed;
+}
+
+/**
+ * `bootstrap --lease <id> <recipe>` (ticket 42): the recipe applied to a lease already held, in the same order. A restore
+ * replaces the lease's database and keeps its password; over imports made onto the lease it needs `--yes`. The lease is
+ * never returned here: a failed step exits 9 with the lease kept.
+ */
+async function cmdBootstrap(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { lease: "value", yes: "flag", json: "flag" });
+  const leaseId = stringOption(parsed, "lease");
+  if (leaseId === undefined) throw new UsageError("bootstrap needs --lease <lease_id>");
+  if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
+  const [spec, extra] = parsed.positionals;
+  if (spec === undefined) throw new UsageError("bootstrap needs a recipe: a JSON file, or @name for one in the recipes folder");
+  if (extra !== undefined) throw new UsageError(`bootstrap takes one recipe, not "${extra}" too`);
+  const slot = Object.values((await ctx.store.read()).slots).find((s) => s.status === "leased" && s.lease?.lease_id === leaseId);
+  if (!slot?.lease) throw new LeaseError(EXIT_CODES.leaseMismatch, "that lease is not held (it was returned, or never existed); nothing was done");
+  const home = ctx.store.paths.home;
+  const prepared = await prepareRecipe(await loadRecipe(spec, home), slot.flavor, { env: ctx.env, verbose: ctx.verbose });
+  const record = slot.lease.bootstrap ?? {};
+  const agent = record.agent === true;
+  // The lease's git baseline is the holder's record of what changed: a deploy changes the tree, never the repository.
+  if (record.git !== undefined) assertRecipeGit(prepared);
+  const gitSkipped = prepared.git && record.git !== undefined ? `the lease already has a git baseline (${String(record.git)})` : undefined;
+  const deps = await leaseDeps(ctx);
+  const localRoot = localInstallRoot(ctx.env);
+  const git = prepared.git && gitSkipped === undefined ? selectGitTool(deps.kind, ctx.env, localRoot) : undefined;
+  if (git !== undefined) {
+    assertRecipeGit(prepared);
+    await checkGitTool(git, ctx.env);
+  }
+  if (prepared.restore) {
+    const imports = typeof record.imports === "number" ? record.imports : 0;
+    if (imports > 0 && parsed.options.yes !== true) {
+      throw new UsageError(`the recipe restores a backup over the database of ${slot.id}, which discards the ${imports} import${imports === 1 ? "" : "s"} made onto this lease; give --yes to mean it`);
+    }
+    ctx.io.err(`arashouse: the recipe's restore replaces the database of ${slot.id}: what is in it now is discarded (the lease keeps its password)`);
+  }
+  if (prepared.agent !== agent) ctx.io.err(`arashouse: the recipe's "agent" applies at get only; this lease's agent stays ${agent ? "started" : "stopped"}`);
+  const ref = parseSlotId(slot.id);
+  const result = await runBootstrap(
+    {
+      store: ctx.store,
+      host: deps.host,
+      localRoot,
+      env: ctx.env,
+      probe: deps.probe,
+      ...(prepared.imports.length > 0 ? { imports: importDeps(ctx, deps) } : {}),
+      ...(git ? { git } : {}),
+      restoreHeld: (restore) => restoreLease(deps, leaseId, restore),
+    },
+    { slot: slot.id, leaseId, flavor: slot.flavor, agent, url: await deps.resolveUrl(webAlias(ref)), database: databaseName(ref) },
+    prepared,
+    new StepRecorder(home, leaseId),
+    gitSkipped === undefined ? {} : { gitSkipped },
+  );
+  if (parsed.options.json === true) {
+    printJson(ctx.io, { slot: slot.id, lease_id: leaseId, bootstrap: bootstrapJson(prepared, result), ...(result.imports ? { imports: result.imports } : {}) });
+  } else {
+    for (const line of [`recipe:    ${prepared.path}`, ...formatSteps(result.steps)]) ctx.io.out(line);
+  }
+  if (result.failed === undefined) return EXIT_CODES.ok;
+  ctx.io.err(`arashouse: ${failureLine(result.failed)}; the lease is kept`);
+  return EXIT_CODES.bootstrapFailed;
 }
 
 async function cmdImport(ctx: Context, args: readonly string[]): Promise<number> {
@@ -987,6 +1184,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   get: cmdGet,
   "deploy-code": cmdDeployCode,
   "git-baseline": cmdGitBaseline,
+  bootstrap: cmdBootstrap,
   return: cmdReturn,
   status: cmdStatus,
   flavors: cmdFlavors,

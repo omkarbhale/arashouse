@@ -19,6 +19,8 @@ tickets 39 to 42 (the database restore, `get --restore`, ticket 39, is in `docs/
 | `arashouse git-baseline --lease <lease_id> [--json]` | Makes a held lease's `Innovator\` a git repository the same way (`docs/git-baseline.md`). |
 | `arashouse get <flavor> --holder <task> --import <manifest\|folder> [<import options>] ... [--keep-on-fail]` | The same, then imports package manifests onto the lease with import-export-libs-js, in order (`docs/import.md`). |
 | `arashouse import --lease <lease_id> <manifest\|folder> [<import options>] ...` | Imports package manifests onto a held lease (`docs/import.md`). |
+| `arashouse get [<flavor>] --holder <task> --bootstrap <recipe.json\|@name> [--keep-on-fail]` | Leases a slot and brings it up from a recipe: restore, code, import, git, health check (`docs/bootstrap.md`). |
+| `arashouse bootstrap --lease <lease_id> <recipe.json\|@name> [--yes] [--json]` | Applies a recipe to a held lease in the same order (`docs/bootstrap.md`). |
 | `arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]` | Gives the lease back; its slot is discarded. |
 | `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]] [--quiet]` | The same, by slot name; the lease id is required (ABA protection). |
 | `arashouse status [--json]` | Every slot, its holder, lease age and bootstrap, totals per flavor, `max_active` in use. |
@@ -92,6 +94,21 @@ and `--allow-servers` go only with `--code`, `--atomic` with `--code` or `--git`
 does (`docs/git-baseline.md`); with `--json` the contract gains `bootstrap.git`. A `--code` source that writes
 `Innovator\.git\` or `Innovator\.gitignore` is refused before the lease is taken (exit 7), and so is `--git` when git
 cannot be run. A baseline that fails keeps the lease and exits 10, as a failed deploy does (`--atomic` returns it).
+
+`--bootstrap <recipe.json | @name>` (ticket 42, `docs/bootstrap.md`) brings the lease up from a recipe instead of those
+options: restore, code, import, git, then a health check from WSL, each step only when the recipe has it. The flavor
+may come from the recipe. The recipe is read and every step prepared before a slot is reserved (a bad path exits 2, a
+refused code entry 7), and the bring-up options beside it are refused (exit 2). A step that fails returns the lease and
+exits 9, naming the step and its log; `--keep-on-fail` (or `"atomic": false`) keeps it, still exit 9, except after a
+failed restore. With `--json` the contract gains `bootstrap: { recipe, steps, code?, git? }`.
+
+### `bootstrap`
+
+`arashouse bootstrap --lease <lease_id> <recipe.json | @name> [--yes]` applies a recipe to a lease already held, in the
+same order (`docs/bootstrap.md`). A restore replaces the lease's database and keeps its password; over imports made onto
+the lease it needs `--yes`. A git step is skipped when the lease already has a baseline. With `--json`, stdout is
+`{ slot, lease_id, bootstrap, imports? }` (`docs/schemas/bootstrap.schema.json`). A lease that is not held exits 4; a
+failed step exits 9 and the lease is kept.
 
 ### `deploy-code`
 
@@ -323,7 +340,7 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | 6 | host unreachable (the host or broker did not answer) |
 | 7 | refused by a guard: the name is not one arashouse owns, or is on the deny-list; or an operator command the slot's status does not allow (destroying a leased slot, a `teardown` while a slot is leased, repairing one that is not quarantined), or `repair --rebuild` under the disk gate |
 | 8 | a step needs a secret and no terminal can ask for it |
-| 9 | an import failed: `aras-pkg import` exited non-zero in `get --import` (the lease was returned, unless `--keep-on-fail`) or `import` (the lease is kept); stderr names its exit code and log |
+| 9 | an import failed: `aras-pkg import` exited non-zero in `get --import` (the lease was returned, unless `--keep-on-fail`) or `import` (the lease is kept); stderr names its exit code and log. Or a bootstrap recipe's step failed (`get --bootstrap`: the lease was returned, unless `--keep-on-fail` or `"atomic": false`; `bootstrap --lease`: the lease is kept); stderr names the step and its log |
 | 10 | a code deploy (`get --code`, `deploy-code`; `docs/code-deploy.md`) or a git baseline (`get --git`, `git-baseline`; `docs/git-baseline.md`) failed after the lease was taken: the lease is still held (`get` still prints it), unless `get --atomic` returned it |
 | 127 | `run` could not start its command |
 

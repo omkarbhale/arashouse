@@ -21,6 +21,7 @@ import type { HostDriver } from "../host/driver.js";
 import { HostError } from "../host/errors.js";
 import { LiveClock } from "../host/clock.js";
 import { FakeHost, type Fault } from "../host/fake.js";
+import { probeSlot } from "../host/probe.js";
 import { HOST_ADDR_ENV, hostAddress, slotUrl } from "../host/url.js";
 import { wslPathOf } from "./setup.js";
 
@@ -28,6 +29,9 @@ export const HOST_ENV = "ARASHOUSE_HOST";
 
 /** With the fake host: a JSON array of `Fault`s to inject (test seam), for example a `readStamp` that fails `Unreachable`. */
 export const FAKE_FAULTS_ENV = "ARASHOUSE_FAKE_FAULTS";
+
+/** With the fake host: `down` makes the probe of a lease (a bootstrap recipe's health step) fail (test seam). */
+export const FAKE_PROBE_ENV = "ARASHOUSE_FAKE_PROBE";
 
 /** The host calls the CLI makes (`backupDatabase` for `extract db`, ticket 43; `deployCode` for `get --code` and `deploy-code`, ticket 40). */
 export type CliHost = LeaseHost & OperatorHost & Pick<HostDriver, "backupDatabase" | "deployCode">;
@@ -43,6 +47,26 @@ export interface SelectedHost {
   readonly root: string;
   /** The path this process opens for a Windows path under the root (`/mnt/c/...` on the host), for `extract` (ticket 43). */
   readonly toLocal: (windowsPath: string) => string;
+  /** Whether a lease's slot serves at its URL, from WSL (a bootstrap recipe's health step, ticket 42). Never throws. */
+  readonly probe: (url: string, database: string) => Promise<LeaseProbe>;
+}
+
+/** What the probe of a lease found: ok when the slot's client, OAuth server and database list all answer. No response body. */
+export interface LeaseProbe {
+  readonly ok: boolean;
+  readonly ms: number;
+  readonly detail: string;
+}
+
+/** `probeSlot` from WSL, cold (the bootstrap steps recycled the slot's pools), as one line. */
+async function probeLease(url: string, database: string): Promise<LeaseProbe> {
+  try {
+    const p = await probeSlot(url, database, { warm: false });
+    const failed = [p.client, p.oauth, p.dbList].filter((c) => !c.ok).map((c) => c.detail);
+    return { ok: p.ok, ms: p.ms, detail: p.ok ? `Client/, the OAuth server and DBList.aspx answer at ${p.url}` : failed.join("; ") };
+  } catch (err) {
+    return { ok: false, ms: 0, detail: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export function hostKind(env: NodeJS.ProcessEnv): "fake" | "broker" {
@@ -110,6 +134,7 @@ async function fakeHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<Sele
     for (const fault of parsed as Fault[]) host.injectFault(fault);
   }
   const address = env[HOST_ADDR_ENV]?.trim() || "127.0.0.1";
+  const probeDown = env[FAKE_PROBE_ENV] === "down";
   return {
     kind: "fake",
     host,
@@ -117,6 +142,7 @@ async function fakeHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<Sele
     golden: async (flavor) => ({ tree: host.golden(flavor), backup: host.backup(flavor) }),
     root: DEFAULT_INSTALL_ROOT,
     toLocal,
+    probe: async (url) => (probeDown ? { ok: false, ms: 1, detail: "Client/: connection failed (ECONNREFUSED)" } : { ok: true, ms: 1, detail: `the fake slot at ${url} answers` }),
   };
 }
 
@@ -143,5 +169,6 @@ export async function selectHost(env: NodeJS.ProcessEnv, store: StateStore): Pro
     golden: (flavor) => brokerGolden(host, flavor),
     root: DEFAULT_INSTALL_ROOT,
     toLocal: wslPathOf,
+    probe: probeLease,
   };
 }

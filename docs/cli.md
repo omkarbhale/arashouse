@@ -2,7 +2,7 @@
 
 The worker-facing commands, thin over the lease core (`docs/lease.md`), and the operator commands,
 thin over `src/core/operator.ts`. Source: `src/cli/commands.ts`. `get --bootstrap` and its steps are
-tickets 39 to 42 (the code deploy, `get --code` and `deploy-code`, ticket 40, is in `docs/code-deploy.md`; `get --import` and
+tickets 39 to 42 (the database restore, `get --restore`, ticket 39, is in `docs/restore.md`; the code deploy, `get --code` and `deploy-code`, ticket 40, is in `docs/code-deploy.md`; `get --import` and
 `import`, ticket 41, are in `docs/import.md`); the extraction helpers (`extract`, ticket 43) are in `docs/extract.md`.
 
 > "The philosophy is that Aras are disposable, and anything durable should be taken out by whoever
@@ -12,13 +12,13 @@ tickets 39 to 42 (the code deploy, `get --code` and `deploy-code`, ticket 40, is
 
 | command | what it does |
 |---|---|
-| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>] [--code <dir\|zip>[:<subpath>]]... [--allow-config] [--allow-servers] [--atomic]` | Leases a clean slot of the flavor; `--agent` starts its agent service too; `--password-fd` writes the password to a descriptor; `--code` deploys code into it (`docs/code-deploy.md`). |
+| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>] [--code <dir\|zip>[:<subpath>]]... [--allow-config] [--allow-servers] [--atomic] [--restore <backup.bak \| profile> [--allow-foreign-origin] [--skip-version-check]]` | Leases a clean slot of the flavor; `--agent` starts its agent service too; `--password-fd` writes the password to a descriptor; `--restore` restores a backup over its database first (`docs/restore.md`); `--code` deploys code into it (`docs/code-deploy.md`). |
 | `arashouse deploy-code --lease <lease_id> <dir\|zip>[:<subpath>]... [--allow-config] [--allow-servers] [--json]` | Deploys a folder or zip over a leased slot's tree (`docs/code-deploy.md`). |
 | `arashouse get <flavor> --holder <task> --import <manifest\|folder> [<import options>] ... [--keep-on-fail]` | The same, then imports package manifests onto the lease with import-export-libs-js, in order (`docs/import.md`). |
 | `arashouse import --lease <lease_id> <manifest\|folder> [<import options>] ...` | Imports package manifests onto a held lease (`docs/import.md`). |
 | `arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]` | Gives the lease back; its slot is discarded. |
 | `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]] [--quiet]` | The same, by slot name; the lease id is required (ABA protection). |
-| `arashouse status [--json]` | Every slot, its holder and lease age, totals per flavor, `max_active` in use. |
+| `arashouse status [--json]` | Every slot, its holder, lease age and bootstrap, totals per flavor, `max_active` in use. |
 | `arashouse flavors [--json]` | Each flavor's release, build, libs-js engine, slot counts, media and baseline. |
 | `arashouse run --lease <lease_id> -- <command ...>` | Runs a command with the lease's connection in its environment. |
 | `arashouse extract code --lease <lease_id> <path> --to <dir> [--allow-config]` | Copies a file or folder of the slot's tree out of the lease (`docs/extract.md`). |
@@ -55,6 +55,14 @@ exits 3 (`docs/reset.md`).
 conversion tasks and scheduled methods need; without it the agent stays stopped. The reset stops it again. A slot
 made from a golden built before ticket 33b has no agent: `get --agent` is then refused (exit 7) and the slot it took
 goes back to be reset (`docs/start-stop.md`).
+
+`--restore <backup.bak | profile>` restores a SQL Server backup over the lease's database before the lease is handed
+over: a file (a WSL, relative or Windows drive path), or a profile, `media/<flavor>/profiles/<name>.bak`. A missing
+file or profile is refused before a slot is taken (exit 2). The broker refuses a backup written by a newer SQL Server,
+one that does not fit, one of other than one data and one log file, and one taken of a deny-listed database unless
+`--allow-foreign-origin`; a restored database of another flavor fails with the flavor it belongs to unless
+`--skip-version-check` (exit 7). Any failure gives the lease back for a reset. `status` shows the lease's bootstrap
+as `restore:custom` or `restore:profile:<name>`. The whole flow is `docs/restore.md`.
 
 With `--json`, stdout is the lease contract and nothing else (`docs/schemas/get.schema.json`); any
 human text goes to stderr. It is the one output that shows the lease's password, once. There is no
@@ -159,7 +167,8 @@ not be asked). `media` reads only zip directories; `media check` is the full che
 lease). It is information only (`docs/extract.md`).
 
 One row per slot, then totals per flavor, `max_active` and `max_resets` in use, and the `get --wait`
-queue. A lease held 24 hours or more shows `old` after its age, with a line naming the slot, its
+queue. The `BOOTSTRAP` column (`bootstrap` in `--json`) says what a lease was brought up from, such as
+`restore:custom`; never a path. A lease held 24 hours or more shows `old` after its age, with a line naming the slot, its
 holder and the `force-return` that would end it. Nothing reclaims an old lease: there is no lease
 expiry (the captain's answer 5).
 
@@ -195,7 +204,7 @@ code. It checks:
 | `setup acl` | from WSL, the worker can list a folder it should be kept out of (`secrets\`, `golden\`, ...) or cannot list `slots\`, `staging\` or `broker\` |
 | `broker` | the broker does not answer `ping` (the host checks below are then skipped) |
 | `sql` | the broker cannot connect to SQL Server with its login (`docs/setup-sql.md`) |
-| `sql login` | the broker's SQL login is in `sysadmin` or `dbcreator`, or cannot execute all five `arashouse_admin` procedures; warns when the broker predates ticket 22 and does not report them |
+| `sql login` | the broker's SQL login is in `sysadmin` or `dbcreator`, or cannot execute all seven `arashouse_admin` procedures; warns when the broker predates ticket 22 and does not report them |
 | `disk`, `ram` | free disk is under `min_free_disk_gb`, free RAM under `min_free_ram_mb` (warn; `docs/governor.md`) |
 | `media <flavor>` | the flavor's media is missing or its folder cannot be found (warn; `media check` is the full check) |
 | `baseline <flavor>` | the golden does not verify at the fast level (the full level, every file's SHA-256, with `--deep`): fail if the pool has slots of the flavor, else warn |

@@ -29,7 +29,9 @@ handed out until it is `free` again; whoever returns a lease may assume its slot
    calls therefore never receive the same slot: the loser looks again.
 4. After the reservation: a password is generated (128 bits, URL-safe) and stored in the secret store
    as `lease-<lease_id>`; the slot's stamp is written with the lease id (so `doctor --rebuild-state`
-   can recover the lease); the host sets the credentials from the handle (`setLeaseCredentials`:
+   can recover the lease); with `restore` (`get --restore`, ticket 39) the backup is staged and restored over the
+   slot's database (`restoreDatabase`, `docs/restore.md`), and the lease records `bootstrap: { restore: <label> }`
+   when it is reserved; the host sets the credentials from the handle (`setLeaseCredentials`:
    `root` and `admin` get the password, `docs/lease-credentials.md`; an answer that is not `ok` fails
    the lease too); the
    URL is looked up. If any of this fails the lease is abandoned: the password is deleted and the slot
@@ -79,7 +81,7 @@ or log.
 ## `leaseStatus(deps)` / `status --json`: `docs/schemas/status.schema.json`
 
 One row per slot (status, flavor, holder, lease age, whether an `extract` ran against the lease, last reset duration,
-the quarantine reason),
+the quarantine reason, the lease's bootstrap such as `restore:custom`),
 totals per flavor, `max_active` (limit and leased slots), `max_resets` (limit and resetting slots),
 and the live `get --wait` queue (ticket, flavor, holder, when queued). It reads without the lock. It carries no
 password and no full lease id: the `lease` column is the first 8 characters, enough to tell leases

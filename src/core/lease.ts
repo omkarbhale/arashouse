@@ -23,7 +23,8 @@ import { Secret } from "./secret.js";
 import { type SecretStore } from "./secret-store.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { type Governor, isWaiterAlive, liveWaiters, poolGovernor, waiterProcess } from "./governor.js";
-import { type Lease, SLOT_STATUSES, type Slot, type SlotStatus, type State, type Waiter, isLeaseId } from "./state.js";
+import { type BootstrapInfo, type Lease, SLOT_STATUSES, type Slot, type SlotStatus, type State, type Waiter, isLeaseId } from "./state.js";
+import type { RestoreOptions } from "./restore.js";
 import { type StateStore } from "./store.js";
 
 /** The Aras user a lease's password is for. */
@@ -35,7 +36,7 @@ export const DEFAULT_POLL_MS = 1_000;
 const MAX_HOLDER = 500;
 
 /** The part of the host driver the lease operations use. */
-export type LeaseHost = Pick<HostDriver, "hostInfo" | "readStamp" | "writeStamp" | "healthCheck" | "setLeaseCredentials" | "startSlot">;
+export type LeaseHost = Pick<HostDriver, "hostInfo" | "readStamp" | "writeStamp" | "healthCheck" | "setLeaseCredentials" | "startSlot" | "restoreDatabase">;
 
 /** A queue ticket stays valid this long past its caller's deadline, so a slow last poll keeps its place. */
 const TICKET_GRACE_MS = 30_000;
@@ -117,6 +118,17 @@ export interface ResetHooks {
   recover(): Promise<void>;
 }
 
+/**
+ * Where `get --restore` puts the leaseholder's backup for the broker (ticket 39): `<root>\staging\<lease_id>\`, which the
+ * worker may change and the SQL Server account may read (ticket 21). The CLI's copies the file there from WSL.
+ */
+export interface Staging {
+  /** Copies `source` (a local path) to the lease's staged backup and returns that file's Windows path (`stagedBackup`). */
+  stageBackup(leaseId: string, source: string): Promise<string>;
+  /** Removes the lease's staging folder and what is left in it. Best effort. */
+  clear(leaseId: string): Promise<void>;
+}
+
 export interface LeaseDeps {
   readonly store: StateStore;
   readonly host: LeaseHost;
@@ -136,6 +148,8 @@ export interface LeaseDeps {
   readonly isWaiterAlive?: (waiter: Waiter) => boolean;
   /** The pid recorded on this caller's queue ticket; defaults to this process. */
   readonly pid?: number;
+  /** Where `get --restore` stages a backup; without it a restore is refused. */
+  readonly staging?: Staging;
   /** A fresh per-lease password; defaults to 128 random bits, URL-safe. */
   readonly newPassword?: () => Secret;
   readonly now?: () => Date;
@@ -178,6 +192,16 @@ export interface GetRequest {
    * most leases do not, so it is left stopped otherwise. The reset stops it again.
    */
   readonly agent?: boolean;
+  /** Bring the lease up from a backup (`get --restore`, ticket 39): it is restored over the slot's database before the lease is handed back. */
+  readonly restore?: RestoreRequest;
+}
+
+/** A backup to restore into the lease. */
+export interface RestoreRequest extends RestoreOptions {
+  /** The local file to copy into the lease's staging folder. */
+  readonly source: string;
+  /** What the lease record says it was bootstrapped from: `custom` for a file, `profile:<name>` for a media profile. No path. */
+  readonly label: string;
 }
 
 /** What `get` hands back. The password is a `Secret`: it is shown once, by `renderGetJson`. */
@@ -334,7 +358,7 @@ export async function getLease(deps: LeaseDeps, request: GetRequest): Promise<Le
   let granted = false;
   try {
     for (;;) {
-      const attempt = await attemptGet(deps, flavor, holder, request.agent === true, ticket, skipped, lazyFailed);
+      const attempt = await attemptGet(deps, flavor, holder, { agent: request.agent === true, restore: request.restore }, ticket, skipped, lazyFailed);
       if (attempt.kind === "granted") {
         granted = true;
         return attempt.grant;
@@ -378,7 +402,7 @@ async function attemptGet(
   deps: LeaseDeps,
   flavor: FlavorKey,
   holder: string,
-  agent: boolean,
+  options: { readonly agent: boolean; readonly restore?: RestoreRequest },
   ticket: number | null,
   skipped: Set<string>,
   lazyFailed: Set<string>,
@@ -436,6 +460,9 @@ async function attemptGet(
     throw asLeaseError(err);
   }
 
+  // What the lease is brought up from, by label only: the state file never holds a path or a secret. A lease taken with its
+  // agent says so, so a later code deploy (ticket 40) starts the agent again after its quiesce.
+  const bootstrap: BootstrapInfo = { ...(options.agent ? { agent: true } : {}), ...(options.restore ? { restore: options.restore.label } : {}) };
   const reserved = await store.update(async (tx) => {
     const current = tx.slot(candidate.id);
     // The same free incarnation that was verified: not taken, and not reset or dirtied since.
@@ -447,8 +474,7 @@ async function attemptGet(
     for (const w of tx.waiters()) if (w.ticket !== ticket && !live.includes(w)) tx.leaveQueue(w.ticket, "gone");
     const verdict = await governor.check({ slots: Object.values(tx.snapshot()), flavor, holder, queue: live, ticket, host: info });
     if (!verdict.ok) return { kind: "refused", reason: verdict.reason } as const;
-    // A lease taken with its agent says so, so a later code deploy (ticket 40) starts the agent again after its quiesce.
-    const leased = tx.transition(candidate.id, { to: "leased", holder, ...(agent ? { bootstrap: { agent: true } } : {}) });
+    const leased = tx.transition(candidate.id, { to: "leased", holder, ...(Object.keys(bootstrap).length > 0 ? { bootstrap } : {}) });
     if (ticket !== null) tx.leaveQueue(ticket, "leased");
     return { kind: "reserved", lease: leased.lease as Lease } as const;
   });
@@ -462,9 +488,12 @@ async function attemptGet(
   try {
     await deps.secrets.put(secretName, password);
     await host.writeStamp(ref, { ...stamp, leaseId: lease.lease_id });
+    // A restore comes before the lease's password: it carries the free slot's root password into the restored database,
+    // which setLeaseCredentials then logs in with, as on any free slot.
+    if (options.restore) await restoreInto(deps, ref, lease.lease_id, options.restore);
     const credentials = await host.setLeaseCredentials(ref, { secretRef: secretName });
     if (!credentials.ok) throw new HostError("Retryable", `the lease's password could not be set: ${credentials.detail}`);
-    if (agent) {
+    if (options.agent) {
       const started = await host.startSlot(ref, { agent: true });
       if (!started.ok) throw new HostError("Retryable", `the slot did not start with its agent: ${started.detail}`);
     }
@@ -491,6 +520,18 @@ async function attemptGet(
     await abandon(deps, candidate.id, lease.lease_id, quarantine ? { to: "quarantined", reason: redact(err.message) } : { to: "dirty" }, `get failed: ${redact(errorText(err))}`);
     if (quarantine) return { kind: "retry" };
     throw asLeaseError(err);
+  }
+}
+
+/** Stages the backup and restores it over the leased slot's database (ticket 39); the staging folder goes either way. */
+async function restoreInto(deps: LeaseDeps, ref: { readonly flavor: FlavorKey; readonly slot: number }, leaseId: string, restore: RestoreRequest): Promise<void> {
+  if (!deps.staging) throw new UsageError("get --restore needs a staging folder, which this host has not");
+  try {
+    const staged = await deps.staging.stageBackup(leaseId, restore.source);
+    const restored = await deps.host.restoreDatabase(ref, staged, { allowForeignOrigin: restore.allowForeignOrigin, skipVersionCheck: restore.skipVersionCheck });
+    if (!restored.ok) throw new HostError("Retryable", `the backup was not restored: ${restored.detail}`);
+  } finally {
+    await deps.staging.clear(leaseId).catch(() => undefined);
   }
 }
 
@@ -660,6 +701,14 @@ export interface StatusRow {
   readonly last_reset_at: string | null;
   readonly last_reset_ms: number | null;
   readonly quarantine_reason: string | null;
+  /** What the lease was brought up from, as `key:value` (`restore:custom`, ticket 39); null when nothing. Never a path or a secret. */
+  readonly bootstrap: string | null;
+}
+
+/** A lease's bootstrap record as `status` shows it: `restore:custom`, `restore:profile:demo`, joined by `,`. */
+export function bootstrapText(info: BootstrapInfo | undefined): string | null {
+  const parts = Object.entries(info ?? {}).map(([k, v]) => (v === true ? k : `${k}:${String(v)}`));
+  return parts.length > 0 ? parts.join(",") : null;
 }
 
 export type FlavorTotals = { readonly total: number } & Readonly<Record<SlotStatus, number>>;
@@ -708,6 +757,7 @@ export function buildStatus(state: State, options: StatusOptions): StatusReport 
       last_reset_at: s.last_reset_at,
       last_reset_ms: s.last_reset_ms,
       quarantine_reason: s.quarantine_reason ?? null,
+      bootstrap: bootstrapText(s.lease?.bootstrap),
     };
   });
   const flavors = Object.fromEntries(
@@ -750,7 +800,7 @@ export function formatAge(seconds: number): string {
 /** The human `status` output: one row per slot, then the totals. */
 export function formatStatus(report: StatusReport): string[] {
   const cell = (s: string | null, fallback = "-") => (s === null || s === "" ? fallback : s);
-  const table: string[][] = [["SLOT", "FLAVOR", "STATUS", "HOLDER", "LEASE", "AGE", "LAST RESET"]];
+  const table: string[][] = [["SLOT", "FLAVOR", "STATUS", "HOLDER", "LEASE", "AGE", "LAST RESET", "BOOTSTRAP"]];
   for (const r of report.slots) {
     table.push([
       r.slot,
@@ -760,6 +810,7 @@ export function formatStatus(report: StatusReport): string[] {
       cell(r.lease),
       r.lease_age_seconds === null ? "-" : `${formatAge(r.lease_age_seconds)}${r.lease_age_seconds >= OLD_LEASE_SECONDS ? " old" : ""}`,
       r.last_reset_ms === null ? "-" : `${(r.last_reset_ms / 1000).toFixed(1)}s`,
+      cell(r.bootstrap),
     ]);
   }
   const widths = table[0]!.map((_, i) => Math.max(...table.map((row) => (row[i] ?? "").length)));

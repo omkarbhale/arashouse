@@ -41,6 +41,7 @@ import type { WireResult } from "./protocol.js";
 import { resetDatabaseArgs, resetDatabaseOnHost, type DatabaseMarker, type DatabaseReset, type ResetDatabaseArgs } from "./reset-database.js";
 import { backupDatabaseArgs, backupDatabaseOnHost, type BackupDatabaseArgs, type DatabaseBackup } from "./backup-database.js";
 import { newSlotSigningCertificate, type SigningCertificate } from "./signing-cert.js";
+import { restoreDatabaseArgs, restoreDatabaseOnHost, type RestoreDatabaseArgs, type StagedBackupReading, type StagedRestore } from "./restore-database.js";
 
 /** The provision's steps, in order; `destroySlot` undoes them in reverse. */
 export const PROVISION_STEPS = ["golden", "snapshot", "folders", "tree", "iis", "agent", "database", "configs", "stamp", "deny-list"] as const;
@@ -161,6 +162,14 @@ export interface SlotSystem {
   resetDatabase(slot: SlotRef, marker: DatabaseMarker): Promise<DatabaseReset>;
   /** A `COPY_ONLY` backup of the slot database to `extractBackupScratch`, replacing what is there (ticket 43). */
   backupDatabase(slot: SlotRef): Promise<DatabaseBackup>;
+  /** The header of the backup staged as `staging\<lease_id>\restore.bak`, the host's SQL Server version and the free space for it (ticket 39). */
+  readStagedBackup(slot: SlotRef, leaseId: string): Promise<StagedBackupReading>;
+  /**
+   * The staged backup restored over the slot database (its files moved by these logical names, once the header still names
+   * `databaseName`), the database handed to the broker, its users mapped, the free slot's `root` and `admin` password hashes
+   * carried over and the reset marker removed (ticket 39).
+   */
+  restoreStaged(slot: SlotRef, leaseId: string, expected: { readonly databaseName: string; readonly data: string; readonly log: string }): Promise<StagedRestore>;
   /** True when there was a service to remove. */
   removeAgent(slot: SlotRef): Promise<boolean>;
   /** Drops the database and the two logins; answers 1 (dropped) or 0 (absent) for each name. */
@@ -520,7 +529,10 @@ export class SlotLocks {
   }
 }
 
-/** Registers `provisionSlot`, `destroySlot`, `startSlot`, `stopSlot`, `resetDatabase`, `backupDatabase` and `setLeaseCredentials` on `broker`, under `locks` (shared with the reset verbs, reset-tree.ts). */
+/**
+ * Registers `provisionSlot`, `destroySlot`, `startSlot`, `stopSlot`, `resetDatabase`, `restoreDatabase`, `backupDatabase` and
+ * `setLeaseCredentials` on `broker`, under `locks` (shared with the reset verbs, reset-tree.ts).
+ */
 export function registerSlotVerbs(broker: Broker, system: SlotSystem, locks: SlotLocks = new SlotLocks()): Broker {
   const exclusive = (ctx: VerbContext, fn: (slot: SlotRef, names: SlotNames) => Promise<WireResult>) => locks.run(ctx, fn);
   return broker
@@ -551,6 +563,11 @@ export function registerSlotVerbs(broker: Broker, system: SlotSystem, locks: Slo
       target: "slot",
       args: backupDatabaseArgs,
       run: (ctx) => exclusive(ctx, (slot) => backupDatabaseOnHost(system, slot, ctx.root, ctx.owned, ctx.args as BackupDatabaseArgs)),
+    })
+    .register("restoreDatabase", {
+      target: "slot",
+      args: restoreDatabaseArgs,
+      run: (ctx) => exclusive(ctx, (slot, names) => restoreDatabaseOnHost(system, slot, names, ctx.root, ctx.args as RestoreDatabaseArgs)),
     })
     .register("setLeaseCredentials", {
       target: "slot",

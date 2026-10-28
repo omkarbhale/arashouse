@@ -21,9 +21,14 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain(`if (@(${SECRET_STEPS.map((s) => `'${s}'`).join(", ")}) -ccontains $Step)`);
   });
 
-  it("takes nothing from the request but the flavor, the slot number, the agent switch, the two login passwords, the reset's marker, a secret's name and value and a certificate's password", () => {
+  it("takes nothing from the request but the flavor, the slot number, the agent switch, the two login passwords, the reset's marker, a secret's name and value, a certificate's password, a lease id and a staged backup's checked names", () => {
     const used = [...steps.matchAll(/\$request\.([A-Za-z.]+)/g)].map((m) => m[1]);
-    expect([...new Set(used)].sort()).toEqual(["agent", "flavor", "marker.goldenHash", "marker.resetAt", "name", "secrets.dbo", "secrets.password", "secrets.reg", "slot", "value"]);
+    expect([...new Set(used)].sort()).toEqual(["agent", "expected", "flavor", "lease", "marker.goldenHash", "marker.resetAt", "name", "secrets.dbo", "secrets.password", "secrets.reg", "slot", "value"]);
+    // The lease id only names the staging folder of the one file a lease stages; the expected names are compared, never run.
+    expect(steps).toContain("if ($lease -cnotmatch '^[0-9a-f]{32}$') { Stop-Step 'the request names no lease id' }");
+    expect(steps).toContain('$file = Join-Path $Root "staging\\$lease\\$StagedName"');
+    expect(steps).toContain("$StagedName = 'restore.bak'");
+    for (const m of steps.matchAll(/\$expected\.\w+/g)) expect(steps).toContain(`-cne [string]${m[0]}`);
     expect(steps).toContain("if ($request.agent -eq $true) {");
     expect(steps).toContain("if ($hash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }");
     expect(steps).toContain("if ($at -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }");
@@ -50,20 +55,32 @@ describe("slot-steps.ps1 (static)", () => {
 
   it("reaches SQL Server only through the name-checked procedures, but for the owner's own restore, user mapping and extraction backup", () => {
     const sql = [...steps.matchAll(/'(EXEC|DECLARE @r int; EXEC @r =) arashouse_admin\.dbo\.(\w+)/g)].map((m) => m[2]);
-    expect([...new Set(sql)].sort()).toEqual(["create_slot_database", "create_slot_login", "drop_slot_database", "drop_slot_login", "kill_connections"]);
+    expect([...new Set(sql)].sort()).toEqual([
+      "adopt_slot_database",
+      "create_slot_database",
+      "create_slot_login",
+      "drop_slot_database",
+      "drop_slot_login",
+      "kill_connections",
+      "read_staged_backup",
+    ]);
     expect(steps).not.toMatch(/(CREATE|DROP) (DATABASE|LOGIN)/);
-    expect(steps).not.toMatch(/\bKILL \d|SINGLE_USER|FILELISTONLY|BACKUP LOG/);
+    expect(steps).not.toMatch(/\bKILL \d|SINGLE_USER|FILELISTONLY|HEADERONLY|ALTER AUTHORIZATION|BACKUP LOG/);
     // A leaseholder's extraction (ticket 43): the slot's own database, COPY_ONLY, to its derived scratch file only.
     const backups = [...steps.matchAll(/BACKUP DATABASE [^\n]*/g)].map((m) => m[0]);
     expect(backups).toEqual(['BACKUP DATABASE " + (Format-Ident $Database) + " TO DISK = " + (Format-Str $ExtractBackup) + " WITH COPY_ONLY, INIT, FORMAT, CHECKSUM") | Out-Null']);
-    for (const m of steps.matchAll(/RESTORE DATABASE [^\n]*/g)) expect(m[0]).toMatch(/^RESTORE DATABASE " \+ \(Format-Ident \$Database\) \+ " FROM DISK = " \+ \(Format-Str \$bak\)/);
+    // The golden's ootb.bak, or the one file a lease stages (ticket 39), over the slot's own database.
+    for (const m of steps.matchAll(/RESTORE DATABASE [^\n]*/g)) {
+      expect(m[0]).toMatch(/^RESTORE DATABASE " \+ \(Format-Ident \$Database\) \+ " FROM DISK = " \+ \(Format-Str \$(bak|file)\)/);
+    }
+    expect(steps).toContain("$file = Get-StagedBackup");
     expect(steps).toContain("$bak = Join-Path $Golden 'db\\ootb.bak'");
     for (const m of steps.matchAll(/ALTER USER [^\n]*/g)) expect(m[0]).toContain("WITH LOGIN = \" + (Format-Ident $login))");
     expect(steps).toContain("foreach ($pair in @(@($LoginDbo, $dbo), @($LoginReg, $reg)))");
   });
 
   it("resets the slot database by the owner's restore of ootb.bak, after kill_connections, and once more after it on 3101 only", () => {
-    const body = steps.slice(steps.indexOf("    'reset-database' {"), steps.indexOf("    'stop' {"));
+    const body = steps.slice(steps.indexOf("    'reset-database' {"), steps.indexOf("    'read-database' {"));
     expect(body).toContain("$bak = Join-Path $Golden 'db\\ootb.bak'");
     expect(body).toContain("if (-not (Test-SqlError $_.Exception 3101)) { throw }");
     expect(body.match(/Invoke-Sql \$c \$restore/g)).toHaveLength(2);
@@ -84,10 +101,41 @@ describe("slot-steps.ps1 (static)", () => {
     const database = steps.slice(steps.indexOf("    'database' {"), steps.indexOf("    'start' {"));
     expect(database.indexOf("$marker = Get-RequestMarker")).toBeLessThan(database.indexOf("New-Sql"));
     expect(database.indexOf("Write-Marker $c $db $marker")).toBeGreaterThan(database.indexOf("RESTORE DATABASE"));
-    const read = steps.slice(steps.indexOf("    'read-database' {"), steps.indexOf("    'stop' {"));
+    const read = steps.slice(steps.indexOf("    'read-database' {"), steps.indexOf("    'read-backup' {"));
     expect(read).toContain("$marker = Read-Marker $c $db");
     expect(read).toContain("$version = Read-Version $c $db");
     expect(read).not.toMatch(/RESTORE|ALTER|Write-Marker|sp_addextendedproperty|sp_updateextendedproperty|UPDATE|DELETE|INSERT/);
+  });
+
+  it("restores a lease's staged backup in order: checked again, sessions ended, restored, adopted, mapped, passwords carried, marker removed (ticket 39)", () => {
+    const read = steps.slice(steps.indexOf("    'read-backup' {"), steps.indexOf("    'restore-staged' {"));
+    expect(read).toContain("$read = Read-StagedBackup $c $file");
+    expect(read).not.toMatch(/RESTORE DATABASE|ALTER|UPDATE|DELETE|INSERT|kill_connections|adopt_slot_database/);
+    const body = steps.slice(steps.indexOf("    'restore-staged' {"), steps.indexOf("    'stop' {"));
+    const at = (text: string) => {
+      const i = body.indexOf(text);
+      expect(i, text).toBeGreaterThan(-1);
+      return i;
+    };
+    const order = [
+      "Stop-Step 'the staged backup changed after it was checked'",
+      "$carry = @(Invoke-Sql $c (\"SELECT login_name AS l, password AS p FROM $db.innovator.[USER] WHERE login_name IN ('root', 'admin')\"))",
+      "$killed = [int](Invoke-Sql $c $kill",
+      "Invoke-Sql $c $restore | Out-Null",
+      "arashouse_admin.dbo.adopt_slot_database @database = @d",
+      "ALTER USER",
+      "UPDATE $db.innovator.[USER] SET password = @p$enable WHERE login_name = @l",
+      "$carry = $null",
+      "EXEC sys.sp_dropextendedproperty @name = @n",
+      "$version = Read-Version $c $db",
+    ].map(at);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(body.match(/Invoke-Sql \$c \$restore/g)).toHaveLength(2);
+    expect(body).toContain("if (-not (Test-SqlError $_.Exception 3101)) { throw }");
+    // The password hashes go back to SQL Server as parameters only: never into the result or a message.
+    expect(body).toContain("@{ '@p' = [string]$row.p; '@l' = [string]$row.l }");
+    for (const m of body.matchAll(/(Write-Result|Stop-Step)[^\n]*/g)) expect(m[0]).not.toMatch(/\$carry|\$row|\.p\b/);
+    expect(body).not.toMatch(/sp_addextendedproperty|sp_updateextendedproperty/);
   });
 
   it("removes only the slot alias's applications, the pools named from the slot and the service of its own name", () => {

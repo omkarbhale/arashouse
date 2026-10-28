@@ -38,6 +38,7 @@ import {
   webAlias,
 } from "../core/names.js";
 import { psQuote } from "../core/setup-host.js";
+import { STAGED_BACKUP_NAME } from "../core/restore.js";
 import { RESULT_MARKER } from "./baseline-steps.js";
 import { PS_DENY_LIST_PRINTS, PS_IIS, PS_PATHS_AND_PRINTS, psSql } from "./ps-common.js";
 
@@ -54,6 +55,8 @@ export const SLOT_STEPS = [
   "reset-database",
   "read-database",
   "backup-database",
+  "read-backup",
+  "restore-staged",
   "stop",
   "quiesce",
   "reset-tree",
@@ -131,6 +134,7 @@ ${runtimeDirs}
 $ShippedUsers = [ordered]@{ dbo = ${psQuote(SHIPPED_DATABASE_USERS.dbo)}; reg = ${psQuote(SHIPPED_DATABASE_USERS.reg)} }
 $MarkerHash = ${psQuote(DATABASE_MARKER.goldenHash)}
 $MarkerAt = ${psQuote(DATABASE_MARKER.resetAt)}
+$StagedName = ${psQuote(STAGED_BACKUP_NAME)}
 $PoolIdentities = @('ApplicationPoolIdentity', 'NetworkService', 'LocalService')
 $DeniedRoots = ${list(DENIED_INSTALL_ROOTS)}
 $DeniedServicePrefixes = ${list(DENIED_SERVICE_PREFIXES)}
@@ -323,6 +327,22 @@ function Read-Version($c, [string]$db) {
     $version = [ordered]@{}
     foreach ($row in @(Invoke-Sql $c ("SELECT name, value FROM $db.innovator.[VARIABLE] WHERE name IN ('VersionMajor', 'VersionMinor', 'VersionServicePack', 'VersionBuild')"))) { $version[[string]$row.name] = [string]$row.value }
     return $version
+}
+# A lease's staged backup (ticket 39): the file name is fixed and the folder is the lease id from the request, checked; read only
+# through read_staged_backup, which checks the path again and verifies the backup before it reads its header and file list.
+function Get-StagedBackup {
+    $lease = [string]$request.lease
+    if ($lease -cnotmatch '^[0-9a-f]{32}$') { Stop-Step 'the request names no lease id' }
+    $file = Join-Path $Root "staging\\$lease\\$StagedName"
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { Stop-Step "$file does not exist" }
+    return $file
+}
+function Read-StagedBackup($c, [string]$File) {
+    $rows = @(Invoke-Sql $c 'EXEC arashouse_admin.dbo.read_staged_backup @file = @f' @{ '@f' = $File })
+    return [ordered]@{
+        sets = @($rows | Where-Object { $_.PSObject.Properties['BackupType'] })
+        files = @($rows | Where-Object { $_.PSObject.Properties['LogicalName'] })
+    }
 }
 function Read-Golden([string]$Name) {
     $file = Join-Path $Golden $Name
@@ -589,6 +609,82 @@ switch ($Step) {
             $watch.Stop()
         } finally { $c.Dispose() }
         Write-Result @{ backupMs = [int]$watch.ElapsedMilliseconds; bytes = [long](Get-Item -LiteralPath $ExtractBackup).Length }
+    }
+    'read-backup' {
+        # A lease's own backup (ticket 39), read only: its backup sets and files, the SQL Server version and the free space where the
+        # slot's database files go. The broker checks them (src/core/restore.ts) before anything is restored.
+        $file = Get-StagedBackup
+        $c = New-Sql
+        try {
+            $read = Read-StagedBackup $c $file
+            $server = [string](Invoke-Sql $c "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(64)) AS v")[0].v
+        } finally { $c.Dispose() }
+        $sets = @($read.sets | ForEach-Object { [ordered]@{ position = [int]$_.Position; backupType = [int]$_.BackupType; databaseName = [string]$_.DatabaseName; softwareVersion = ('{0}.{1}.{2}' -f $_.SoftwareVersionMajor, $_.SoftwareVersionMinor, $_.SoftwareVersionBuild) } })
+        $files = @($read.files | ForEach-Object { [ordered]@{ logicalName = [string]$_.LogicalName; type = [string]$_.Type; sizeBytes = [long]$_.Size } })
+        $drive = New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($SqlData))
+        Write-Result @{ sets = $sets; files = $files; serverVersion = $server; freeBytes = [long]$drive.AvailableFreeSpace }
+    }
+    'restore-staged' {
+        # A lease's own backup restored over the slot database (ticket 39), on a quiesced slot, by its owner, the broker: the header
+        # read again and held to what the broker checked, kill_connections, the restore with the backup's two files moved to
+        # sqldata\\ (a 3101 ends the sessions again and runs it once more), adopt_slot_database (a backup from another instance keeps
+        # its own dbo, which locks the broker out), MULTI_USER, the two Aras users mapped to the slot's logins. Then root and admin
+        # get the password hashes they had in the database this replaced, so the free slot's stored root password still logs in,
+        # and the reset marker goes: this database was not reset from the golden. The hashes are only passed back to SQL Server.
+        $file = Get-StagedBackup
+        $expected = $request.expected
+        $c = New-Sql
+        try {
+            if (@(Invoke-Sql $c 'SELECT name FROM sys.databases WHERE name = @n' @{ '@n' = $Database }).Count -eq 0) { Write-Result @{ missing = $true }; return }
+            $read = Read-StagedBackup $c $file
+            $data = @($read.files | Where-Object { [string]$_.Type -ceq 'D' })
+            $log = @($read.files | Where-Object { [string]$_.Type -ceq 'L' })
+            if ($read.sets.Count -ne 1 -or $read.files.Count -ne 2 -or $data.Count -ne 1 -or $log.Count -ne 1 -or
+                [string]$read.sets[0].DatabaseName -cne [string]$expected.databaseName -or
+                [string]$data[0].LogicalName -cne [string]$expected.data -or [string]$log[0].LogicalName -cne [string]$expected.log) {
+                Stop-Step 'the staged backup changed after it was checked'
+            }
+            $db = Format-Ident $Database
+            $carry = @(Invoke-Sql $c ("SELECT login_name AS l, password AS p FROM $db.innovator.[USER] WHERE login_name IN ('root', 'admin')"))
+            if (@($carry | Where-Object { $_.l -eq 'root' }).Count -ne 1) { Stop-Step "the database of slot $Flavor-$NN has no root user to carry its password from" }
+            $move = "MOVE " + (Format-Str ([string]$data[0].LogicalName)) + " TO " + (Format-Str $DataFile) + ", MOVE " + (Format-Str ([string]$log[0].LogicalName)) + " TO " + (Format-Str $LogFile)
+            $restore = "RESTORE DATABASE " + (Format-Ident $Database) + " FROM DISK = " + (Format-Str $file) + " WITH REPLACE, " + $move + ", RECOVERY"
+            $kill = 'DECLARE @r int; EXEC @r = arashouse_admin.dbo.kill_connections @database = @d; SELECT @r AS r'
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            $killed = [int](Invoke-Sql $c $kill @{ '@d' = $Database })[-1].r
+            try {
+                Invoke-Sql $c $restore | Out-Null
+            } catch {
+                if (-not (Test-SqlError $_.Exception 3101)) { throw }
+                $killed += [int](Invoke-Sql $c $kill @{ '@d' = $Database })[-1].r
+                Invoke-Sql $c $restore | Out-Null
+            }
+            $watch.Stop()
+            Invoke-Sql $c 'DECLARE @r int; EXEC @r = arashouse_admin.dbo.adopt_slot_database @database = @d; SELECT @r AS r' @{ '@d' = $Database } | Out-Null
+            $access = [string](Invoke-Sql $c 'SELECT user_access_desc AS a FROM sys.databases WHERE name = @n' @{ '@n' = $Database })[0].a
+            if ($access -ne 'MULTI_USER') { Invoke-Sql $c "ALTER DATABASE $db SET MULTI_USER" | Out-Null }
+            $users = @(Invoke-Sql $c ("SELECT name FROM $db.sys.database_principals WHERE type = 'S'") | ForEach-Object { $_.name })
+            foreach ($role in @('dbo', 'reg')) {
+                $user = $ShippedUsers[$role]
+                if ($users -notcontains $user) { Stop-Step "the restored database has no user $user (is it an Aras database?)" }
+                $login = if ($role -eq 'dbo') { $LoginDbo } else { $LoginReg }
+                Invoke-Sql $c ("USE $db; ALTER USER " + (Format-Ident $user) + " WITH LOGIN = " + (Format-Ident $login)) | Out-Null
+            }
+            $carried = 0
+            foreach ($row in $carry) {
+                $enable = if ($row.l -eq 'root') { ", logon_enabled = '1'" } else { '' }
+                $n = Invoke-Sql $c ("UPDATE $db.innovator.[USER] SET password = @p$enable WHERE login_name = @l; SELECT @@ROWCOUNT AS n") @{ '@p' = [string]$row.p; '@l' = [string]$row.l }
+                $carried += [int]$n[-1].n
+            }
+            $carry = $null
+            if (@(Invoke-Sql $c ("SELECT 1 AS x FROM $db.innovator.[USER] WHERE login_name = 'root'")).Count -ne 1) { Stop-Step 'the restored database has no root user' }
+            foreach ($name in @($MarkerHash, $MarkerAt)) {
+                Invoke-Sql $c ("USE $db; IF EXISTS (SELECT 1 FROM sys.extended_properties WHERE class = 0 AND name = @n) EXEC sys.sp_dropextendedproperty @name = @n") @{ '@n' = $name } | Out-Null
+            }
+            $marker = Read-Marker $c $db
+            $version = Read-Version $c $db
+        } finally { $c.Dispose() }
+        Write-Result @{ restoreMs = [int]$watch.ElapsedMilliseconds; killed = $killed; access = $access; carried = $carried; marker = $marker; version = $version }
     }
     'stop' {
         # The slot's agent and pools stopped, and its worker processes gone, so nothing holds a file or a session (ticket 33; before a

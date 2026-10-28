@@ -23,7 +23,7 @@ import {
   webAlias,
 } from "../core/names.js";
 import { ROOT_FOLDERS, psQuote } from "../core/setup-host.js";
-import { POOL_LOGIN, SIGNER, SQL_DATA_SOURCE } from "../core/setup-sql.js";
+import { POOL_LOGIN, SIGNERS, SQL_DATA_SOURCE } from "../core/setup-sql.js";
 import { PS_DENY_LIST_PRINTS, PS_IIS, PS_PATHS_AND_PRINTS } from "./ps-common.js";
 
 /** The two scripts the teardown bundle runs, relative to `teardown.ps1`'s folder. */
@@ -161,7 +161,7 @@ $BuildLogin = ${psQuote(p.buildLogin)}
 $BuildFolder = ${psQuote(p.buildFolder)}
 $AdminDatabase = ${psQuote(UTILITY_DATABASE)}
 $PoolLogin = ${psQuote(POOL_LOGIN)}
-$Signer = ${psQuote(SIGNER)}
+$SignerNames = @(${SIGNERS.map((s) => psQuote(s.name)).join(", ")})
 $BrokerService = ${psQuote(BROKER_SERVICE_NAME)}
 $FirewallRule = ${psQuote(HOST_TUNING_FIREWALL_RULE)}
 $TuningStateFile = Join-Path $env:LOCALAPPDATA ${psQuote(HOST_TUNING_STATE)}
@@ -225,7 +225,7 @@ ${PS_DENY_LIST_PRINTS}
 
 function Get-SqlNames {
     # The tool's databases and logins, by the allowlist: sys.databases and sys.server_principals are read only with LIKE 'arashouse[_]%'
-    # (and the broker's and the signer's exact names), so no other database or login is listed; then only derived names are kept.
+    # (and the broker's exact name; the certificates' logins are arashouse_admin_*), so no other database or login is listed; then only derived names are kept.
     $c = New-Object Data.SqlClient.SqlConnection $ConnectionString
     $c.Open()
     try {
@@ -234,21 +234,20 @@ function Get-SqlNames {
             $cmd = $c.CreateCommand()
             $cmd.CommandText = $Text
             [void]$cmd.Parameters.AddWithValue('@pool', $PoolLogin)
-            [void]$cmd.Parameters.AddWithValue('@signer', $Signer)
             $r = $cmd.ExecuteReader()
             $out = New-Object System.Collections.ArrayList
             try { while ($r.Read()) { [void]$out.Add([string]$r.GetValue(0)) } } finally { $r.Close() }
             return , @($out)
         }
         $dbs = & $read "SELECT name FROM sys.databases WHERE name LIKE N'arashouse[_]%'"
-        $logins = & $read "SELECT name FROM sys.server_principals WHERE name LIKE N'arashouse[_]%' OR name = @pool OR name = @signer"
+        $logins = & $read "SELECT name FROM sys.server_principals WHERE name LIKE N'arashouse[_]%' OR name = @pool"
     } finally { $c.Dispose() }
     return [ordered]@{
         slotDatabases = @($dbs | Where-Object { $_ -match $SlotDatabase } | Sort-Object)
         slotLogins = @($logins | Where-Object { $_ -match $SlotLogin } | Sort-Object)
         buildDatabases = @($dbs | Where-Object { $_ -match $BuildDatabase } | Sort-Object)
         buildLogins = @($logins | Where-Object { $_ -match $BuildLogin } | Sort-Object)
-        setupSql = @(@($dbs | Where-Object { $_ -ieq $AdminDatabase }) + @($logins | Where-Object { $_ -ieq $PoolLogin -or $_ -ieq $Signer }) | Sort-Object)
+        setupSql = @(@($dbs | Where-Object { $_ -ieq $AdminDatabase }) + @($logins | Where-Object { $_ -ieq $PoolLogin -or $SignerNames -contains $_ }) | Sort-Object)
     }
 }
 

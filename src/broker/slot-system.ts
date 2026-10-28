@@ -23,11 +23,20 @@ import type { DatabaseReading, GoldenCheck, SlotLogins, SlotSystem, TreeReset } 
 import { runPsScript } from "./ps-step.js";
 import type { DatabaseBackup } from "./backup-database.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
+import type { StagedBackupReading, StagedRestore } from "./restore-database.js";
+import type { BackupFile, BackupSet } from "../core/restore.js";
 import { renderSlotStepsScript, type SlotStep } from "./slot-steps.js";
 import { copyStaged, entryKind, listStaged, readStaged, removeFile as removeTreeFile, removeStaged } from "./staged-fs.js";
 
 /** How long one step may take: the mirror copies a golden tree, a backup a database the lease may have grown, the rest take seconds. */
-const STEP_TIMEOUT_MS: Readonly<Partial<Record<SlotStep, number>>> = { mirror: 20 * 60_000, "reset-tree": 20 * 60_000, "backup-database": 9 * 60_000 };
+const STEP_TIMEOUT_MS: Readonly<Partial<Record<SlotStep, number>>> = {
+  mirror: 20 * 60_000,
+  "reset-tree": 20 * 60_000,
+  "backup-database": 9 * 60_000,
+  // A leaseholder's backup is verified, then restored: minutes for a large one.
+  "read-backup": 15 * 60_000,
+  "restore-staged": 20 * 60_000,
+};
 const DEFAULT_STEP_TIMEOUT_MS = 5 * 60_000;
 
 export interface WindowsSlotSystemOptions {
@@ -53,6 +62,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+const records = (v: unknown): Record<string, unknown>[] =>
+  Array.isArray(v) ? v.filter((x): x is Record<string, unknown> => typeof x === "object" && x !== null && !Array.isArray(x)) : [];
 const texts = (v: unknown): Record<string, string> =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, String(x)])) : {};
 
@@ -130,6 +141,30 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
       const r = await slotStep("backup-database", slot);
       if (r.missing === true) return { state: "missing" };
       return { state: "backed-up", backupMs: Number(r.backupMs), bytes: Number(r.bytes) };
+    },
+    async readStagedBackup(slot, leaseId): Promise<StagedBackupReading> {
+      const r = await slotStep("read-backup", slot, { lease: leaseId });
+      const sets: BackupSet[] = records(r.sets).map((s) => ({
+        position: Number(s.position),
+        backupType: Number(s.backupType),
+        databaseName: String(s.databaseName),
+        softwareVersion: String(s.softwareVersion),
+      }));
+      const files: BackupFile[] = records(r.files).map((f) => ({ logicalName: String(f.logicalName), type: String(f.type), sizeBytes: Number(f.sizeBytes) }));
+      return { header: { sets, files }, serverVersion: String(r.serverVersion), freeBytes: Number(r.freeBytes) };
+    },
+    async restoreStaged(slot, leaseId, expected): Promise<StagedRestore> {
+      const r = await slotStep("restore-staged", slot, { lease: leaseId, expected });
+      if (r.missing === true) return { state: "missing" };
+      return {
+        state: "restored",
+        restoreMs: Number(r.restoreMs),
+        killed: Number(r.killed),
+        access: String(r.access),
+        carried: Number(r.carried),
+        marker: texts(r.marker),
+        version: texts(r.version),
+      };
     },
     async stop(slot) {
       const r = await slotStep("stop", slot);

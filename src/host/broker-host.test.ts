@@ -133,42 +133,10 @@ describe("BrokerHost against an in-process broker", () => {
     expect(transport.requests).toEqual([]);
   });
 
-  it("every method the broker does not have yet is Unreachable, naming its ticket, after the guards", async () => {
-    const calls: Record<
-      Exclude<
-        keyof HostDriver,
-        | "ping"
-        | "hostInfo"
-        | "readStamp"
-        | "listSlots"
-        | "baselineBuild"
-        | "baselineVerify"
-        | "provisionSlot"
-        | "destroySlot"
-        | "startSlot"
-        | "stopSlot"
-        | "resetDatabase"
-        | "backupDatabase"
-        | "quiesce"
-        | "resetTree"
-        | "writeStamp"
-        | "setLeaseCredentials"
-        | "healthCheck"
-        | "deployCode"
-      >,
-      () => Promise<unknown>
-    > = {
-      restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
-    };
-    expect(Object.keys(calls).length + 18).toBe(HOST_METHODS.length);
-    for (const [method, call] of Object.entries(calls)) {
-      const err = await rejection(call());
-      expect(err.kind, method).toBe("Unreachable");
-      expect(err.message, method).toMatch(new RegExp(`no ${method} verb yet \\(ticket \\d\\d\\)`));
-    }
+  it("refuses a bad slot, flavor or staged path before anything reaches the broker", async () => {
     expect((await rejection(host.startSlot({ flavor: "prod" as never, slot: 1 }, { agent: false }))).kind).toBe("Refused");
     expect((await rejection(host.baselineBuild("olm" as never))).kind).toBe("Refused");
-    // A staged path outside the lease's staging folder is refused before the verb's absence is reported, as FakeHost refuses it.
+    // A staged path outside the lease's staging folder is refused on this side, as FakeHost refuses it.
     for (const path of [`${ROOT}\\staging`, `${ROOT}\\golden\\12sp9\\db\\ootb.bak`, "C:\\Program Files (x86)\\Aras\\Innovator\\Server"]) {
       expect((await rejection(host.deployCode(s1, path, { leaseId: "a".repeat(32) }))).kind).toBe("Refused");
       expect((await rejection(host.restoreDatabase(s1, path))).kind).toBe("Refused");

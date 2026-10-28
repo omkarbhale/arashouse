@@ -7,6 +7,8 @@ import {
   NEGATIVE_DATABASE,
   POOL_LOGIN,
   SELF_TEST_SLOT,
+  ADOPTER_PERMISSIONS,
+  SIGNERS,
   SIGNER_PERMISSIONS,
   SQL_ERRORS,
   checkSqlLogin,
@@ -15,9 +17,12 @@ import {
   loginPatterns,
   negativeDatabaseNames,
   negativeLoginNames,
+  negativeStagedFiles,
   renderAdminProcedures,
   renderSetupSqlScript,
+  stagedBackupPattern,
 } from "./setup-sql.js";
+import { stagedBackup } from "./restore.js";
 
 const procedures = renderAdminProcedures();
 const script = renderSetupSqlScript({ version: "0.0.0" });
@@ -90,7 +95,7 @@ function nonLiteralOperands(expression: string): string[] {
 }
 
 describe("the arashouse_admin procedures", () => {
-  it("are the five the ticket names, each a dbo procedure in its own CREATE PROCEDURE", () => {
+  it("are the seven the tickets name, each a dbo procedure in its own CREATE PROCEDURE", () => {
     expect(Object.keys(procedures)).toEqual([...ADMIN_PROCEDURES]);
     for (const [name, text] of Object.entries(procedures)) {
       expect(text.startsWith(`CREATE PROCEDURE dbo.${name} `)).toBe(true);
@@ -105,10 +110,10 @@ describe("the arashouse_admin procedures", () => {
       const code = body(text);
       const refuse = code.indexOf(`THROW ${SQL_ERRORS.refusedName},`);
       expect(refuse, name).toBeGreaterThan(0);
-      const variable = name.endsWith("_login") ? "@login" : "@database";
+      const variable = name.endsWith("_login") ? "@login" : name === "read_staged_backup" ? "@file" : "@database";
       expect(code.indexOf(`IF ${variable} IS NULL`), name).toBeLessThan(refuse);
       // Nothing reads the catalog, builds SQL or runs it before the refusal.
-      for (const later of ["sys.", "DB_ID(", "SUSER_SID(", "EXEC", "DECLARE", "SET @"]) {
+      for (const later of ["sys.", "DB_ID(", "SUSER_SID(", "EXEC", "DECLARE", "SET @", "RESTORE"]) {
         const at = code.indexOf(later);
         expect(at === -1 || at > refuse, `${name}: ${later} before the allowlist`).toBe(true);
       }
@@ -213,6 +218,21 @@ describe("the allowlist inside the procedures", () => {
     for (const name of [...negativeLoginNames(), POOL_LOGIN, "sa", "arashouse_build_23_dbo"]) expect(loginAllowed(name), JSON.stringify(name)).toBe(false);
   });
 
+  it("admits only the staged backup's own path to read_staged_backup", () => {
+    // T-SQL LIKE in a binary collation: [..] a class, % any run, _ one character, anything else itself.
+    const like = (pattern: string) =>
+      new RegExp(
+        `^${pattern.replace(/\[([^\]]+)\]|%|_|[^[%_]/g, (m, cls: string | undefined) =>
+          cls !== undefined ? `[${cls.replace(/\\/g, "\\\\")}]` : m === "%" ? ".*" : m === "_" ? "." : m.replace(/[.*+?^${}()|\\/]/g, "\\$&"),
+        )}$`,
+      );
+    const staged = (path: string) => path.length === path.trimEnd().length && like(stagedBackupPattern()).test(path);
+    expect(stagedBackupPattern()).toBe(`C:\\aras[_]installations\\staging\\${"[0-9a-f]".repeat(32)}\\restore.bak`);
+    expect(staged(stagedBackup("0123456789abcdef0123456789abcdef"))).toBe(true);
+    for (const path of negativeStagedFiles()) expect(staged(path), JSON.stringify(path)).toBe(false);
+    expect(procedures.read_staged_backup).toContain(`LIKE N'${stagedBackupPattern()}'`);
+  });
+
   it("uses made-up names: none is a name the tool derives or one on the deny-list", () => {
     const derived = new Set(FLAVOR_KEYS.flatMap((flavor) => Array.from({ length: MAX_SLOT }, (_, i) => databaseName({ flavor, slot: i + 1 }))));
     for (const name of negativeDatabaseNames()) {
@@ -262,7 +282,7 @@ describe("setup-sql.ps1", () => {
     // The checks write only the self-test's and the negative test's own throw-away names.
     const drops = script.split("\n").filter((l) => /DROP (DATABASE|LOGIN)/.test(l) && l.includes("Invoke-Sql"));
     expect(drops.length).toBeGreaterThan(0);
-    for (const l of drops) expect(l).toMatch(/\$Signer|\$SelfTestLogin|\$SelfTestDatabase|\$NegativeDatabase|\$AdminDatabase|\$PoolLogin|DROP PROCEDURE/);
+    for (const l of drops) expect(l).toMatch(/\$signer|\$Name\)|\$SelfTestLogin|\$SelfTestDatabase|\$NegativeDatabase|\$AdminDatabase|\$PoolLogin|DROP PROCEDURE/);
   });
 
   it("-Uninstall drops only the objects -Apply made, and refuses while a slot's database or login is left (ticket 49)", () => {
@@ -271,8 +291,11 @@ describe("setup-sql.ps1", () => {
     // Each drop names one of the script's own objects, and nothing else.
     const bodyOf = (fn: string) => script.slice(script.indexOf(`function ${fn}`), script.indexOf("\n}\n", script.indexOf(`function ${fn}`)));
     expect(bodyOf("Remove-AdminDatabase")).toMatch(/DROP DATABASE \[\{0\}\];' -f \$AdminDatabase\)$/m);
-    expect(bodyOf("Remove-SignerLogin")).toContain("('DROP LOGIN [{0}];' -f $Signer)");
-    expect(bodyOf("Remove-MasterCertificate")).toContain("('DROP CERTIFICATE [{0}];' -f $Signer)");
+    expect(bodyOf("Remove-SignerLogin")).toContain("('DROP LOGIN [{0}];' -f $Name)");
+    expect(bodyOf("Remove-MasterCertificate")).toContain("('DROP CERTIFICATE [{0}];' -f $Name)");
+    // ... and only for a certificate of the script's own, by its name.
+    expect(bodyOf("Get-UninstallState")).toContain("$s.signerLogins = @($Signers.Keys | Where-Object");
+    expect(bodyOf("Get-UninstallState")).toContain("$s.masterCertificates = @($Signers.Keys | Where-Object");
     expect(bodyOf("Remove-PoolLogin")).toContain("SELECT QUOTENAME(@login)' @{ login = $PoolLogin }");
     expect(bodyOf("Remove-PoolLogin")).toContain("KILL {0};' -f [int]$spid");
     // The refusal: slot databases and logins by the procedures' own patterns, read in a binary collation.
@@ -308,15 +331,24 @@ describe("setup-sql.ps1", () => {
   it("checks the pool login's roles and rights as that login, and the refusals with the made-up names", () => {
     expect(script).toContain(`EXECUTE AS LOGIN = N'${POOL_LOGIN}';`);
     expect(script).toContain("IS_SRVROLEMEMBER('sysadmin') AS sysadmin, IS_SRVROLEMEMBER('dbcreator') AS dbcreator");
-    for (const p of SIGNER_PERMISSIONS) expect(script).toContain(`HAS_PERMS_BY_NAME(NULL, NULL, N'${p}')`);
+    for (const p of [...SIGNER_PERMISSIONS, ...ADOPTER_PERMISSIONS]) expect(script).toContain(`HAS_PERMS_BY_NAME(NULL, NULL, N'${p}')`);
     for (const p of ADMIN_PROCEDURES) expect(script).toContain(`$NegativeCall['${p}'] = @'`);
     expect(script).toContain(`RESTORE DATABASE [${NEGATIVE_DATABASE}] FROM DISK = N'C:\\aras_installations\\staging\\arashouse-negative-madeup\\${NEGATIVE_DATABASE}.bak' WITH REPLACE;`);
     expect(script).toContain("$SelfTestDatabase = 'arashouse_35_99'");
     expect(SELF_TEST_SLOT).toEqual({ flavor: FLAVOR_KEYS[FLAVOR_KEYS.length - 1], slot: MAX_SLOT });
   });
 
-  it("grants the certificate's login only the four rights the procedures need, and removes its private key", () => {
-    expect(script).toContain("$SignerPermissions = @('CREATE ANY DATABASE', 'ALTER ANY CONNECTION', 'ALTER ANY LOGIN', 'VIEW SERVER STATE')");
+  it("grants each certificate's login only the rights its procedures need, and removes its private key", () => {
+    expect(script).toContain(
+      "'arashouse_admin_signer' = [ordered]@{ permissions = @('CREATE ANY DATABASE', 'ALTER ANY CONNECTION', 'ALTER ANY LOGIN', 'VIEW SERVER STATE'); " +
+        "procedures = @('create_slot_database', 'drop_slot_database', 'kill_connections', 'create_slot_login', 'drop_slot_login', 'read_staged_backup') }",
+    );
+    // CONTROL SERVER (ticket 39) on a certificate of its own, which signs adopt_slot_database and nothing else.
+    expect(script).toContain("'arashouse_admin_adopter' = [ordered]@{ permissions = @('CONTROL SERVER'); procedures = @('adopt_slot_database') }");
+    expect(SIGNERS.flatMap((s) => s.procedures).sort()).toEqual([...ADMIN_PROCEDURES].sort());
+    expect(SIGNERS.filter((s) => s.permissions.includes("CONTROL SERVER")).map((s) => s.procedures)).toEqual([["adopt_slot_database"]]);
+    // A procedure counts as current only when signed once, by its own certificate.
+    expect(script).toContain("if ($p.signatures -ne 1 -or $p.signer -ne $ProcedureSigner[$p.name]) { $s.procedures.unsigned += $p.name; continue }");
     expect(script).toContain("ALTER CERTIFICATE [{0}] REMOVE PRIVATE KEY;");
     expect(script).toContain("CREATE LOGIN [{0}] FROM CERTIFICATE [{0}];");
     expect(script).toContain("SET TRUSTWORTHY OFF");

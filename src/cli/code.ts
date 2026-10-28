@@ -207,8 +207,8 @@ export interface CodeDeployReport {
   readonly error?: unknown;
 }
 
-/** The next free `staging\<lease_id>\code\<n>` number. */
-async function nextIndex(codeDir: string): Promise<number> {
+/** The next free `staging\<lease_id>\code\<n>` number (a git baseline is staged there too, ticket 53). */
+export async function nextIndex(codeDir: string): Promise<number> {
   let names: string[] = [];
   try {
     names = await readdir(codeDir);

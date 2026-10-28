@@ -15,7 +15,7 @@ export const EXIT_CODES = {
   refused: 7,
   /** A `get --import` or `import` step failed (libs-js `aras-pkg import` exited non-zero); `get` returned the lease unless `--keep-on-fail`. */
   importFailed: 9,
-  /** A code deploy (`get --code`, `deploy-code`, ticket 40) failed after the lease was taken; the lease is still held unless `get --atomic` returned it. */
+  /** A code deploy (`get --code`, `deploy-code`, ticket 40) or a git baseline (`get --git`, `git-baseline`, ticket 53) failed after the lease was taken; the lease is still held unless `get --atomic` returned it. */
   codeFailed: 10,
 } as const;
 

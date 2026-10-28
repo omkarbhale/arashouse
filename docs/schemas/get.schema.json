@@ -34,7 +34,7 @@
     "bootstrap": {
       "type": "object",
       "additionalProperties": false,
-      "description": "What `get` did to the lease after taking it; present only when it was asked to (`--code`).",
+      "description": "What `get` did to the lease after taking it; present only when it was asked to (`--code`, `--git`).",
       "properties": {
         "code": {
           "type": "array",
@@ -51,6 +51,19 @@
               "deleted": { "type": "integer", "minimum": 0 },
               "detail": { "type": "string" }
             }
+          }
+        },
+        "git": {
+          "type": "object",
+          "description": "The git baseline (`--git`), made last, as docs/schemas/git-baseline.schema.json describes it. A failed one exits 10 with the lease still held.",
+          "additionalProperties": false,
+          "required": ["ok", "commit", "files", "path", "detail"],
+          "properties": {
+            "ok": { "type": "boolean" },
+            "commit": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+            "files": { "type": "integer", "minimum": 0 },
+            "path": { "type": "string" },
+            "detail": { "type": "string" }
           }
         }
       }

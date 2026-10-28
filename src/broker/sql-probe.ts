@@ -3,7 +3,8 @@
 // (`Data Source=lpc:.`) with Windows authentication as the broker's own account (ticket 22 creates
 // its login). The script is a fixed string: no name, path or credential from anyone goes into it.
 // It asks only about the login itself: its name, whether it is in `sysadmin` or `dbcreator` (through
-// any group too, since it reads its own token), and how many `arashouse_admin` procedures it may execute.
+// any group too, since it reads its own token), and how many `arashouse_admin` procedures it may execute;
+// and one instance setting `doctor` gives advice on, `max server memory (MB)` (read only, ticket 55).
 
 import { execFile } from "node:child_process";
 import { UTILITY_DATABASE } from "../core/names.js";
@@ -16,7 +17,7 @@ const PROBE_TIMEOUT_MS = 15_000;
 const QUERY =
   "SELECT CONCAT(N'ok|', SUSER_SNAME(), N'|', IS_SRVROLEMEMBER('sysadmin'), N'|', IS_SRVROLEMEMBER('dbcreator'), N'|', " +
   ADMIN_PROCEDURES.map((p) => `ISNULL(HAS_PERMS_BY_NAME(${sqlString(`${UTILITY_DATABASE}.dbo.${p}`)}, N'OBJECT', N'EXECUTE'), 0)`).join(" + ") +
-  ")";
+  ", N'|', (SELECT CAST(value_in_use AS bigint) FROM sys.configurations WHERE name = N'max server memory (MB)'))";
 
 const SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -24,7 +25,8 @@ const SCRIPT = [
   `try { $c.Open(); $q = $c.CreateCommand(); $q.CommandText = ${psQuote(QUERY)}; [string]$q.ExecuteScalar() } finally { $c.Dispose() }`,
 ].join("; ");
 
-const ANSWER = /^ok\|([^|\r\n]+)\|([01])\|([01])\|(\d+)$/;
+// The last field is empty when the login cannot see the setting.
+const ANSWER = /^ok\|([^|\r\n]+)\|([01])\|([01])\|(\d+)\|(\d*)$/;
 
 export type RunFile = (
   file: string,
@@ -41,7 +43,8 @@ const runFile: RunFile = (file, args, options) =>
 export function parseSqlProbe(stdout: string): SqlLoginInfo | null {
   const m = ANSWER.exec(stdout.trim());
   if (!m) return null;
-  return { login: m[1] as string, sysadmin: m[2] === "1", dbcreator: m[3] === "1", procedures: Number(m[4]) };
+  const info: SqlLoginInfo = { login: m[1] as string, sysadmin: m[2] === "1", dbcreator: m[3] === "1", procedures: Number(m[4]) };
+  return m[5] ? { ...info, maxServerMemoryMb: Number(m[5]) } : info;
 }
 
 /** A probe that runs the fixed script once per call; null on any failure, never a throw. */

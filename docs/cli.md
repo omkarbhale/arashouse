@@ -181,7 +181,9 @@ What a person, or firstmate, uses when something is wrong. Source: `src/core/ope
 ### `doctor [--fix] [--rebuild-state] [--deep] [--yes] [--json]`
 
 One line per check, `ok`, `warn` or `fail`, then a summary; it exits 1 when a check failed and was
-not fixed, else 0. With `--json` it prints `{ ok, exitCode, findings }` instead, each finding
+not fixed, else 0. A host-wide setting that would help the pool is an `advice` line (the value seen, the value
+recommended, and why); advice is the operator's choice, never a failure or a warning, and never changes the exit
+code (ticket 55, `docs/host-tuning.md`). With `--json` it prints `{ ok, exitCode, findings }` instead, each finding
 `{ level, check, message }` (plus `fixed` and `resolved` when `--fix` acted), with the same exit
 code. It checks:
 
@@ -200,6 +202,8 @@ code. It checks:
 | `aras-pkg` | the import tool (`$ARASHOUSE_APKG`, else `aras-pkg` on `PATH`) is not there or does not answer `--version` (warn; only `get --import` and `import` need it); when it is there, the line names where it came from and its version |
 | `slot <id>` | a record whose slot is not on the host; a stamp that belongs to another slot; a `free` slot that is not clean on the host (its stamp, tree, database marker or health; the same check `get` makes), unless a `get` leased it or a reset ran since doctor read the state (ok); a `resetting` slot whose worker has ended; a `dirty` slot with no reset running (warn); a `quarantined` slot (warn); a lease 24 hours old or more (warn); a lease the stamp does not name (warn) |
 | `orphan <id>` | a slot on the host with no record (`arashouse_*` database, `ah-*` application) |
+| `sql max server memory` | advice only: SQL Server's `max server memory` is uncapped (its default); a 4096 MB cap is suggested |
+| `wsl memory` | advice only: run from WSL, when Windows has less free RAM than the leases still to come up to `max_active` need (`min_free_ram_mb` each), the WSL VM cap that would give the shortfall back |
 
 `--fix` re-starts resets: a `resetting` slot whose worker has ended goes back to `dirty`, a `free`
 slot that is not clean goes to `dirty`, and each gets a reset worker, as does a `dirty` slot nothing

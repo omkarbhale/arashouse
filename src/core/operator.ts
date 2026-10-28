@@ -15,6 +15,7 @@ import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
 import { FLAVOR_KEYS, type FlavorKey, isFlavorKey } from "./flavors.js";
 import { GuardError, assertOwned, nameDenial } from "./guards.js";
+import { adviceMessage, hostAdvice } from "./host-advice.js";
 import { type ResetWorkerAlive, checkDiskForBuild, isResetWorkerAlive, runningResets } from "./governor.js";
 import {
   GuardRefusedError,
@@ -59,6 +60,8 @@ export interface OperatorDeps {
   readonly licences?: SecretStore;
   /** What the worker sees of `arashouse setup` on the host (ticket 21). Absent: `doctor` skips the setup checks. */
   readonly setup?: () => Promise<SetupObservation>;
+  /** The WSL VM's memory in MB (its cap) when the CLI runs in WSL, for `doctor`'s advice (ticket 55). Absent or undefined: no WSL advice. */
+  readonly wslMemoryMb?: () => number | undefined;
   /** Where the import tool (libs-js `aras-pkg`, ticket 41) comes from and its version. Absent: `doctor` skips it. */
   readonly importTool?: () => Promise<{ readonly found: boolean; readonly detail: string }>;
   /** Held while `provision` runs, so two provisions never work on one slot (the CLI's `provision.lock`). Absent: none. */
@@ -609,7 +612,8 @@ export interface DoctorRequest {
   readonly yes?: boolean;
 }
 
-export type FindingLevel = "ok" | "warn" | "fail";
+/** `advice` is a host-wide setting that would help, which the operator may choose (ticket 55): never a problem or a warning. */
+export type FindingLevel = "ok" | "warn" | "fail" | "advice";
 
 export interface Finding {
   readonly level: FindingLevel;
@@ -631,7 +635,12 @@ export function formatFindings(findings: readonly Finding[]): string[] {
   const open = findings.filter((f) => f.level === "fail" && !f.resolved).length;
   const fixed = findings.filter((f) => f.resolved).length;
   const warned = findings.filter((f) => f.level === "warn").length;
-  lines.push(open === 0 && warned === 0 ? `doctor: every check passed${fixed > 0 ? ` (${fixed} fixed)` : ""}` : `doctor: ${open} problem${open === 1 ? "" : "s"}, ${warned} warning${warned === 1 ? "" : "s"}${fixed > 0 ? `, ${fixed} fixed` : ""}`);
+  const advised = findings.filter((f) => f.level === "advice").length;
+  const advice = advised > 0 ? `; ${advised} host setting${advised === 1 ? "" : "s"} advised, the operator's choice (docs/host-tuning.md)` : "";
+  lines.push(
+    (open === 0 && warned === 0 ? `doctor: every check passed${fixed > 0 ? ` (${fixed} fixed)` : ""}` : `doctor: ${open} problem${open === 1 ? "" : "s"}, ${warned} warning${warned === 1 ? "" : "s"}${fixed > 0 ? `, ${fixed} fixed` : ""}`) +
+      advice,
+  );
   return lines;
 }
 
@@ -639,7 +648,8 @@ export function formatFindings(findings: readonly Finding[]): string[] {
  * Checks the pool: the state file, the host setup (ticket 21), the broker, the SQL login, free disk and RAM, the media and
  * baselines, every slot record against the host's stamps, slots with no record (orphans), and resets
  * with no live worker. It reads only the tool's own slots, as the host lists them. Exit 1 when a
- * check fails and was not fixed, else 0.
+ * check fails and was not fixed, else 0. A host-wide setting that would help is an `advice` line
+ * (host-advice.ts), which never changes the exit code.
  */
 export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): Promise<OperatorResult> {
   const findings: Finding[] = [];
@@ -693,6 +703,14 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
     else add("warn", "disk", `${info.freeDiskGb} GB free at the install root, under min_free_disk_gb ${config.min_free_disk_gb}: no provision or baseline build starts`);
     if (info.freeRamMb >= config.min_free_ram_mb) add("ok", "ram", `${info.freeRamMb} MB free`);
     else add("warn", "ram", `${info.freeRamMb} MB free, under min_free_ram_mb ${config.min_free_ram_mb}: get hands out no slot`);
+    const advice = hostAdvice({
+      sqlMaxServerMemoryMb: info.sqlLogin?.maxServerMemoryMb,
+      freeRamMb: info.freeRamMb,
+      wslMemoryMb: deps.wslMemoryMb?.(),
+      leased: state === null ? 0 : Object.values(state.slots).filter((s) => s.status === "leased").length,
+      config,
+    });
+    for (const a of advice) add("advice", a.setting, adviceMessage(a));
   } catch (err) {
     if (!isHostError(err)) throw err;
     add("fail", "host", `hostInfo failed: ${errorText(err)}`);

@@ -652,6 +652,35 @@ describe("doctor", () => {
     expect((await doctor(p.deps, {})).lines).toContain("fail  sql: the broker cannot connect to SQL Server with its login; run `arashouse setup-sql` and the script it writes (docs/setup-sql.md)");
   });
 
+  it("prints host settings that would help as advice, never as a failure or a warning (ticket 55)", async () => {
+    const p = await pool({ "23": 2 });
+    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 };
+    // An uncapped SQL Server, and a 15.7 GB WSL VM with 2500 MB free on Windows for three leases of 2048 MB each.
+    p.host.setHostInfo({ freeRamMb: 2500, sqlLogin: { ...login, maxServerMemoryMb: 2147483647 } });
+    const advised = await doctor({ ...p.deps, wslMemoryMb: () => 16077 }, {});
+    expect(advised.exitCode).toBe(0);
+    expect(advised.lines.filter((l) => l.startsWith("advice"))).toEqual([
+      "advice  sql max server memory: seen 2147483647 MB (SQL Server's default: uncapped); recommended 4096 MB; why: uncapped, SQL Server's buffer pool grows into the RAM active slots need; the setting covers the whole instance, the operator's own databases too",
+      "advice  wsl memory: seen a 15.7 GB WSL VM, with 2500 MB free on Windows; recommended at most 12 GB (`memory=12GB` under [wsl2] in %UserProfile%\\.wslconfig; it takes effect at `wsl --shutdown`, which ends every WSL session); why: 3 more leases up to max_active 3 need about 6144 MB free (min_free_ram_mb 2048 each); 3644 MB are missing",
+    ]);
+    expect(advised.lines.at(-1)).toBe("doctor: every check passed; 2 host settings advised, the operator's choice (docs/host-tuning.md)");
+    expect(advised.findings?.filter((f) => f.level === "advice").map((f) => f.check)).toEqual(["sql max server memory", "wsl memory"]);
+
+    // A lease taken needs no room of its own any more.
+    await take(p, "23");
+    const leased = await doctor({ ...p.deps, wslMemoryMb: () => 16077 }, {});
+    expect(leased.lines.find((l) => l.startsWith("advice  wsl memory"))).toMatch(/why: 2 more leases up to max_active 3 need about 4096 MB free .*; 1596 MB are missing$/);
+
+    // A capped SQL Server, enough free RAM, or doctor outside WSL: no advice.
+    p.host.setHostInfo({ freeRamMb: 8000, sqlLogin: { ...login, maxServerMemoryMb: 4096 } });
+    const clean = await doctor({ ...p.deps, wslMemoryMb: () => 16077 }, {});
+    expect(clean.lines.filter((l) => l.startsWith("advice"))).toEqual([]);
+    expect(clean.lines.at(-1)).toBe("doctor: every check passed");
+    p.host.setHostInfo({ freeRamMb: 100, sqlLogin: login });
+    const outside = await doctor({ ...p.deps, wslMemoryMb: () => undefined }, {});
+    expect(outside.lines.filter((l) => l.startsWith("advice"))).toEqual([]);
+  });
+
   it("reports the host setup before the broker, from what the worker sees", async () => {
     const p = await pool({ "23": 1 });
     const none = await doctor({ ...p.deps, setup: async () => ({ record: null, rootExists: false, access: {} }) }, {});

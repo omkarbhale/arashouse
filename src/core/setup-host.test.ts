@@ -191,6 +191,16 @@ describe("setup-host.ps1 (generated)", () => {
     expect(script).not.toMatch(/Install-WindowsFeature|Enable-WindowsOptionalFeature|msiexec|dotnet-hosting|vc_redist/i);
   });
 
+  it("applies no host-wide setting; -Uninstall still removes the Defender exclusion an earlier version could add (ticket 55)", () => {
+    expect(code).not.toMatch(/Add-MpPreference|Set-MpPreference|NetFirewallRule|powercfg|sp_configure|wslconfig/i);
+    expect(script).not.toContain("$DefenderExclusion");
+    const main = code.indexOf("$defender = $null");
+    const [start, end] = [code.indexOf("if ($Uninstall) {", main), code.indexOf("$node = Get-NodeExe", main)];
+    expect(start).toBeGreaterThan(main);
+    const removal = code.indexOf("Remove-MpPreference -ExclusionPath $Root");
+    expect(removal > start && removal < end).toBe(true);
+  });
+
   it("holds no secret: no token, password or key is read or written", () => {
     expect(script).not.toMatch(/client\.token|password|licen[cs]e|ConvertTo-SecureString|Read-Host/i);
   });

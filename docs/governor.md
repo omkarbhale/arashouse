@@ -28,7 +28,8 @@ defaults. An unknown key is refused, so the file holds limits and nothing else.
 figure of about 2 GB per active slot (worker process ~1 GB, other pools, the agent and a share of SQL's
 buffer). The OS and SQL are already running and counted in the host's free RAM, so each lease adds
 about 2 GB on top. At design time the laptop had 5–6 GB free with a 12.3 GB, uncapped WSL VM, so about
-two leases fit before this gate holds a third; three fit once ticket 44 caps the WSL VM. Ticket 06
+two leases fit before this gate holds a third; a WSL VM cap would make room for three, but that is the operator's
+choice (`arashouse doctor` prints it as advice; ticket 55, `docs/host-tuning.md`). Ticket 06
 measures the real per-slot number and ticket 38 confirms or changes these defaults on the host.
 `min_free_disk_gb` is about two slots' worth (the design's 4–5 GB per slot); disk is not binding on the
 laptop (221 GB free at design time).

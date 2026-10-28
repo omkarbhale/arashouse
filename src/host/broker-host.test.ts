@@ -379,6 +379,10 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
     const withLogin = (sqlLogin: unknown) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: { ...base, sqlLogin } } }));
     expect((await rejection(withLogin({ login: "x", sysadmin: "no", dbcreator: false, procedures: 5 }).hostInfo())).message).toMatch(/info.sqlLogin has the wrong fields/);
     expect((await withLogin(null).hostInfo()).info.sqlLogin).toBeNull();
+    const login = { login: "x", sysadmin: false, dbcreator: false, procedures: 5 };
+    expect((await withLogin({ ...login, maxServerMemoryMb: 4096 }).hostInfo()).info.sqlLogin).toEqual({ ...login, maxServerMemoryMb: 4096 });
+    expect((await withLogin(login).hostInfo()).info.sqlLogin).toEqual(login);
+    expect((await rejection(withLogin({ ...login, maxServerMemoryMb: "4096" }).hostInfo())).message).toMatch(/maxServerMemoryMb is not a count/);
     const before22 = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: base } }));
     expect("sqlLogin" in (await before22.hostInfo()).info).toBe(false);
     expect("licences" in (await before22.hostInfo()).info).toBe(false);

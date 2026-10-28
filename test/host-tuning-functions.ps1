@@ -2,7 +2,7 @@
 # test/host-tuning.test.ts. Each case line is "Function|arg1|arg2|..."; the output line is the result, with CR LF shown as \n.
 param([Parameter(Mandatory)][string]$Script, [Parameter(Mandatory)][string]$CaseFile)
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$null, [ref]$null)
-foreach ($name in 'Read-WslConfigValue', 'Set-WslConfigValue', 'Test-InRange') {
+foreach ($name in @('Read-WslConfigValue')) {
     $fn = $ast.Find({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq $name }, $true)
     . ([scriptblock]::Create($fn.Extent.Text))
 }

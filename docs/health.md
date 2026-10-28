@@ -183,6 +183,25 @@ licence and `ootb-root-<key>` were stored (tickets 34b and 35). With both stored
 the login check on every reset and every `get` (`docs/e2e-12sp9.md`): the whole `health` step took 26.0 to 26.8 s after
 a reset's start, and the golden backup's password was refused after it.
 
+## Measured on the host (2026-10-28, ticket 57)
+
+A broker built from ticket 57 was installed through firstmate's elevated gate (`setup-host.ps1 -Apply -UpdateBroker`,
+exit 0). Before it, by hand on one lease of each flavor (`12sp9-02`, `23-01`, `35-01`, with the lease's `root`
+password): `authadmin` logged in with the golden backup's password on each; the re-key took 0.16 to 0.27 s (one list,
+two or four edits); then the shipped password was refused for every User, and `root`'s login, a vault upload and the
+agent's health URL still worked, also after the slot's pools and agent were stopped and started again.
+
+After it, every free slot was leased with `--agent` (two at a time), checked and returned: the shipped password was
+refused for each User on each lease, `root` logged in, the vault took a file, the agent service ran. Once their resets
+finished, ticket 50's check 7 passed on all six free slots (`docs/audit.md`), and the broker's `healthCheck` on each
+passed all nine checks with the login detail, on `35`: "root logged in with a one-time password (set with the slot's
+stored password); root and admin have it, authadmin, clientadmin, JobAgentUser and vadmin each have a random password
+nobody keeps, and the golden backup's password logs in as none of them" (on `12sp9` and `23`, `authadmin and vadmin`).
+
+The `login` check, warm, takes 1.3 to 1.6 s on each flavor (a check of 4.6 to 4.8 s round trip from WSL): root's login,
+the edit, the one-time password's login, the re-key and a refusal per User. On slots whose pools had idled out it took
+6.1 to 15.5 s, most of it the cold OAuth server.
+
 ## Safety
 
 - No password, token or MD5 leaves `aras-http.ts` and the request it is sent in: a refusal is the server's own words,

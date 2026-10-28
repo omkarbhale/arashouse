@@ -126,7 +126,7 @@ describe("parseSlotStamp", () => {
 
   it.each([
     [{ ...stamp, slotId: "12sp9-02" }, /names 12sp9-02, not 12sp9-01/],
-    [{ ...stamp, flavor: "23" }, /not 12sp9-01/],
+    [{ ...stamp, flavor: "23" }, /flavor is 23, not 12sp9/],
     [{ ...stamp, slotId: "OLM_Local" }, /not <flavor>-<NN>/],
     [{ ...stamp, goldenHash: 5 }, /strings or null/],
     [{ ...stamp, leaseId: 5 }, /leaseId/],

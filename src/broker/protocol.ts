@@ -231,9 +231,8 @@ export function parseSlotStamp(value: unknown, slot: SlotRef): SlotStamp {
   } catch {
     throw new ProtocolError("the stamp's slotId is not <flavor>-<NN>");
   }
-  if (id !== slotId(slot) || flavor !== slot.flavor || named.flavor !== flavor) {
-    throw new ProtocolError(`the stamp names ${id.slice(0, 32)}, not ${slotId(slot)}`);
-  }
+  if (id !== slotId(slot)) throw new ProtocolError(`the stamp names ${id.slice(0, 32)}, not ${slotId(slot)}`);
+  if (flavor !== slot.flavor || named.flavor !== flavor) throw new ProtocolError(`the stamp's flavor is ${flavor.slice(0, 32)}, not ${slot.flavor}`);
   const nullableString = (v: unknown) => v === null || typeof v === "string";
   if (!nullableString(goldenHash) || !nullableString(lastResetAt)) {
     throw new ProtocolError("a stamp's goldenHash and lastResetAt are strings or null");

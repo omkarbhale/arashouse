@@ -12,6 +12,8 @@
 //   `vault.config`, whose contents the edit list and the host's store own) need `allowConfig`.
 
 import { createHash } from "node:crypto";
+import { editList, withLicenceElement, withSigningCertificate } from "./edit-lists.js";
+import { FLAVOR_KEYS } from "./flavors.js";
 import { GuardError } from "./guards.js";
 
 /** Where a source lands in the slot's tree when the caller names no subpath. */
@@ -72,10 +74,20 @@ export function checkRelativePath(label: string, path: unknown): string {
   return segments.join("/");
 }
 
+/**
+ * The tree-relative files every flavor's edit list renders (docs/edits.md), lower-case and `/`-separated: the slot's
+ * identity, such as `Innovator/Server/Innovator.xml`, whose `ConfigFilePath` says which `InnovatorServerConfig.xml`
+ * (and so which database and logins) the slot's server uses. A deploy that replaced one could point the slot at
+ * another install's configuration (ticket 50, docs/audit.md).
+ */
+const RENDERED_FILES: ReadonlySet<string> = new Set(
+  FLAVOR_KEYS.flatMap((flavor) => withSigningCertificate(withLicenceElement(editList(flavor))).edits.map((e) => e.file.replace(/\\/g, "/").toLowerCase())),
+);
+
 /** Whether a deploy needs `allowConfig` to write or delete the tree-relative `path`. */
 export function isProtectedFile(path: string): boolean {
   const name = path.split("/").pop() ?? "";
-  return PROTECTED.some((rule) => rule.test(name));
+  return PROTECTED.some((rule) => rule.test(name)) || RENDERED_FILES.has(path.toLowerCase());
 }
 
 /** One `--code` argument: the source (a folder or a zip, a WSL or Windows path) and where it lands in the slot's tree. */
@@ -178,7 +190,7 @@ function checkTarget(target: string, rules: DeployRules, what: string): void {
   const roots = [...CODE_ROOTS, ...(rules.allowServers ? SERVER_ROOTS : [])];
   const protectedFile = isProtectedFile(target);
   if (protectedFile && !rules.allowConfig) {
-    throw refuse(target, `${what} a secrets or identity file (InnovatorServerConfig.xml, *.pfx, *.cer, key-*.xml, vault.config); pass --allow-config to do it`);
+    throw refuse(target, `${what} a secrets or identity file (InnovatorServerConfig.xml, *.pfx, *.cer, key-*.xml, vault.config, or a config file the edit list renders); pass --allow-config to do it`);
   }
   const atTop = target.toLowerCase() === SERVER_CONFIG.toLowerCase();
   if (atTop && rules.allowConfig) return;

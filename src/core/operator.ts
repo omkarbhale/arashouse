@@ -784,6 +784,12 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
           add("ok", check, "free and clean");
           break;
         }
+        // The state was read before the checks: a `get` that leased the slot since has stamped it with its lease.
+        const latest = (await deps.store.read()).slots[slot.id];
+        if (latest?.status !== "free" || latest.last_reset_at !== slot.last_reset_at) {
+          add("ok", check, `free when doctor read the state, ${latest?.status ?? "gone"} since`);
+          break;
+        }
         const f = add("fail", check, `free in the state but not clean on the host: ${verdict.reason}`);
         if (fix) {
           const moved = await deps.store.update((tx) => {

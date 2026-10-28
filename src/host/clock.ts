@@ -23,11 +23,16 @@ export class FakeClock implements Clock {
     if (!Number.isFinite(ms) || ms < 0) throw new Error("a clock only moves forward by a finite number of milliseconds");
     this.current += ms;
   }
+
+  /** Lets `ms` pass: this clock moves on at once. */
+  async elapse(ms: number): Promise<void> {
+    this.advance(ms);
+  }
 }
 
 /**
  * A `FakeClock` that reads the system time: for a fake host whose stamps and markers must be as new as the leases the
- * state ended by its own clock (the CLI's fake host, tests on real timers). `advance` is ignored.
+ * state ended by its own clock (the CLI's fake host, tests on real timers). `advance` is ignored; `elapse` waits.
  */
 export class LiveClock extends FakeClock {
   override now(): number {
@@ -36,5 +41,10 @@ export class LiveClock extends FakeClock {
 
   override advance(ms: number): void {
     void ms;
+  }
+
+  /** Lets `ms` pass by waiting that long: a slow step takes real time, so steps of several processes overlap. */
+  override async elapse(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

@@ -267,8 +267,9 @@ function psHashtable(entries: Readonly<Partial<Record<string, string>>>): string
 
 /**
  * The text of `setup-host.ps1`. Every path in it is derived from `root` by names.ts; it writes nothing
- * without `-Apply` and nothing outside the root (beyond the service, its group membership and an opt-in
- * Defender exclusion). Throws when an option is unusable.
+ * without `-Apply` and nothing outside the root beyond the service and its group membership: no host-wide
+ * setting (ticket 55). `-Uninstall` also removes a Defender exclusion of the root, which versions before
+ * ticket 55 could add. Throws when an option is unusable.
  */
 export function renderSetupHostScript(options: SetupScriptOptions): string {
   checkOptions(options);
@@ -289,21 +290,21 @@ export function renderSetupHostScript(options: SetupScriptOptions): string {
 #
 #   setup-host.ps1                                    the plan (needs no elevation; some reads need it)
 #   setup-host.ps1 -Apply                             create the folders, set their ACLs, install and start the broker service
-#   setup-host.ps1 -Apply -DefenderExclusion          ... and exclude the install root from Defender scanning (off by default)
 #   setup-host.ps1 -Apply -SlotIdleTimeoutMinutes 5   ... and record a short idle timeout for slot app pools (ticket 25 sets it)
 #   setup-host.ps1 -Apply -UpdateBroker               install this bundle's broker build over the installed one and restart it
-#   setup-host.ps1 -Uninstall [-RemoveRoot] -Apply    remove the service; with -RemoveRoot also the root, if it holds only arashouse folders
+#   setup-host.ps1 -Uninstall [-RemoveRoot] -Apply    remove the service (and a Defender exclusion of the root an earlier version
+#                                                     added); with -RemoveRoot also the root, if it holds only arashouse folders
 #
 # Idempotent: a second run changes only what differs (a folder's ACL that drifted, a stopped service). It writes only under the
-# install root, plus the service, its recovery options, its membership of Administrators and (opt-in) one Defender exclusion. It
-# never installs a prerequisite: it lists what is missing. It reads no secret and writes none; the JSON holds names and SIDs only.
+# install root, plus the service, its recovery options and its membership of Administrators. It changes no host-wide setting
+# (Defender, firewall, memory, power: docs/host-tuning.md, the operator's choice). It never installs a prerequisite: it lists
+# what is missing. It reads no secret and writes none; the JSON holds names and SIDs only.
 # Exit codes: 0 ok, 1 a step failed or the result is not ok, 2 refused arguments, 4 not elevated.
 param(
     [switch]$Apply,
     [switch]$Uninstall,
     [switch]$RemoveRoot,
     [switch]$UpdateBroker,
-    [switch]$DefenderExclusion,
     [ValidateRange(1, 1440)][int]$SlotIdleTimeoutMinutes
 )
 $ErrorActionPreference = 'Stop'
@@ -704,7 +705,7 @@ function Stop-Broker {
 # ---- main ----
 
 if ($RemoveRoot -and -not $Uninstall) { Fail 2 '-RemoveRoot goes with -Uninstall' }
-if ($Uninstall -and ($UpdateBroker -or $DefenderExclusion -or $PSBoundParameters.ContainsKey('SlotIdleTimeoutMinutes'))) {
+if ($Uninstall -and ($UpdateBroker -or $PSBoundParameters.ContainsKey('SlotIdleTimeoutMinutes'))) {
     Fail 2 '-Uninstall takes only -RemoveRoot and -Apply'
 }
 if ($Apply -and -not (Test-Elevated)) { Fail 4 '-Apply needs an elevated PowerShell (Run as administrator)' }
@@ -728,6 +729,7 @@ try {
             if (Test-BrokerIsAdmin) { Invoke-Change "remove $BrokerAccount from the local Administrators group" { Invoke-Native 'net.exe' @('localgroup', (Get-AdminsGroupName), $BrokerAccount, '/delete') | Out-Null } }
             Invoke-Change "delete the service $ServiceName" { Invoke-Native 'sc.exe' @('delete', $ServiceName) | Out-Null }
         } else { Write-Host "skip: the service $ServiceName is not installed" }
+        # Versions before ticket 55 could add this exclusion (-DefenderExclusion); the root is arashouse's own, so it goes too.
         if ((Get-DefenderExcluded) -eq $true) { Invoke-Change "remove the Defender exclusion for $Root" { Remove-MpPreference -ExclusionPath $Root } }
         if ($RemoveRoot -and (Test-Path -LiteralPath $Root)) {
             $foreign = @(Get-ChildItem -LiteralPath $Root -Force | Where-Object { -not $Folders.Contains($_.Name) } | ForEach-Object { $_.Name })
@@ -793,10 +795,6 @@ try {
         if (-not $svc -or -not (Test-BrokerIsAdmin)) {
             Invoke-Change "add $BrokerAccount to the local Administrators group (it creates IIS applications, pools and services)" { Invoke-Native 'net.exe' @('localgroup', (Get-AdminsGroupName), $BrokerAccount, '/add') | Out-Null }
         }
-        if ($DefenderExclusion) {
-            $defender = Get-DefenderExcluded
-            if ($defender -ne $true) { Invoke-Change "add a Defender exclusion for $Root" { Add-MpPreference -ExclusionPath $Root } }
-        }
         $idle = Read-PreviousIdleTimeout
         if ($PSBoundParameters.ContainsKey('SlotIdleTimeoutMinutes') -and $idle -ne $SlotIdleTimeoutMinutes) {
             Invoke-Change "record an idle timeout of $SlotIdleTimeoutMinutes minutes for slot app pools (ticket 25 sets it when it creates them)" { }
@@ -821,7 +819,7 @@ $installedOk = $state -and $state.root.exists -and $state.root.aclOk -and @($sta
     $state.broker.status -eq 'Running' -and $state.broker.account -ieq $BrokerAccount -and $state.broker.administrator -eq $true -and
     $state.broker.recovery -eq $true -and $state.broker.ping -eq 'ok'
 $ok = ($Errors.Count -eq 0) -and $(if ($Uninstall) { -not $state -or -not $state.broker.installed } else { [bool]$installedOk })
-if ($DefenderExclusion -or $Uninstall) { $defender = Get-DefenderExcluded }
+if ($Uninstall) { $defender = Get-DefenderExcluded }
 
 $record = [ordered]@{
     schema = 1

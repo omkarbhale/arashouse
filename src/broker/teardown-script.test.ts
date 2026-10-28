@@ -14,7 +14,7 @@ import {
   loginName,
   webAlias,
 } from "../core/names.js";
-import { HOST_TUNING_FIREWALL_RULE, TEARDOWN_CHILDREN, renderTeardownScript, teardownPatterns } from "./teardown-script.js";
+import { HOST_TUNING_FIREWALL_RULE, HOST_TUNING_STATE, TEARDOWN_CHILDREN, renderTeardownScript, teardownPatterns } from "./teardown-script.js";
 
 const HOST = "a".repeat(64);
 const SQL = "b".repeat(64);
@@ -128,6 +128,12 @@ describe("teardown.ps1 (generated)", () => {
     expect(script).toContain("if (-not $KeepSql) { $mustGo += 'setupSql' }");
     expect(script).toContain("if ($RemoveRoot) { $mustGo += 'root' }");
     expect(script).toContain(`$FirewallRule = '${HOST_TUNING_FIREWALL_RULE}'`);
+  });
+
+  it("names the undo of host settings an earlier arashouse recorded, and changes none itself (ticket 55)", () => {
+    expect(script).toContain(`$TuningStateFile = Join-Path $env:LOCALAPPDATA '${HOST_TUNING_STATE}'`);
+    expect(script).toContain("undo them with host-tuning.ps1 -Undo {0} -Apply");
+    expect(script).not.toMatch(/Add-MpPreference|Set-MpPreference|New-NetFirewallRule|Disable-NetFirewallRule|sp_configure|powercfg/i);
   });
 
   it("holds no credential, no sa, and no path outside the install root or under Program Files", () => {

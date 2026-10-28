@@ -96,7 +96,10 @@ The steps, in order:
    - with `-RemoveRoot`: the root.
 
    Ticket 44's firewall rule has its own undo, `host-tuning.ps1 -Undo Firewall -Apply` (`docs/host-tuning.md`).
-   The script names that undo if the rule is there. Ticket 44 applied nothing to this host.
+   The script names that undo if the rule is there. It also reads what `host-tuning.ps1` recorded for the Windows user
+   running it (`%LOCALAPPDATA%\arashouse\host-tuning\state.json`) and, for any item an earlier arashouse applied
+   (`Wsl`, `Sql`, `Defender`, `Firewall`), names `host-tuning.ps1 -Undo <items> -Apply`. Since ticket 55 no version
+   applies a host-wide setting; ticket 44 applied nothing to this host.
 
 **What it never touches.** It never touches the captain's installers in the repo's `media/`, which are not on the
 install root. It does not touch the deny-list's objects: it only fingerprints them. It does not touch anything under

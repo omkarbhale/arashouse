@@ -1,28 +1,21 @@
-# Host tuning for three active slots (ticket 44). Four items, each chosen by its own parameter and each with an undo:
-#   Wsl       %UserProfile%\.wslconfig: [wsl2] memory=<N>GB, and optionally [experimental] autoMemoryReclaim. Takes effect only at the
-#             next `wsl --shutdown`, which ends every WSL session: this script never runs it. No elevation needed.
-#   Sql       SQL Server's instance-wide `max server memory (MB)` (sp_configure, no restart), through the current Windows login on
-#             master only. Elevated: the captain's login is sysadmin only with the full token.
-#   Defender  a Windows Defender path exclusion for C:\aras_installations, and nothing else. Elevated.
-#   Firewall  inbound TCP 80 only from the WSL NAT range: adds the rule arashouse-http-in-wsl and disables IIS's own
-#             IIS-WebServerRole-HTTP-In-TCP. Port 80 serves every IIS site, the captain's existing installs included. Elevated.
-# Without -Apply the script prints the current value of every item (`now:` lines) and the plan (`would do:` lines) and changes
-# nothing. With -Apply each change is printed (`do:`) before it is made and checked after. The value an item had before its first
-# apply is kept in -StateDir (state.json), and -Undo <items> puts it back. No secret is read or written. Windows PowerShell 5.1.
+# Host settings for the arashouse pool: what they are now, and the undo of what an earlier arashouse applied (tickets 44, 55).
+# arashouse runs on the host as it is and applies no host-wide setting: the WSL memory cap, SQL Server's max server memory, a
+# Defender exclusion, the firewall and the power plan are the operator's own choice (docs/host-tuning.md; `arashouse doctor`
+# prints advice where one would help). This script only reads them, and undoes what its ticket 44 version applied:
+#   Wsl       restores %UserProfile%\.wslconfig as it was before (or deletes it if there was none). No elevation needed.
+#   Sql       sets SQL Server's `max server memory (MB)` back to its earlier value. Elevated.
+#   Defender  removes the exclusion of C:\aras_installations, if that version added it. Elevated.
+#   Firewall  removes the rule arashouse-http-in-wsl and enables IIS's IIS-WebServerRole-HTTP-In-TCP again if it was. Elevated.
+# What that version applied is recorded in -StateDir (state.json); an item with no record is skipped. Without -Apply the script
+# prints the current value of every setting (`now:` lines) and the plan (`would do:` lines) and changes nothing. With -Apply each
+# undo is printed (`do:`) before it is made and checked after. No secret is read or written. Windows PowerShell 5.1.
 #
-#   host-tuning.ps1                                                   inventory only
-#   host-tuning.ps1 -WslMemoryGB 12 -WslAutoMemoryReclaim gradual    plan for the WSL cap (add -Apply to write .wslconfig)
-#   host-tuning.ps1 -SqlMaxServerMemoryMB 4096 -DefenderExclusion -FirewallWslOnly -Apply    (elevated)
-#   host-tuning.ps1 -Undo Sql,Firewall -Apply                        (elevated for Sql, Defender, Firewall)
+#   host-tuning.ps1                                   inventory only
+#   host-tuning.ps1 -Undo Wsl,Sql,Defender,Firewall   the plan for the undo (add -Apply; elevated for Sql, Defender, Firewall)
+# CmdletBinding: a parameter it does not take (the ticket 44 version's apply parameters) is refused, not ignored.
+[CmdletBinding()]
 param(
     [switch]$Apply,
-    [ValidateRange(4, 28)][int]$WslMemoryGB,
-    [ValidateSet('gradual', 'dropCache', 'disabled')][string]$WslAutoMemoryReclaim,
-    [ValidateRange(1024, 16384)][int]$SqlMaxServerMemoryMB,
-    [switch]$DefenderExclusion,
-    [switch]$FirewallWslOnly,
-    # The remote range the new port 80 rule allows. WSL picks its NAT subnet inside 172.16.0.0/12 at each start.
-    [ValidatePattern('^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$')][string]$FirewallWslRange = '172.16.0.0/12',
     # Wsl, Sql, Defender, Firewall; a comma-separated string works too (powershell -File passes one).
     [string[]]$Undo = @(),
     [string]$StateDir = (Join-Path $env:LOCALAPPDATA 'arashouse\host-tuning'),
@@ -108,39 +101,6 @@ function Read-WslConfigValue([string]$Text, [string]$Section, [string]$Key) {
     return $null
 }
 
-function Set-WslConfigValue([string]$Text, [string]$Section, [string]$Key, [string]$Value) {
-    # Replaces Key in [Section], or adds it at the end of that section, or adds the section at the end. Other lines are kept.
-    $lines = New-Object System.Collections.ArrayList
-    if ($Text) { foreach ($l in ($Text -split "`r?`n")) { [void]$lines.Add($l) } }
-    while ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Trim() -eq '') { $lines.RemoveAt($lines.Count - 1) }
-    $current = ''
-    $sectionEnd = -1
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $t = $lines[$i].Trim()
-        if ($t -match '^\[(.+)\]$') { $current = $Matches[1].Trim(); if ($current -ieq $Section) { $sectionEnd = $i + 1 }; continue }
-        if ($current -ieq $Section) {
-            if ($t -match '^([^=#;]+?)\s*=' -and $Matches[1] -ieq $Key) { $lines[$i] = "$Key=$Value"; return ($lines -join "`r`n") + "`r`n" }
-            if ($t -ne '') { $sectionEnd = $i + 1 }
-        }
-    }
-    if ($sectionEnd -ge 0) { $lines.Insert($sectionEnd, "$Key=$Value") }
-    else {
-        if ($lines.Count -gt 0) { [void]$lines.Add('') }
-        [void]$lines.Add("[$Section]")
-        [void]$lines.Add("$Key=$Value")
-    }
-    return ($lines -join "`r`n") + "`r`n"
-}
-
-function Test-InRange([string]$Address, [string]$Cidr) {
-    $parts = $Cidr.Split('/')
-    $bits = [int]$parts[1]
-    $toLong = { param($ip) $b = ([Net.IPAddress]::Parse($ip)).GetAddressBytes(); [Array]::Reverse($b); [long][BitConverter]::ToUInt32($b, 0) }
-    # The block size of the prefix; two addresses are in the same block when their quotients are equal.
-    $size = [long][math]::Pow(2, 32 - $bits)
-    return [math]::Floor((& $toLong $Address) / $size) -eq [math]::Floor((& $toLong $parts[0]) / $size)
-}
-
 function Get-WslHostAddress {
     $a = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -like 'vEthernet (WSL*' } | Select-Object -First 1
     if ($a) { return $a.IPAddress }
@@ -221,26 +181,7 @@ function Show-Inventory {
     return $facts
 }
 
-# ---- items ----
-
-function Invoke-Wsl($state) {
-    $text = if (Test-Path -LiteralPath $WslConfig) { [IO.File]::ReadAllText($WslConfig) } else { '' }
-    $new = Set-WslConfigValue $text 'wsl2' 'memory' "$($WslMemoryGB)GB"
-    if ($WslAutoMemoryReclaim) { $new = Set-WslConfigValue $new 'experimental' 'autoMemoryReclaim' $WslAutoMemoryReclaim }
-    $what = "memory=$($WslMemoryGB)GB" + $(if ($WslAutoMemoryReclaim) { " and autoMemoryReclaim=$WslAutoMemoryReclaim" } else { '' })
-    Step "write $WslConfig with $what (other lines kept; the file before the first apply is kept in $StateDir for -Undo Wsl); it takes effect at the next 'wsl --shutdown', which this script does not run"
-    if (-not $Apply) { return }
-    if (-not $state.ContainsKey('wsl')) {
-        $existed = Test-Path -LiteralPath $WslConfig
-        if (-not (Test-Path -LiteralPath $StateDir)) { New-Item -ItemType Directory -Path $StateDir | Out-Null }
-        if ($existed) { Copy-Item -LiteralPath $WslConfig -Destination (Join-Path $StateDir 'wslconfig.before') -Force }
-        $state.wsl = [ordered]@{ existed = $existed }
-    }
-    [IO.File]::WriteAllText($WslConfig, $new, (New-Object Text.ASCIIEncoding))
-    $state.wsl.writtenSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $WslConfig).Hash
-    Save-State $state
-    Write-Host "done: wsl: $WslConfig now has $what"
-}
+# ---- undo ----
 
 function Undo-Wsl($state) {
     if (-not $state.ContainsKey('wsl')) { Write-Host 'skip: wsl: nothing recorded to undo'; return }
@@ -258,7 +199,8 @@ function Undo-Wsl($state) {
 }
 
 function Set-SqlMaxMemory([long]$Mb) {
-    # show advanced options is switched on only for the change and put back as it was.
+    # Only Undo-Sql calls it, with the value recorded before ticket 44's apply. show advanced options is switched on only for
+    # the change and put back as it was.
     $sql = @"
 DECLARE @show int = (SELECT CAST(value AS int) FROM sys.configurations WHERE name = N'show advanced options');
 IF @show = 0 BEGIN EXEC sp_configure N'show advanced options', 1; RECONFIGURE; END;
@@ -268,18 +210,6 @@ SELECT CAST(value_in_use AS bigint) FROM sys.configurations WHERE name = N'max s
 "@
     $rows = Invoke-MasterQuery $sql @{ '@mb' = $Mb }
     return [long]$rows[0][0]
-}
-
-function Invoke-Sql($state) {
-    Step "set SQL Server's max server memory to $SqlMaxServerMemoryMB MB (sp_configure on master as the current Windows login, no restart; instance-wide, so every database on the instance shares it; the value before the first apply is kept for -Undo Sql)"
-    if (-not $Apply) { return }
-    if (-not $state.ContainsKey('sql')) {
-        $state.sql = [ordered]@{ previousMaxServerMemoryMB = (Get-SqlMaxMemory)['max server memory (MB)'].value }
-        Save-State $state
-    }
-    $inUse = Set-SqlMaxMemory $SqlMaxServerMemoryMB
-    if ($inUse -ne $SqlMaxServerMemoryMB) { Fail 1 "sql: max server memory reads $inUse MB after the change, not $SqlMaxServerMemoryMB." }
-    Write-Host "done: sql: max server memory $inUse MB"
 }
 
 function Undo-Sql($state) {
@@ -298,16 +228,6 @@ function Test-Excluded {
     return [bool](@((Get-MpPreference).ExclusionPath) | Where-Object { $_ -and $_.TrimEnd('\') -ieq $ExcludedPath })
 }
 
-function Invoke-Defender($state) {
-    Step "add the Windows Defender path exclusion $ExcludedPath (real-time and scheduled scans skip every file under it; -Undo Defender removes it if this script added it)"
-    if (-not $Apply) { return }
-    $already = Test-Excluded
-    if (-not $state.ContainsKey('defender')) { $state.defender = [ordered]@{ addedByScript = -not $already }; Save-State $state }
-    if (-not $already) { Add-MpPreference -ExclusionPath $ExcludedPath }
-    if (-not (Test-Excluded)) { Fail 1 "defender: $ExcludedPath is not in the exclusion list after the change (a policy may manage Defender here)." }
-    Write-Host "done: defender: $ExcludedPath excluded"
-}
-
 function Undo-Defender($state) {
     if (-not $state.ContainsKey('defender')) { Write-Host 'skip: defender: nothing recorded to undo'; return }
     if (-not $state.defender.addedByScript) { Step "leave the exclusion ${ExcludedPath}: it was there before this script"; if ($Apply) { $state.Remove('defender'); Save-State $state }; return }
@@ -318,26 +238,6 @@ function Undo-Defender($state) {
     $state.Remove('defender')
     Save-State $state
     Write-Host "done: defender: $ExcludedPath no longer excluded"
-}
-
-function Invoke-Firewall($state) {
-    Step "add the inbound rule $OwnRule (allow TCP 80 from $FirewallWslRange, every profile), then disable $IisRule (allow TCP 80 from any address); afterwards no other machine reaches any IIS site on port 80, the captain's own installs included; -Undo Firewall reverses both"
-    if (-not $Apply) { return }
-    $wsl = Get-WslHostAddress
-    if (-not $wsl) { Fail 2 'firewall: no vEthernet (WSL) address found; start WSL first, so the range can be checked.' }
-    if (-not (Test-InRange $wsl $FirewallWslRange)) { Fail 2 "firewall: the WSL side of the host is $wsl, outside $FirewallWslRange; pass -FirewallWslRange." }
-    $iis = Get-NetFirewallRule -Name $IisRule -ErrorAction SilentlyContinue
-    if (-not $state.ContainsKey('firewall')) {
-        $state.firewall = [ordered]@{ iisRuleWasEnabled = [bool]($iis -and $iis.Enabled -eq 'True'); range = $FirewallWslRange }
-        Save-State $state
-    }
-    if (Get-NetFirewallRule -Name $OwnRule -ErrorAction SilentlyContinue) { Remove-NetFirewallRule -Name $OwnRule }
-    New-NetFirewallRule -Name $OwnRule -DisplayName 'arashouse: HTTP in from WSL only' -Description 'Ticket 44: port 80 from the WSL NAT range only. Remove with host-tuning.ps1 -Undo Firewall.' `
-        -Direction Inbound -Protocol TCP -LocalPort 80 -RemoteAddress $FirewallWslRange -Action Allow -Profile Any | Out-Null
-    if ($iis) { Disable-NetFirewallRule -Name $IisRule }
-    $left = @(Get-Port80Rules | Where-Object { $_.name -ne $OwnRule })
-    if ($left.Count) { Write-Host ("warn: firewall: port 80 is still open by {0}; this script does not touch other rules" -f (($left | ForEach-Object { $_.name }) -join ', ')) }
-    Write-Host "done: firewall: inbound TCP 80 from $FirewallWslRange only (by $OwnRule)"
 }
 
 function Undo-Firewall($state) {
@@ -353,13 +253,6 @@ function Undo-Firewall($state) {
 
 # ---- main ----
 
-# PowerShell names are case-insensitive, so the chosen items are $chosen ($apply would be -Apply).
-$chosen = @()
-if ($PSBoundParameters.ContainsKey('WslMemoryGB')) { $chosen += 'Wsl' }
-elseif ($WslAutoMemoryReclaim) { Fail 2 '-WslAutoMemoryReclaim goes with -WslMemoryGB.' }
-if ($PSBoundParameters.ContainsKey('SqlMaxServerMemoryMB')) { $chosen += 'Sql' }
-if ($DefenderExclusion) { $chosen += 'Defender' }
-if ($FirewallWslOnly) { $chosen += 'Firewall' }
 $items = @('Wsl', 'Sql', 'Defender', 'Firewall')
 $Undo = @($Undo | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 foreach ($item in $Undo) {
@@ -367,28 +260,25 @@ foreach ($item in $Undo) {
     if (-not $known) { Fail 2 "-Undo takes $($items -join ', '); '$item' is not one of them." }
 }
 $Undo = @($items | Where-Object { $Undo -contains $_ })
-foreach ($item in $Undo) { if ($chosen -contains $item) { Fail 2 "$item is both applied and undone; choose one." } }
-if ($PSBoundParameters.ContainsKey('FirewallWslRange') -and -not $FirewallWslOnly) { Fail 2 '-FirewallWslRange goes with -FirewallWslOnly.' }
-$elevatedItems = @($chosen + $Undo | Where-Object { $_ -ne 'Wsl' })
+$elevatedItems = @($Undo | Where-Object { $_ -ne 'Wsl' })
 if ($Apply -and $elevatedItems.Count -and -not (Test-Elevated)) {
     Fail 4 ("-Apply for {0} needs an elevated PowerShell (Run as administrator)." -f ($elevatedItems -join ', '))
 }
 
-if ($Apply) { Write-Host 'apply: host tuning (every change is printed before it is made)' }
-else { Write-Host 'dry run: host tuning changes nothing; pass -Apply to make changes' }
-$result = [ordered]@{ startedUtc = [DateTime]::UtcNow.ToString('o'); apply = [bool]$Apply; items = $chosen; undo = $Undo }
+if ($Apply) { Write-Host 'apply: undo of earlier host tuning (every change is printed before it is made)' }
+else { Write-Host 'dry run: changes nothing; pass -Apply to make the undo' }
+$result = [ordered]@{ startedUtc = [DateTime]::UtcNow.ToString('o'); apply = [bool]$Apply; undo = $Undo }
 if (-not $NoInventory) { $result.before = Show-Inventory }
-if (-not $chosen.Count -and -not $Undo.Count) { Write-Host 'dry run: no item chosen: -WslMemoryGB, -SqlMaxServerMemoryMB, -DefenderExclusion, -FirewallWslOnly, or -Undo <items>' }
+if (-not $Undo.Count) { Write-Host 'dry run: read only; -Undo <items> undoes what an earlier arashouse applied (Wsl, Sql, Defender, Firewall)' }
 
 $state = Read-State
 try {
-    foreach ($item in $chosen) { & "Invoke-$item" $state }
     foreach ($item in $Undo) { & "Undo-$item" $state }
 } catch {
     Fail 1 $_.Exception.Message
 }
 
-if ($Apply -and ($chosen.Count -or $Undo.Count)) {
+if ($Apply -and $Undo.Count) {
     if (-not $NoInventory) { $result.after = Show-Inventory }
     $outDir = Join-Path $StateDir 'out'
     if (-not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }

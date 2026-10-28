@@ -74,11 +74,15 @@ function malformed(verb: HostMethod, why: string): HostError {
 function parseSqlLogin(value: unknown): SqlLoginInfo | null | undefined {
   if (value === undefined || value === null) return value;
   if (!isRecord(value)) throw new ProtocolError("info.sqlLogin is not an object");
-  const { login, sysadmin, dbcreator, procedures } = value;
+  const { login, sysadmin, dbcreator, procedures, maxServerMemoryMb } = value;
   if (typeof login !== "string" || typeof sysadmin !== "boolean" || typeof dbcreator !== "boolean" || !Number.isInteger(procedures) || (procedures as number) < 0) {
     throw new ProtocolError("info.sqlLogin has the wrong fields");
   }
-  return { login, sysadmin, dbcreator, procedures: procedures as number };
+  if (maxServerMemoryMb !== undefined && (!Number.isInteger(maxServerMemoryMb) || (maxServerMemoryMb as number) < 0)) {
+    throw new ProtocolError("info.sqlLogin.maxServerMemoryMb is not a count");
+  }
+  const info: SqlLoginInfo = { login, sysadmin, dbcreator, procedures: procedures as number };
+  return maxServerMemoryMb === undefined ? info : { ...info, maxServerMemoryMb: maxServerMemoryMb as number };
 }
 
 /** The licence lines' presence: a line and a boolean each, nothing else (ticket 34b). */

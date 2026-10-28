@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -39,15 +40,35 @@ const sandbox = (name: string) => ["-StateDir", toHostPath(join(dir, `${name}-st
 const run = (name: string, args: string[]) => runFile(script, ["-NoInventory", ...sandbox(name), ...args]);
 
 describe("scripts/host-tuning.ps1 (static)", () => {
+  const text = readFileSync(script, "utf8");
+
   it("is plain ASCII, so Windows PowerShell 5.1 reads it without a BOM", () => {
-    expect(readFileSync(script, "utf8")).toMatch(/^[\x00-\x7f]*$/);
+    expect(text).toMatch(/^[\x00-\x7f]*$/);
+  });
+
+  it("applies no host-wide setting: it only reads them and undoes what its ticket 44 version applied (ticket 55)", () => {
+    expect(text).not.toMatch(/Add-MpPreference|Set-MpPreference|New-NetFirewallRule|Disable-NetFirewallRule|Set-NetFirewallRule|powercfg(\.exe)? \/(set|change)/i);
+    expect(text).not.toMatch(/-WslMemoryGB|-SqlMaxServerMemoryMB|-DefenderExclusion|-FirewallWslOnly|function (Invoke-(Wsl|Sql|Defender|Firewall)|Set-WslConfigValue)\b/);
+    // The one setter left puts back the value recorded before that apply, and only Undo-Sql calls it.
+    const calls = [...text.matchAll(/Set-SqlMaxMemory \$/g)].map((m) => text.lastIndexOf("function ", m.index));
+    expect(calls).toEqual([text.indexOf("function Undo-Sql")]);
   });
 
   it("is documented in docs/host-tuning.md", () => {
     const doc = readFileSync(join(repoRoot, "docs/host-tuning.md"), "utf8");
-    for (const p of ["-WslMemoryGB", "-SqlMaxServerMemoryMB", "-DefenderExclusion", "-FirewallWslOnly", "-Undo"]) expect(doc, p).toContain(p);
+    for (const p of ["-Undo", "Wsl", "Sql", "Defender", "Firewall", "state.json"]) expect(doc, p).toContain(p);
   });
 });
+
+/** A state folder as the ticket 44 version left it after applying the WSL cap: the record and the file before. */
+function recordWslApply(name: string, written: string, before: string | null): void {
+  const state = join(dir, `${name}-state`);
+  mkdirSync(state, { recursive: true });
+  if (before !== null) writeFileSync(join(state, "wslconfig.before"), before);
+  const writtenSha256 = createHash("sha256").update(written).digest("hex").toUpperCase();
+  writeFileSync(join(state, "state.json"), JSON.stringify({ wsl: { existed: before !== null, writtenSha256 } }));
+  writeFileSync(join(dir, `${name}-wslconfig`), written);
+}
 
 // Each test starts Windows PowerShell several times (about 2 s each).
 describeWithPs(`scripts/host-tuning.ps1 under ${ps}`, { timeout: 60_000 }, () => {
@@ -56,35 +77,22 @@ describeWithPs(`scripts/host-tuning.ps1 under ${ps}`, { timeout: 60_000 }, () =>
     expect(r.out.trim()).toBe("errors=0");
   });
 
-  it("dry run of every item prints only the plan and writes nothing", () => {
-    const r = run("dry", ["-WslMemoryGB", "12", "-WslAutoMemoryReclaim", "gradual", "-SqlMaxServerMemoryMB", "4096", "-DefenderExclusion", "-FirewallWslOnly"]);
+  it("with no item, changes nothing and writes nothing", () => {
+    const r = run("dry", []);
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
     const lines = r.out.split(/\r?\n/).filter((l) => l.trim());
-    expect(lines.filter((l) => !/^(would do: |dry run: )/.test(l))).toEqual([]);
-    expect(lines.filter((l) => l.startsWith("would do: "))).toHaveLength(4);
-    expect(r.out).toContain("memory=12GB and autoMemoryReclaim=gradual");
-    expect(r.out).toContain("4096 MB");
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.filter((l) => !/^dry run: /.test(l))).toEqual([]);
     expect(existsSync(join(dir, "dry-state"))).toBe(false);
     expect(existsSync(join(dir, "dry-wslconfig"))).toBe(false);
   });
 
-  it("dry run names only the fixed Defender path and firewall rules", () => {
-    const r = run("names", ["-DefenderExclusion", "-FirewallWslOnly"]);
-    expect(r.code).toBe(0);
-    const plan = r.out.split(/\r?\n/).filter((l) => l.startsWith("would do: "));
-    expect(plan).toHaveLength(2);
-    expect(plan[0]).toContain("exclusion C:\\aras_installations ");
-    expect(plan[1]).toContain("arashouse-http-in-wsl");
-    expect(plan[1]).toContain("IIS-WebServerRole-HTTP-In-TCP");
-  });
-
-  it("a WSL apply writes the sandbox .wslconfig and leaves WSL running", () => {
-    const r = run("noshutdown", ["-WslMemoryGB", "12", "-Apply"]);
-    expect(r.err).toBe("");
-    expect(r.code).toBe(0);
-    expect(readFileSync(join(dir, "noshutdown-wslconfig"), "utf8")).toBe("[wsl2]\r\nmemory=12GB\r\n");
-    expect(r.out).toMatch(/takes effect at the next 'wsl --shutdown', which this script does not run/);
+  it("refuses the ticket 44 apply parameters", () => {
+    const r = run("old", ["-WslMemoryGB", "12", "-Apply"]);
+    expect(r.code).not.toBe(0);
+    expect(existsSync(join(dir, "old-state"))).toBe(false);
+    expect(existsSync(join(dir, "old-wslconfig"))).toBe(false);
   });
 
   it("dry run of an undo with nothing recorded skips every item", () => {
@@ -93,64 +101,45 @@ describeWithPs(`scripts/host-tuning.ps1 under ${ps}`, { timeout: 60_000 }, () =>
     expect(r.out.match(/^skip: /gm)).toHaveLength(4);
   });
 
-  it.each([
-    [["-Undo", "Registry"], /-Undo takes/],
-    [["-Undo", "Sql", "-SqlMaxServerMemoryMB", "4096"], /both applied and undone/],
-    [["-WslAutoMemoryReclaim", "gradual"], /goes with -WslMemoryGB/],
-    [["-FirewallWslRange", "10.0.0.0/8"], /goes with -FirewallWslOnly/],
-  ])("refuses %j", (args, message) => {
-    const r = run("refuse", args);
+  it("refuses an -Undo item it does not know", () => {
+    const r = run("refuse", ["-Undo", "Registry"]);
     expect(r.code).toBe(2);
-    expect(r.err).toMatch(message);
+    expect(r.err).toMatch(/-Undo takes/);
     expect(r.out).not.toMatch(/would do:/);
   });
 
-  it("writes the WSL cap into an existing .wslconfig, keeps its other lines, and undoes to the same bytes", () => {
-    const config = join(dir, "wsl-wslconfig");
+  it("puts back the .wslconfig an earlier apply changed, to the same bytes", () => {
     const before = "[wsl2]\nswap=4GB\nmemory=20GB\n\n[interop]\nenabled=true\n";
-    writeFileSync(config, before);
-    const apply = run("wsl", ["-WslMemoryGB", "12", "-WslAutoMemoryReclaim", "gradual", "-Apply"]);
-    expect(apply.err).toBe("");
-    expect(apply.code).toBe(0);
-    expect(readFileSync(config, "utf8")).toBe(
-      "[wsl2]\r\nswap=4GB\r\nmemory=12GB\r\n\r\n[interop]\r\nenabled=true\r\n\r\n[experimental]\r\nautoMemoryReclaim=gradual\r\n",
-    );
-    // A second apply changes the value but keeps the original for the undo.
-    expect(run("wsl", ["-WslMemoryGB", "10", "-Apply"]).code).toBe(0);
-    expect(readFileSync(config, "utf8")).toContain("memory=10GB\r\n");
+    recordWslApply("wsl", "[wsl2]\r\nswap=4GB\r\nmemory=12GB\r\n", before);
+    const plan = run("wsl", ["-Undo", "Wsl"]);
+    expect(plan.code).toBe(0);
+    expect(plan.out).toMatch(/^would do: restore /m);
+    expect(readFileSync(join(dir, "wsl-wslconfig"), "utf8")).toContain("memory=12GB");
     const undo = run("wsl", ["-Undo", "Wsl", "-Apply"]);
+    expect(undo.err).toBe("");
     expect(undo.code).toBe(0);
-    expect(readFileSync(config, "utf8")).toBe(before);
+    expect(readFileSync(join(dir, "wsl-wslconfig"), "utf8")).toBe(before);
+    expect(run("wsl", ["-Undo", "Wsl"]).out).toMatch(/^skip: wsl: nothing recorded/m);
   });
 
-  it("deletes a .wslconfig it created, and refuses to undo one changed after it wrote it", () => {
+  it("deletes a .wslconfig an earlier apply created, and refuses to undo one changed after it wrote it", () => {
     const config = join(dir, "new-wslconfig");
-    expect(run("new", ["-WslMemoryGB", "12", "-Apply"]).code).toBe(0);
-    expect(readFileSync(config, "utf8")).toBe("[wsl2]\r\nmemory=12GB\r\n");
+    recordWslApply("new", "[wsl2]\r\nmemory=12GB\r\n", null);
     writeFileSync(config, "[wsl2]\r\nmemory=14GB\r\n");
     const refused = run("new", ["-Undo", "Wsl", "-Apply"]);
     expect(refused.code).toBe(2);
     expect(refused.err).toMatch(/changed after this script wrote it/);
     expect(existsSync(config)).toBe(true);
-    expect(run("new", ["-WslMemoryGB", "12", "-Apply"]).code).toBe(0);
+    writeFileSync(config, "[wsl2]\r\nmemory=12GB\r\n");
     expect(run("new", ["-Undo", "Wsl", "-Apply"]).code).toBe(0);
     expect(existsSync(config)).toBe(false);
   });
 
-  it("edits ini text and checks address ranges", () => {
+  it("reads ini text", () => {
     const cases: [string, string][] = [
-      ["Set-WslConfigValue||wsl2|memory|12GB", "[wsl2]\\nmemory=12GB\\n"],
-      ["Set-WslConfigValue|[WSL2]\\nMemory = 4GB\\n|wsl2|memory|12GB", "[WSL2]\\nmemory=12GB\\n"],
-      ["Set-WslConfigValue|[wsl2]\\nswap=0\\n\\n[boot]\\nsystemd=true|wsl2|memory|12GB", "[wsl2]\\nswap=0\\nmemory=12GB\\n\\n[boot]\\nsystemd=true\\n"],
-      ["Set-WslConfigValue|[boot]\\nsystemd=true|wsl2|memory|8GB", "[boot]\\nsystemd=true\\n\\n[wsl2]\\nmemory=8GB\\n"],
-      ["Set-WslConfigValue|[boot]\\n# memory=1GB\\n|boot|memory|8GB", "[boot]\\n# memory=1GB\\nmemory=8GB\\n"],
       ["Read-WslConfigValue|[wsl2]\\nmemory = 12GB|wsl2|memory", "12GB"],
+      ["Read-WslConfigValue|[WSL2]\\nMemory=4GB|wsl2|memory", "4GB"],
       ["Read-WslConfigValue|[boot]\\nmemory=12GB|wsl2|memory", ""],
-      ["Test-InRange|172.19.0.1|172.16.0.0/12", "True"],
-      ["Test-InRange|172.31.255.254|172.16.0.0/12", "True"],
-      ["Test-InRange|172.32.0.1|172.16.0.0/12", "False"],
-      ["Test-InRange|192.168.1.10|172.16.0.0/12", "False"],
-      ["Test-InRange|10.1.2.3|0.0.0.0/0", "True"],
     ];
     const caseFile = join(dir, "cases.txt");
     writeFileSync(caseFile, cases.map(([c]) => c).join("\n") + "\n");

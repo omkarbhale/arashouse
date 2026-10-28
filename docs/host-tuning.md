@@ -1,10 +1,16 @@
-# Host tuning for three active slots
+# Host settings: the operator's choice
 
-Ticket 44. The captain chose the laptop for good, with about three leases active at once ("3 most I would guess"). This page covers
-what is tuned on the host for that, the script that applies it, and how to undo each item. The captain picks the items and when to
-apply them. Applying the WSL cap ends every WSL session, so the captain also picks when that happens.
+Tickets 44 and 55. arashouse runs on the host as it is. No code path requires, applies or offers to apply a host-wide
+setting: not the WSL memory cap, SQL Server's `max server memory`, a Defender exclusion, the firewall or the power
+plan. The captain (2026-10-28): "Build arashouse cleanly, regardless of wherever it will run. I will make the host
+settings changes if needed, put that on hold."
 
-## Measured before tuning (2026-10-27, `scripts/host-tuning.ps1` inventory, not elevated)
+Where a setting would help the pool, `arashouse doctor` reports it as an `advice` line: the value seen, the value
+recommended, and why. Advice is never a failure or a warning and never changes doctor's exit code (`docs/cli.md`).
+The operator decides whether to apply it, by hand, outside arashouse. Uninstall still removes anything an earlier
+arashouse version applied (below).
+
+## Measured on the laptop (2026-10-27, `scripts/host-tuning.ps1` inventory, not elevated)
 
 | | value |
 |---|---|
@@ -17,74 +23,64 @@ apply them. Applying the WSL cap ends every WSL session, so the captain also pic
 
 The spike (ticket 09) measured about 0.4 GB per lightly active slot (1 GB is the planning figure) and 0 GB for an idle one. Three
 active slots therefore need about 1.2 to 3 GB on Windows, on top of the `min_free_ram_mb` gate (2048 MB, `docs/governor.md`). With
-2.5 to 3 GB free today, the gate would refuse the first lease under load, so the WSL cap is the item that matters.
+2.5 to 3 GB free that day, the gate would refuse a lease under load; that is the case doctor's `wsl memory` advice
+names.
 
-## The items
+## The settings
 
-Each item has its own parameter and its own undo. Items 4 and 6 are settings to record, not changes to the host.
+| Setting | Scope | doctor | Recommended | Why |
+|---|---|---|---|---|
+| WSL memory cap (`[wsl2] memory=<N>GB` in `%UserProfile%\.wslconfig`) | the whole machine; takes effect at `wsl --shutdown`, which ends every WSL session | `advice  wsl memory`, when doctor runs in WSL and Windows has less free RAM than the leases still to come up to `max_active` need (`min_free_ram_mb` each, `docs/governor.md`) | the WSL VM's size less that shortfall, in whole GB (never under 4 GB) | each `get` needs `min_free_ram_mb` free on Windows; a smaller WSL VM gives that room back. On this laptop that was about 12 GB with `autoMemoryReclaim=gradual` |
+| SQL Server `max server memory (MB)` | the whole instance, the operator's own databases too | `advice  sql max server memory`, when it is uncapped (2147483647, the default). The broker reads it with its own login (`hostInfo`); it never sets it | 4096 MB | about twice SQL Server's 1.9 GB working set; uncapped, its buffer pool grows into the RAM active slots need |
+| Defender exclusion for `C:\aras_installations` | the machine's malware scanning | none | off | a reset takes about 10 s with Defender on (ticket 06, map Q9), so speed does not need it; an exclusion is a security trade-off |
+| Firewall: inbound port 80 from the WSL range only | every IIS site, the operator's own installs included | none | off | hardening only: an idle slot has a random, unknown password (ticket 31), and narrowing port 80 also cuts LAN access to every other site |
+| Power: no sleep during a reset | the machine | none | as the operator likes | a slot left `resetting` by sleep is recovered by the state machine (ticket 14) |
 
-| # | Item | Parameter | Elevated | Recommended | Why |
-|---|---|---|---|---|---|
-| 1 | WSL memory cap | `-WslMemoryGB <N>`, optionally `-WslAutoMemoryReclaim gradual` | no | **12 GB, `gradual`** | 12 GB is about 3 GB under today's 15 GB VM, which leaves about 5.7 GB free on Windows before the slots start and about 2.7 GB with three planning-size slots. That still clears the 2048 MB gate. The design's 8 GB is below what the running sessions use now (8 to 9.6 GB), so it would push them into swap. With `gradual`, WSL also returns idle page cache to Windows. The cap takes effect only at `wsl --shutdown` |
-| 2 | SQL `max server memory` | `-SqlMaxServerMemoryMB <MB>` | yes | **4096** | About twice today's working set. It stops SQL Server's buffer pool from taking the room the slots need, and is plenty for restores of 12 to 15 MB backups. The setting covers the whole instance, so the captain's own databases share the cap. It needs no restart |
-| 3 | Defender exclusion for `C:\aras_installations` | `-DefenderExclusion` | yes | **off** | A reset takes about 10 s with Defender on (ticket 06), so speed does not need it, and an exclusion is a security trade-off (map Q9) |
-| 4 | App pool idle timeout on slot pools | none: ticket 25 sets it at provision | n/a | **20 minutes, idle action Terminate** (IIS's default) | An idle slot drops to about 0 GB. A request after idle cold-starts the slot (2 to 2.5 s for `12sp9` after a reset; up to 41 s in the design's measurements), and `get` warms the slot before handing it out |
-| 5 | Inbound port 80 from the WSL range only | `-FirewallWslOnly` (`-FirewallWslRange`, default `172.16.0.0/12`) | yes | **off** | Port 80 serves every IIS site, the captain's existing installs included, so narrowing it also cuts LAN access to those. Exposure is low: an idle slot has a random, unknown password (ticket 31). Turning it on is hardening only |
-| 6 | Power | none | n/a | **keep as measured** (no sleep) | A slot left `resetting` by sleep is recovered by the state machine (ticket 14) |
+Defender, the firewall and power get no advice line: none of them helps the pool work.
 
-## Decisions (2026-10-27)
+**App pool idle timeout: arashouse's own, not a host setting.** A provision sets the idle timeout on the pools it
+creates, `ah-<key>-<NN>-<role>` (10 minutes by default, or what `setup-host.ps1 -SlotIdleTimeoutMinutes` recorded;
+`docs/provision.md`). That is a property of arashouse's own slot, like its folder or its database: IIS's
+`applicationPoolDefaults` and every other pool on the host are left alone, and the setting goes with the slot when it
+is destroyed. So it stays. An idle slot drops to about 0 GB; a request after idle cold-starts it (2 to 2.5 s for
+`12sp9` after a reset), and `get` warms the slot before handing it out.
 
-- **Accepted as recommended:** 3 (no Defender exclusion), 4 (20 minutes, for ticket 25), 5 (no firewall narrowing) and 6 (power as
-  measured). None of them changes the host.
-- **Left to the captain:** 1 (the WSL cap) and 2 (SQL `max server memory`). Each changes the whole machine or the shared SQL
-  instance, the captain's work databases included, so neither has been applied. Both stay opt-in: the values in the table are
-  suggestions, and the commands below apply them and undo them.
+## Ticket 44's decisions (2026-10-27)
 
-Nothing has been applied to the host for this ticket.
+Defender, the idle timeout, the firewall and power were accepted as recommended, and none of them changed the host.
+The WSL cap and SQL `max server memory` were left to the captain and never applied. Ticket 55 then removed the
+appliers: these settings are the operator's, not arashouse's.
 
-## The script: `scripts/host-tuning.ps1`
+## Undoing what an earlier version applied: `scripts/host-tuning.ps1`
 
-Windows PowerShell 5.1, plain ASCII. Copy it to a Windows path (for example `%LOCALAPPDATA%\arashouse\host-tuning\`) and run it with
+Ticket 44's version of this script could apply the four items above. It recorded each item's earlier value the first
+time it applied it, in `state.json` in its state folder (`-StateDir`, default `%LOCALAPPDATA%\arashouse\host-tuning`).
+The script now only reads the settings and undoes what that version recorded. It applies nothing, and refuses the old
+apply parameters.
+
+Windows PowerShell 5.1, plain ASCII. Copy it to a Windows path and run it with
 `powershell -ExecutionPolicy Bypass -File <path> ...`.
 
-- **No item:** prints the inventory above (`now:` lines) and changes nothing.
-- **Dry run by default.** With items but without `-Apply`, it prints the inventory and the plan (`would do:` lines). With `-Apply`,
-  every change is printed (`do:`) before it is made and checked after (`done:`), and the inventory before and after is written to
-  `out\host-tuning-<UTC time>.json` in the state folder.
-- **Undo.** The first apply of an item records its earlier value in `state.json` in the state folder (`-StateDir`, default
-  `%LOCALAPPDATA%\arashouse\host-tuning`). `-Undo Wsl,Sql,Defender,Firewall` (any subset) puts the recorded values back:
-  - **Wsl:** restores the previous `.wslconfig`, or deletes the file if there was none before. It refuses if the file changed after the
-    script wrote it.
-  - **Sql:** sets `max server memory` back to its earlier value.
-  - **Defender:** removes the exclusion, but only if the script added it.
-  - **Firewall:** deletes `arashouse-http-in-wsl` and enables IIS's rule again if it was enabled before.
-- **Elevation.** `-Apply` (or `-Undo ... -Apply`) for Sql, Defender or Firewall needs an elevated shell; otherwise the script exits 4.
-  Wsl writes only the user's own `.wslconfig` and needs no elevation.
-- **Exit codes.** 0 ok, 1 a change did not take (the message says which), 2 refused arguments, 4 not elevated.
-
-What it touches, and nothing else:
-
-- **Wsl:** `%UserProfile%\.wslconfig`. It sets `memory` in `[wsl2]` and `autoMemoryReclaim` in `[experimental]`, and keeps every
-  other line. It never runs `wsl --shutdown`.
-- **Sql:** `sp_configure 'max server memory (MB)'` on `master`, through the current Windows login over shared memory. `show advanced
-  options` is switched on only for the change and then put back. No other database is opened.
-- **Defender:** the one path `C:\aras_installations`.
-- **Firewall:** adds the rule `arashouse-http-in-wsl` (allow inbound TCP 80 from the WSL range, every profile) and disables
-  `IIS-WebServerRole-HTTP-In-TCP`. Before that, it checks that the host's current WSL address is inside the range, so WSL keeps its
-  access. If another enabled rule still opens port 80, the script names it and leaves it alone.
-- **Power:** read only.
+- **No item:** prints the inventory (`now:` lines: RAM, `.wslconfig`, SQL `max server memory`, the Defender
+  exclusion, port 80's firewall rules, power) and changes nothing.
+- **`-Undo Wsl,Sql,Defender,Firewall`** (any subset): without `-Apply`, the plan (`would do:` lines); with `-Apply`, each undo is
+  printed (`do:`) before it is made and checked after, and the inventory before and after goes to
+  `out\host-tuning-<UTC time>.json` in the state folder. An item with no record is skipped.
+  - **Wsl:** restores the previous `.wslconfig`, or deletes the file if there was none before. It refuses if the file
+    changed after the script wrote it. No elevation.
+  - **Sql:** sets `max server memory` back to its earlier value, through the current Windows login on `master` over
+    shared memory. Elevated.
+  - **Defender:** removes the exclusion, but only if the script added it. Elevated.
+  - **Firewall:** deletes `arashouse-http-in-wsl` and enables IIS's `IIS-WebServerRole-HTTP-In-TCP` again if it was
+    enabled before. Elevated.
+- **Exit codes.** 0 ok, 1 an undo did not take (the message says which), 2 refused arguments, 4 not elevated.
 
 ```powershell
-# the suggested SQL cap, if the captain chooses it: elevated
-powershell -ExecutionPolicy Bypass -File host-tuning.ps1 -SqlMaxServerMemoryMB 4096 -Apply
-# the suggested WSL cap, if the captain chooses it: no elevation; then `wsl --shutdown` when no session is running
-powershell -ExecutionPolicy Bypass -File host-tuning.ps1 -WslMemoryGB 12 -WslAutoMemoryReclaim gradual -Apply
-# undo
-powershell -ExecutionPolicy Bypass -File host-tuning.ps1 -Undo Sql -Apply
+powershell -ExecutionPolicy Bypass -File host-tuning.ps1                       # read only
+powershell -ExecutionPolicy Bypass -File host-tuning.ps1 -Undo Sql,Firewall -Apply   # elevated
 ```
 
-## After applying
+`setup-host.ps1 -Uninstall` removes a Defender exclusion of the root, which its own `-DefenderExclusion` could add
+before ticket 55 (`docs/setup.md`). `teardown.ps1` names the `host-tuning.ps1 -Undo` for anything the state file
+records, and fails while ticket 44's firewall rule is left (`docs/teardown.md`).
 
-Ticket 38 runs three leases on the provisioned pool and checks that the free RAM it measures clears `min_free_ram_mb`. That ticket
-also decides whether the gate can drop to 1024 MB (ticket 09's follow-up). Ticket 25 sets the idle timeout from item 4 when it
-provisions slot pools.

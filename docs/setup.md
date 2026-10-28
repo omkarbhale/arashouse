@@ -1,8 +1,9 @@
 # Host setup: `arashouse setup`
 
 Ticket 21. The one-time preparation of the Windows host, and the install of the broker (`docs/broker.md`).
-Nothing here touches SQL Server objects or uses `sa` (ticket 22). Host memory, the WSL cap and the firewall are
-ticket 44 (`docs/host-tuning.md`).
+Nothing here touches SQL Server objects or uses `sa` (ticket 22). It changes no host-wide setting (Defender,
+firewall, memory, power): those are the operator's own choice, and `arashouse doctor` prints advice where one would
+help (ticket 55, `docs/host-tuning.md`).
 
 ## Running it
 
@@ -102,12 +103,14 @@ The steps, in order:
 
    An installed broker is left as it is on a second run. `-UpdateBroker` installs the bundle's build over it,
    recompiles the wrapper and restarts the service: the way a later ticket ships new verbs.
-6. **Options, off by default.**
-   - `-DefenderExclusion` adds a Defender exclusion for the root. The spike measured a reset at about 10 s with
-     Defender on, so speed does not need it (map Q9).
+6. **Option, off by default.**
    - `-SlotIdleTimeoutMinutes <1..1440>` records a short idle timeout for slot app pools in the result's
      `options`. A provision applies it to the pools it creates (default 10 minutes; `docs/provision.md`). It is kept
-     across runs.
+     across runs. It is a property of arashouse's own `ah-<key>-<NN>-<role>` pools, not a host setting: IIS's
+     defaults and every other pool are left alone (`docs/host-tuning.md`).
+
+   Before ticket 55 a `-DefenderExclusion` option added a Defender exclusion for the root. It is gone: the spike
+   measured a reset at about 10 s with Defender on (map Q9), and an exclusion is the operator's choice.
 
 ## Installed on the host (2026-10-27)
 
@@ -126,7 +129,8 @@ WSL as the worker:
 ## Uninstall
 
 `setup-host.ps1 -Uninstall -Apply` stops the service, takes its account out of Administrators, deletes the
-service and removes the Defender exclusion if there is one. `-RemoveRoot` also deletes the root, but only when it
+service and removes a Defender exclusion of the root if there is one (an earlier version's `-DefenderExclusion`
+could add it; the root is arashouse's own). `-RemoveRoot` also deletes the root, but only when it
 holds nothing but the arashouse folders above and no junction or link; otherwise it refuses and deletes nothing.
 On this host the root also holds `gate\`, `instances\` and `spike\`, so `-RemoveRoot` refuses until they are gone.
 `arashouse teardown` (ticket 49, `docs/teardown.md`) removes the slots, the goldens and the SQL objects first, and runs

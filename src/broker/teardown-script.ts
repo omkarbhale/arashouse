@@ -29,8 +29,14 @@ import { PS_DENY_LIST_PRINTS, PS_IIS, PS_PATHS_AND_PRINTS } from "./ps-common.js
 /** The two scripts the teardown bundle runs, relative to `teardown.ps1`'s folder. */
 export const TEARDOWN_CHILDREN = { host: "host\\setup-host.ps1", sql: "sql\\setup-sql.ps1" } as const;
 
-/** The inbound rule `scripts/host-tuning.ps1 -FirewallWslOnly` adds (ticket 44); its `-Undo Firewall` removes it. */
+/**
+ * The inbound rule ticket 44's `scripts/host-tuning.ps1 -FirewallWslOnly` added; no version since ticket 55 adds it, and
+ * `host-tuning.ps1 -Undo Firewall` removes it.
+ */
 export const HOST_TUNING_FIREWALL_RULE = "arashouse-http-in-wsl";
+
+/** Where `scripts/host-tuning.ps1` records what ticket 44's version applied, under the user's `%LOCALAPPDATA%`. */
+export const HOST_TUNING_STATE = "arashouse\\host-tuning\\state.json";
 
 /** The file the script writes its result to (with `-Apply`), next to itself: the root may be gone by then. */
 export const TEARDOWN_RESULT_FILE = "teardown-result.json";
@@ -158,6 +164,7 @@ $PoolLogin = ${psQuote(POOL_LOGIN)}
 $Signer = ${psQuote(SIGNER)}
 $BrokerService = ${psQuote(BROKER_SERVICE_NAME)}
 $FirewallRule = ${psQuote(HOST_TUNING_FIREWALL_RULE)}
+$TuningStateFile = Join-Path $env:LOCALAPPDATA ${psQuote(HOST_TUNING_STATE)}
 $DeniedRoots = ${psList(DENIED_INSTALL_ROOTS)}
 $DeniedServicePrefixes = ${psList(DENIED_SERVICE_PREFIXES)}
 $HostScript = Join-Path $PSScriptRoot ${psQuote(TEARDOWN_CHILDREN.host)}
@@ -283,6 +290,12 @@ function Get-DefenderExcluded {
         if ($paths -match '^N/A') { return $null }
         return [bool]($paths | Where-Object { $_ -ieq $Root })
     } catch { return $null }
+}
+
+function Get-TuningRecord {
+    # The items ticket 44's host-tuning.ps1 applied and recorded, by name (Wsl, Sql, Defender, Firewall); none when unreadable.
+    try { $record = Get-Content -LiteralPath $TuningStateFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { return }
+    foreach ($item in @('Wsl', 'Sql', 'Defender', 'Firewall')) { if ($record.PSObject.Properties[$item.ToLower()]) { $item } }
 }
 
 function Get-Leftovers {
@@ -436,6 +449,9 @@ if ($RemoveRoot) { $mustGo += 'root' }
 $left = @($mustGo | ForEach-Object { @($after[$_]) } | Where-Object { $_ })
 foreach ($name in $left) { Write-Host "left: $name" }
 if ($after.firewall.Count -gt 0) { Add-Note ("the firewall rule $FirewallRule is ticket 44's: remove it with host-tuning.ps1 -Undo Firewall -Apply") }
+# Host settings an earlier arashouse applied (ticket 44) are recorded by host-tuning.ps1 for this Windows user; it undoes them.
+$tuned = @(Get-TuningRecord)
+if ($tuned.Count -gt 0) { Add-Note ('host-tuning.ps1 recorded host settings an earlier arashouse applied ({0}): undo them with host-tuning.ps1 -Undo {0} -Apply' -f ($tuned -join ',')) }
 if (-not $after.defenderRead) { Add-Note 'the Defender exclusions cannot be read here, so an exclusion of the root would not be seen' }
 foreach ($n in $Notes) { Write-Host "note: $n" }
 $ok = ($Errors.Count -eq 0) -and $(if ($Apply) { $left.Count -eq 0 -and $after.unread.Count -eq 0 -and $null -ne $denyAfter } else { $true })

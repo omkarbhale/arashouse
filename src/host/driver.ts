@@ -38,6 +38,11 @@ export interface SqlLoginInfo {
   readonly dbcreator: boolean;
   /** How many of the `arashouse_admin` procedures it may execute (all five once `setup-sql.ps1` has run). */
   readonly procedures: number;
+  /**
+   * The instance's `max server memory (MB)` in use, as the login reads it (2147483647 is SQL Server's default: uncapped);
+   * absent when it cannot be read, or from a broker older than ticket 55. `doctor` gives advice on it, never sets it.
+   */
+  readonly maxServerMemoryMb?: number;
 }
 
 export interface HostInfo {

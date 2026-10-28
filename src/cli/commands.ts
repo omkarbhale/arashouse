@@ -7,6 +7,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { release, totalmem } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES } from "../core/exit-codes.js";
@@ -397,7 +398,13 @@ async function operatorDeps(ctx: Context): Promise<OperatorDeps> {
     media: (flavor) => mediaPresent(flavor, { env: ctx.env }),
     setup: selected.kind === "broker" ? () => observeSetup() : undefined,
     importTool: () => describeArasPkg(ctx.env),
+    wslMemoryMb: selected.kind === "broker" ? wslMemoryMb : undefined,
   };
+}
+
+/** The WSL VM's memory in MB (inside WSL, MemTotal is the VM's cap), or undefined outside WSL. */
+function wslMemoryMb(): number | undefined {
+  return /microsoft/i.test(release()) ? Math.floor(totalmem() / (1024 * 1024)) : undefined;
 }
 
 function noPositionals(parsed: ParsedArgs, command: string): void {

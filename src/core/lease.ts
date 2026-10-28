@@ -485,12 +485,16 @@ async function attemptGet(
   const password = (deps.newPassword ?? defaultPassword)();
   const secretName = leaseSecretName(lease.lease_id);
   const ref = { flavor: candidate.flavor, slot: candidate.number };
+  let restoring = false;
   try {
     await deps.secrets.put(secretName, password);
     await host.writeStamp(ref, { ...stamp, leaseId: lease.lease_id });
     // A restore comes before the lease's password: it carries the free slot's root password into the restored database,
     // which setLeaseCredentials then logs in with, as on any free slot.
-    if (options.restore) await restoreInto(deps, ref, lease.lease_id, options.restore);
+    if (options.restore) {
+      restoring = true;
+      await restoreInto(deps, ref, lease.lease_id, options.restore);
+    }
     const credentials = await host.setLeaseCredentials(ref, { secretRef: secretName });
     if (!credentials.ok) throw new HostError("Retryable", `the lease's password could not be set: ${credentials.detail}`);
     if (options.agent) {
@@ -516,7 +520,9 @@ async function attemptGet(
     };
   } catch (err) {
     // The slot may already carry this lease's stamp or credentials, so it is reset before anyone else gets it.
-    const quarantine = isHostError(err, "Quarantine");
+    // Once a leaseholder's backup is in (or half in), a refusal is the backup's, not the slot's: for example a 12.0 server
+    // refusing the password edit on a 23 database kept with --skip-version-check. The reset puts the golden back.
+    const quarantine = isHostError(err, "Quarantine") && !restoring;
     await abandon(deps, candidate.id, lease.lease_id, quarantine ? { to: "quarantined", reason: redact(err.message) } : { to: "dirty" }, `get failed: ${redact(errorText(err))}`);
     if (quarantine) return { kind: "retry" };
     throw asLeaseError(err);

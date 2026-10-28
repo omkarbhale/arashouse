@@ -62,14 +62,18 @@ makes no backup of any existing database: the caller brings one (ticket 10's rul
    - **the version check**: the restored `VersionMajor` and `VersionBuild` must be the flavor's server build. A Release 23
      database in a `12sp9` slot fails with the flavor it belongs to: `it is a 23 database: restore it into a 23 lease
      (arashouse get 23 --restore ...), or pass --skip-version-check to keep it`. `--skip-version-check` keeps it, as
-     libs-js's CLI allows for engines;
+     libs-js's CLI allows for engines. The slot's own server must still be able to serve it: a `12sp9` (12.0) server lets
+     `root` log in to a Release 23 database but refuses the password edit (`Invalid column name 'ZONE'`, measured), so
+     that `get` fails at step 4 and gives the lease back;
    - the slot is started and warmed again (`startSlot`'s warm-up);
    - **the staged copy is deleted**, and the lease's staging folder once it is empty, whether the restore worked or not.
      The CLI then removes the lease's staging folder too.
 4. `get` sets the lease's password (ticket 34) and hands the lease over.
 
 If any of it fails, `get` gives the lease back: the password file is deleted and the slot goes `dirty`. The reset restores
-the golden backup, so a failed restore leaves a usable slot, after the reset. The broker's reason is the error (exit 7 for a
+the golden backup, so a failed restore leaves a usable slot, after the reset. A refusal that would quarantine a slot on a
+plain `get` (the server refusing the password edit, say) only sends it to be reset once a backup is in: the failure is the
+backup's, not the slot's. And `get` does not try the restore on another slot. The broker's reason is the error (exit 7 for a
 refusal, 6 for a slot that did not stop or start).
 
 ## On return

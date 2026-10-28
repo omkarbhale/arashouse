@@ -709,6 +709,18 @@ describe("get --restore", () => {
     expect(st.log.at(-1)).toMatch(/^clear [0-9a-f]{8}$/);
   });
 
+  it("sends the slot to be reset, not quarantined, when the slot refuses something after the restore", async () => {
+    const p = await pool({ "12sp9": 2 }, { staging: staging().staging });
+    // A 12.0 server refusing the password edit on a 23 database kept with --skip-version-check (measured on the host).
+    p.host.injectFault({ method: "setLeaseCredentials", kind: "fail", error: "Quarantine", message: "the password edit as root was refused: invalid_grant: Invalid column name 'ZONE'." });
+    const err = await failure(getLease(p.deps, { flavor: "12sp9", holder: "t", restore: { ...restore, skipVersionCheck: true } }));
+    expect((err as Error).message).toContain("Invalid column name 'ZONE'");
+    expect(await p.status("12sp9-01")).toBe("dirty");
+    // And the restore is not tried on the next slot.
+    expect(await p.status("12sp9-02")).toBe("free");
+    expect(p.host.calls.filter((c) => c.method === "restoreDatabase")).toHaveLength(1);
+  });
+
   it("gives the lease back when the backup cannot be staged", async () => {
     const st = staging(new Error("ENOSPC: no space left on device"));
     const p = await pool({ "12sp9": 1 }, { staging: st.staging });

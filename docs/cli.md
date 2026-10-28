@@ -19,6 +19,8 @@ tickets 39 to 42 (the database restore, `get --restore`, ticket 39, is in `docs/
 | `arashouse git-baseline --lease <lease_id> [--json]` | Makes a held lease's `Innovator\` a git repository the same way (`docs/git-baseline.md`). |
 | `arashouse get <flavor> --holder <task> --import <manifest\|folder> [<import options>] ... [--keep-on-fail]` | The same, then imports package manifests onto the lease with import-export-libs-js, in order (`docs/import.md`). |
 | `arashouse import --lease <lease_id> <manifest\|folder> [<import options>] ...` | Imports package manifests onto a held lease (`docs/import.md`). |
+| `arashouse get [<flavor>] --holder <task> --bootstrap <recipe.json\|@name> [--keep-on-fail]` | Leases a slot and brings it up from a recipe: restore, code, import, git, health check (`docs/bootstrap.md`). |
+| `arashouse bootstrap --lease <lease_id> <recipe.json\|@name> [--yes] [--json]` | Applies a recipe to a held lease in the same order (`docs/bootstrap.md`). |
 | `arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]` | Gives the lease back; its slot is discarded. |
 | `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]] [--quiet]` | The same, by slot name; the lease id is required (ABA protection). |
 | `arashouse status [--json]` | Every slot, its holder, lease age and bootstrap, totals per flavor, `max_active` in use. |

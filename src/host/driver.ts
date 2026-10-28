@@ -12,6 +12,7 @@ import type { FlavorKey } from "../core/flavors.js";
 import type { LicenceStatus } from "../core/licence.js";
 import type { ManifestDiff, VerifyLevel } from "../core/manifest.js";
 import type { SlotRef } from "../core/names.js";
+import type { RestoreOptions } from "../core/restore.js";
 
 /** What every successful call returns. `detail` is one line for a log; it never holds a secret. */
 export interface HostResult {
@@ -36,7 +37,7 @@ export interface SqlLoginInfo {
   readonly login: string;
   readonly sysadmin: boolean;
   readonly dbcreator: boolean;
-  /** How many of the `arashouse_admin` procedures it may execute (all five once `setup-sql.ps1` has run). */
+  /** How many of the `arashouse_admin` procedures it may execute (all seven once `setup-sql.ps1` has run). */
   readonly procedures: number;
   /**
    * The instance's `max server memory (MB)` in use, as the login reads it (2147483647 is SQL Server's default: uncapped);
@@ -201,8 +202,11 @@ export interface HostDriver {
    * slot quiesced, the files copied, its pools started again and warmed. A refusal changes nothing.
    */
   deployCode(slot: SlotRef, stagedPath: string, options: DeployOptions): Promise<DeployResult>;
-  /** Restores a `.bak` the leaseholder staged under `staging\<lease_id>` (ticket 39). */
-  restoreDatabase(slot: SlotRef, stagedBak: string): Promise<HostResult>;
+  /**
+   * Restores the `.bak` the leaseholder staged as `staging\<lease_id>\restore.bak` over the leased slot's database, then starts
+   * the slot again (ticket 39, docs/restore.md). The staged copy is deleted whatever happens.
+   */
+  restoreDatabase(slot: SlotRef, stagedBak: string, options?: RestoreOptions): Promise<HostResult>;
   /** Backs the slot's database up to a path under `staging\<lease_id>` (ticket 43). */
   backupDatabase(slot: SlotRef, stagedPath: string): Promise<HostResult>;
 

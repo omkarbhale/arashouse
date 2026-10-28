@@ -101,12 +101,12 @@ describe("teardown.ps1 (generated)", () => {
     for (const l of reads) expect(l).toMatch(/^\s*try \{ .*Get-ChildNames .*\} catch \{/);
   });
 
-  it("lists SQL Server only by the arashouse_ filter and the two exact logins", () => {
+  it("lists SQL Server only by the arashouse_ filter and the broker's exact login", () => {
     const sql = body("Get-SqlNames");
     const selects = sql.split("\n").filter((l) => /SELECT/.test(l));
     expect(selects).toEqual([
       `        $dbs = & $read "SELECT name FROM sys.databases WHERE name LIKE N'arashouse[_]%'"`,
-      `        $logins = & $read "SELECT name FROM sys.server_principals WHERE name LIKE N'arashouse[_]%' OR name = @pool OR name = @signer"`,
+      `        $logins = & $read "SELECT name FROM sys.server_principals WHERE name LIKE N'arashouse[_]%' OR name = @pool"`,
     ]);
     expect(script).toContain("Data Source=lpc:.;Initial Catalog=master;Integrated Security=SSPI;Connect Timeout=10;Pooling=False;Application Name=arashouse-teardown");
     expect(() => renderTeardownScript({ version: "0.0.0", setupHostSha256: HOST, setupSqlSha256: SQL, dataSource: "tcp:prod" })).toThrow("data source");

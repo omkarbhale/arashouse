@@ -55,7 +55,8 @@
         "extracted",
         "last_reset_at",
         "last_reset_ms",
-        "quarantine_reason"
+        "quarantine_reason",
+        "bootstrap"
       ],
       "properties": {
         "slot": { "type": "string", "pattern": "^[a-z0-9]+-[0-9]{2}$" },
@@ -68,7 +69,11 @@
         "extracted": { "type": ["boolean", "null"], "description": "Whether an arashouse extract ran against the lease; null with no lease. Information only: the reset happens either way." },
         "last_reset_at": { "type": ["string", "null"] },
         "last_reset_ms": { "type": ["integer", "null"], "minimum": 0 },
-        "quarantine_reason": { "type": ["string", "null"] }
+        "quarantine_reason": { "type": ["string", "null"] },
+        "bootstrap": {
+          "type": ["string", "null"],
+          "description": "What the lease was brought up from, as key:value pairs joined by commas: restore:custom for a backup the caller supplied, restore:profile:<name> for a media profile (get --restore). Never a path."
+        }
       }
     },
     "waiter": {

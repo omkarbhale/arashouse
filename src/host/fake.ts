@@ -36,6 +36,7 @@ import {
   type StartOptions,
 } from "./driver.js";
 import { HostError, type HostErrorKind } from "./errors.js";
+import type { RestoreOptions } from "../core/restore.js";
 import {
   assertFlavorOwned,
   assertGoldenPath,
@@ -417,10 +418,10 @@ export class FakeHost implements HostDriver {
     );
   }
 
-  restoreDatabase(slot: SlotRef, stagedBak: string): Promise<HostResult> {
+  restoreDatabase(slot: SlotRef, stagedBak: string, options: RestoreOptions = {}): Promise<HostResult> {
     return this.call(
       "restoreDatabase",
-      { slot, args: { path: stagedBak } },
+      { slot, args: { path: stagedBak, allowForeignOrigin: options.allowForeignOrigin === true, skipVersionCheck: options.skipVersionCheck === true } },
       () => {
         assertSlotOwned(slot, this.owned);
         assertStagedPath(slot, stagedBak, this.owned, this.stateOf(slot).stamp?.leaseId);

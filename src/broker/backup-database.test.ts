@@ -129,7 +129,7 @@ describe("backupDatabase", () => {
 
   it("the host step backs up the slot's own database, COPY_ONLY, to its derived scratch file and takes no path from the request", () => {
     const script = renderSlotStepsScript(ROOT);
-    const step = script.slice(script.indexOf("'backup-database' {"), script.indexOf("'stop' {"));
+    const step = script.slice(script.indexOf("'backup-database' {"), script.indexOf("'read-backup' {"));
     expect(step).toContain('"BACKUP DATABASE " + (Format-Ident $Database) + " TO DISK = " + (Format-Str $ExtractBackup) + " WITH COPY_ONLY, INIT, FORMAT, CHECKSUM"');
     expect(step).not.toMatch(/\$request\./);
     expect(script).toContain(`$ExtractBackup = Join-Path $SqlData "$($Database)-extract.bak"`);

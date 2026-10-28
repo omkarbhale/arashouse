@@ -27,13 +27,16 @@ import {
   formatAge,
   formatStatus,
   getLease,
+  leaseRef,
   leaseSecretName,
   leaseStatus,
   renderGetJson,
   returnLease,
   type LeaseDeps,
   type LeaseGrant,
+  type Staging,
 } from "./lease.js";
+import { stagedBackup } from "./restore.js";
 import { slotId, type SlotRef } from "./names.js";
 import { GuardError } from "./guards.js";
 import { LeaseFileStore } from "./lease-files.js";
@@ -641,6 +644,95 @@ describe("get --agent", () => {
   });
 });
 
+describe("get --restore", () => {
+  /** A staging folder that records what it was asked, standing in for the host's. */
+  function staging(fail?: Error): { readonly log: string[]; readonly staging: Staging } {
+    const log: string[] = [];
+    return {
+      log,
+      staging: {
+        async stageBackup(leaseId, source) {
+          log.push(`stage ${source}`);
+          if (fail) throw fail;
+          return stagedBackup(leaseId);
+        },
+        async clear(leaseId) {
+          log.push(`clear ${leaseRef(leaseId)}`);
+        },
+      },
+    };
+  }
+  const restore = { source: "/home/w/scratch.bak", label: "custom" };
+
+  it("stages and restores the backup before the lease's password is set, and records it as the lease's bootstrap", async () => {
+    const st = staging();
+    const p = await pool({ "12sp9": 1 }, { staging: st.staging });
+    const grant = await getLease(p.deps, { flavor: "12sp9", holder: "t", restore });
+    const log = p.host.callLog;
+    expect(log.slice(log.indexOf("writeStamp"))).toEqual(["writeStamp", "restoreDatabase", "setLeaseCredentials"]);
+    expect(p.host.calls.find((c) => c.method === "restoreDatabase")).toMatchObject({
+      target: "12sp9-01",
+      args: { path: stagedBackup(grant.lease_id), allowForeignOrigin: false, skipVersionCheck: false },
+    });
+    expect(st.log).toEqual([`stage ${restore.source}`, `clear ${leaseRef(grant.lease_id)}`]);
+    // The lease record says what it was brought up from, and nothing of the file.
+    const state = await p.store.read();
+    expect(state.slots["12sp9-01"]?.lease?.bootstrap).toEqual({ restore: "custom" });
+    expect(JSON.stringify(state)).not.toContain("scratch.bak");
+    const report = buildStatus(state, { now: new Date(p.clock.t) });
+    expect(report.slots[0]?.bootstrap).toBe("restore:custom");
+    expect((await validator("status.schema.json"))(report)).toBe(true);
+    expect(formatStatus(report).join("\n")).toMatch(/^12sp9-01\s+12sp9\s+leased\s+t\s+[0-9a-f]{8}\s+0s\s+1\.5s\s+restore:custom$/m);
+    // The return resets the slot as for any lease: nothing of the restore stays.
+    await returnLease(p.deps, { target: grant.lease_id });
+    expect((await p.store.read()).slots["12sp9-01"]?.lease).toBeUndefined();
+  });
+
+  it("passes the two overrides to the host, and a profile's label", async () => {
+    const p = await pool({ "12sp9": 1 }, { staging: staging().staging });
+    await getLease(p.deps, { flavor: "12sp9", holder: "t", restore: { ...restore, label: "profile:demo", allowForeignOrigin: true, skipVersionCheck: true } });
+    expect(p.host.calls.find((c) => c.method === "restoreDatabase")?.args).toMatchObject({ allowForeignOrigin: true, skipVersionCheck: true });
+    expect(buildStatus(await p.store.read(), { now: new Date(p.clock.t) }).slots[0]?.bootstrap).toBe("restore:profile:demo");
+  });
+
+  it("gives the lease back for a reset when the restore is refused, with the broker's reason and exit 7", async () => {
+    const st = staging();
+    const p = await pool({ "12sp9": 1 }, { staging: st.staging });
+    const why = "12sp9-01: the restored database is version 14.0 SP9 build 36073, not the 12sp9 server build 12.0.0.24090; it is a 23 database";
+    p.host.injectFault({ method: "restoreDatabase", kind: "fail", error: "Refused", message: why });
+    const err = await failure(getLease(p.deps, { flavor: "12sp9", holder: "t", restore }));
+    expect(exitCodeFor(err)).toBe(EXIT_CODES.refused);
+    expect((err as Error).message).toContain("it is a 23 database");
+    expect(await p.status("12sp9-01")).toBe("dirty");
+    expect(p.secrets.size).toBe(0);
+    expect(p.host.callLog).not.toContain("setLeaseCredentials");
+    expect(st.log.at(-1)).toMatch(/^clear [0-9a-f]{8}$/);
+  });
+
+  it("sends the slot to be reset, not quarantined, when the slot refuses something after the restore", async () => {
+    const p = await pool({ "12sp9": 2 }, { staging: staging().staging });
+    // A 12.0 server refusing the password edit on a 23 database kept with --skip-version-check (measured on the host).
+    p.host.injectFault({ method: "setLeaseCredentials", kind: "fail", error: "Quarantine", message: "the password edit as root was refused: invalid_grant: Invalid column name 'ZONE'." });
+    const err = await failure(getLease(p.deps, { flavor: "12sp9", holder: "t", restore: { ...restore, skipVersionCheck: true } }));
+    expect((err as Error).message).toBe("the restored database does not work in 12sp9-01, which is reset: the password edit as root was refused: invalid_grant: Invalid column name 'ZONE'.");
+    expect(exitCodeFor(err)).toBe(EXIT_CODES.refused);
+    expect(await p.status("12sp9-01")).toBe("dirty");
+    // And the restore is not tried on the next slot.
+    expect(await p.status("12sp9-02")).toBe("free");
+    expect(p.host.calls.filter((c) => c.method === "restoreDatabase")).toHaveLength(1);
+  });
+
+  it("gives the lease back when the backup cannot be staged", async () => {
+    const st = staging(new Error("ENOSPC: no space left on device"));
+    const p = await pool({ "12sp9": 1 }, { staging: st.staging });
+    const err = await failure(getLease(p.deps, { flavor: "12sp9", holder: "t", restore }));
+    expect((err as Error).message).toContain("ENOSPC");
+    expect(await p.status("12sp9-01")).toBe("dirty");
+    expect(p.host.callLog).not.toContain("restoreDatabase");
+    expect(st.log).toHaveLength(2);
+  });
+});
+
 describe("return", () => {
   it("marks the slot dirty and exits without calling the host or waiting for a reset", async () => {
     const p = await pool({ "23": 1 });
@@ -844,8 +936,8 @@ describe("status", () => {
     await p.drive("23-02", { to: "quarantined", reason: "reset failed at tree" });
     p.clock.t += 125_000;
     const text = formatStatus(await leaseStatus(p.deps)).join("\n");
-    expect(text).toMatch(/^SLOT\s+FLAVOR\s+STATUS\s+HOLDER\s+LEASE\s+AGE\s+LAST RESET$/m);
-    expect(text).toMatch(/^23-01\s+23\s+leased\s+task-a\s+[0-9a-f]{8}\s+2m05s\s+1\.5s$/m);
+    expect(text).toMatch(/^SLOT\s+FLAVOR\s+STATUS\s+HOLDER\s+LEASE\s+AGE\s+LAST RESET\s+BOOTSTRAP$/m);
+    expect(text).toMatch(/^23-01\s+23\s+leased\s+task-a\s+[0-9a-f]{8}\s+2m05s\s+1\.5s\s+-$/m);
     expect(text).toContain("quarantined 23-02: reset failed at tree");
     expect(text).toContain("23: 0 free of 2 (1 leased, 0 dirty, 0 resetting, 1 quarantined)");
     expect(text).toContain("max_active: 1 of 3 in use");

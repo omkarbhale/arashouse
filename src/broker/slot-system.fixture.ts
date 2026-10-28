@@ -43,6 +43,8 @@ import type { DatabaseReading, EntryKind, GoldenCheck, SlotLogins, SlotSystem, S
 import type { DatabaseBackup } from "./backup-database.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 import type { SigningCertificate } from "./signing-cert.js";
+import type { StagedBackupReading, StagedRestore } from "./restore-database.js";
+import { stagedBackup, type BackupHeader } from "../core/restore.js";
 
 export const FAKE_GOLDEN_HASH = "9".repeat(64);
 
@@ -106,6 +108,20 @@ export class FakeSlotSystem implements SlotSystem {
     const alias = /\/(ah-[a-z0-9]+-\d{2})\//.exec(url)?.[1] ?? "";
     return `<DBList><DB id="${alias.replace(/^ah-/, "arashouse_").replace(/-/g, "_")}"/></DBList>`;
   };
+  /** The header `readStagedBackup` reads of a staged backup (ticket 39): a full backup of a 12sp9 scratch database. */
+  stagedHeader: BackupHeader = {
+    sets: [{ position: 1, backupType: 1, databaseName: "scratch_12sp9", softwareVersion: "15.0.2000" }],
+    files: [
+      { logicalName: "scratch_12sp9", type: "D", sizeBytes: 80 * 1024 ** 2 },
+      { logicalName: "scratch_12sp9_log", type: "L", sizeBytes: 8 * 1024 ** 2 },
+    ],
+  };
+  /** The host's SQL Server and the free space under sqldata, as `readStagedBackup` reads them. */
+  restoreTarget = { serverVersion: "15.0.2190.7", freeBytes: 100 * 1024 ** 3 };
+  /** The version rows a database restored from a staged backup holds; the slot's own when undefined. */
+  stagedVersion: Record<string, string> | undefined;
+  /** The `expected` names each `restoreStaged` was given. */
+  readonly stagedRestores: { readonly databaseName: string; readonly data: string; readonly log: string }[] = [];
   /** Overrides parts of what `resetDatabase` answers. */
   resetAnswer: Partial<Extract<DatabaseReset, { state: "restored" }>> = {};
   /** What `golden` answers. */
@@ -263,6 +279,24 @@ export class FakeSlotSystem implements SlotSystem {
     const bytes = new TextEncoder().encode(`COPY_ONLY backup of ${databaseName(slot)}`);
     this.put(extractBackupScratch(slot, this.root), bytes);
     return { state: "backed-up", backupMs: 900, bytes: bytes.length };
+  }
+
+  async readStagedBackup(slot: SlotRef, leaseId: string): Promise<StagedBackupReading> {
+    this.record("readStagedBackup", slot);
+    const file = stagedBackup(leaseId, this.root);
+    if (!this.files.has(file.toLowerCase())) throw new Error(`read-backup failed (exit 1): error: ${file} does not exist`);
+    return { header: this.stagedHeader, ...this.restoreTarget };
+  }
+
+  async restoreStaged(slot: SlotRef, leaseId: string, expected: { readonly databaseName: string; readonly data: string; readonly log: string }): Promise<StagedRestore> {
+    this.record("restoreStaged", slot);
+    void leaseId;
+    if (!this.objects.has(`database ${databaseName(slot)}`)) return { state: "missing" };
+    this.stagedRestores.push(expected);
+    // A restored backup carries no reset marker: the step removes whatever the backup brought.
+    this.databaseMarkers.delete(databaseName(slot));
+    if (this.stagedVersion) this.databaseVersion = { ...this.stagedVersion };
+    return { state: "restored", restoreMs: 900, killed: 0, access: "MULTI_USER", carried: 2, marker: {}, version: { ...this.databaseVersion } };
   }
 
   async stop(slot: SlotRef): Promise<StopInfo> {

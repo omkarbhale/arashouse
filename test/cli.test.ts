@@ -126,6 +126,50 @@ describe("get --json", () => {
   });
 });
 
+describe("get --restore", () => {
+  it("restores a backup file into the lease, stages it in a folder of its own, and status shows restore:custom", async () => {
+    await seed({ "12sp9": 1 });
+    const backup = join(home, "scratch.bak");
+    await writeFile(backup, "not really a backup");
+    const r = await cli(["get", "12sp9", "--holder", "task-a", "--restore", backup, "--json"]);
+    expect(r.code, r.stderr).toBe(0);
+    const grant = JSON.parse(r.stdout) as Grant;
+    expect(grant.slot).toBe("12sp9-01");
+    // The staged copy is gone once the lease is handed over.
+    expect(existsSync(join(home, "fake-staging", grant.lease_id))).toBe(false);
+    const status = JSON.parse((await cli(["status", "--json"])).stdout) as { slots: { slot: string; bootstrap: string | null }[] };
+    expect(status.slots).toEqual([expect.objectContaining({ slot: "12sp9-01", bootstrap: "restore:custom" })]);
+    expect((await cli(["status"])).stdout).toMatch(/^12sp9-01 .* restore:custom$/m);
+    expect(await readFile(join(home, "state.json"), "utf8")).not.toContain("scratch.bak");
+  });
+
+  it("restores a profile from media/<flavor>/profiles/", async () => {
+    await seed({ "12sp9": 1 });
+    await mkdir(join(media, "12sp9", "profiles"), { recursive: true });
+    await writeFile(join(media, "12sp9", "profiles", "demo.bak"), "profile");
+    expect((await cli(["get", "12sp9", "--holder", "task-a", "--restore", "demo"])).code).toBe(0);
+    const status = JSON.parse((await cli(["status", "--json"])).stdout) as { slots: { bootstrap: string | null }[] };
+    expect(status.slots[0]?.bootstrap).toBe("restore:profile:demo");
+  });
+
+  it("refuses a missing file or profile, and an override without --restore, before any slot is leased (exit 2)", async () => {
+    await seed({ "12sp9": 1 });
+    for (const args of [
+      ["--restore", join(home, "absent.bak")],
+      ["--restore", "C:\\nowhere\\absent.bak"],
+      ["--restore", "nosuchprofile"],
+      ["--restore", "bad name"],
+      ["--skip-version-check"],
+      ["--allow-foreign-origin"],
+    ]) {
+      const r = await cli(["get", "12sp9", "--holder", "task-a", ...args]);
+      expect(r.code, args.join(" ")).toBe(EXIT_CODES.usage);
+    }
+    const status = JSON.parse((await cli(["status", "--json"])).stdout) as { slots: { status: string }[] };
+    expect(status.slots[0]?.status).toBe("free");
+  });
+});
+
 describe("get --password-fd", () => {
   /** The binary with a pipe on descriptor 3; answers what it printed and what it wrote there. */
   function cliFd3(args: readonly string[]): Promise<Result & { fd3: string }> {

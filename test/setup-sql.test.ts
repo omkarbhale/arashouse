@@ -69,7 +69,7 @@ describeWithLocalDb("setup-sql.ps1 on a throw-away LocalDB instance", { timeout:
     const r1 = result(first.out);
     expect(r1.ok).toBe(true);
     expect(r1.changes).toHaveLength(4);
-    expect(r1.checks.poolLogin).toMatchObject({ sysadmin: false, dbcreator: false, ownServerRights: 0, executes: 5, ok: true });
+    expect(r1.checks.poolLogin).toMatchObject({ sysadmin: false, dbcreator: false, controlServer: false, ownServerRights: 0, executes: 7, ok: true });
     expect(r1.checks.refusals).toMatchObject({ ok: true, notRefused: [], directCreateError: 262, madeUpDatabaseAfter: false });
     expect(r1.checks.selfTest).toMatchObject({ ok: true, error: null });
 
@@ -78,7 +78,68 @@ describeWithLocalDb("setup-sql.ps1 on a throw-away LocalDB instance", { timeout:
     const r2 = result(second.out);
     expect(r2.ok).toBe(true);
     expect(r2.changes).toEqual([]);
-    expect(r2.state.signer).toMatchObject({ privateKeyRemoved: true, sameThumbprint: true, login: true });
+    for (const name of ["arashouse_admin_signer", "arashouse_admin_adopter"]) {
+      expect(r2.state.signers[name]).toMatchObject({ privateKeyRemoved: true, sameThumbprint: true, login: true });
+    }
+    expect(r2.state.signers.arashouse_admin_adopter.permissions).toEqual(["CONTROL SERVER"]);
+  });
+
+  it("reads a staged backup and hands a restored foreign backup to the broker (ticket 39)", () => {
+    // A backup of a database another login owns, staged where a lease's would be; then, as the broker: read it through
+    // read_staged_backup, restore it over a slot database it made, find it cannot open it, adopt it, open and drop it.
+    const lease = "0123456789abcdef0123456789abcdef";
+    mkdirSync(join(rootOnWsl, "staging", lease), { recursive: true });
+    const staged = `${root}\\staging\\${lease}\\restore.bak`;
+    const flow = join(dir, "restore-flow.ps1");
+    const conn = `Data Source=(localdb)\\${instance};Initial Catalog=master;Integrated Security=SSPI;Pooling=False`;
+    writeFileSync(
+      flow,
+      [
+        `$ErrorActionPreference = 'Stop'`,
+        `$c = New-Object Data.SqlClient.SqlConnection '${conn}'; $c.Open()`,
+        `function Q([string]$Text) { $q = $c.CreateCommand(); $q.CommandText = $Text; $q.CommandTimeout = 120; $t = New-Object Data.DataTable; $t.Load($q.ExecuteReader()); return ,$t }`,
+        `function Probe([string]$Text) { try { [void](Q $Text); return 'ok' } catch { return 'refused' } }`,
+        `$out = [ordered]@{}`,
+        `[void](Q "CREATE LOGIN zz_other WITH PASSWORD = N'$([guid]::NewGuid())x-A1', CHECK_POLICY = OFF")`,
+        `[void](Q "CREATE DATABASE zz_foreign ON (NAME = zz_foreign, FILENAME = N'${root}\\sqldata\\zz_foreign.mdf') LOG ON (NAME = zz_foreign_log, FILENAME = N'${root}\\sqldata\\zz_foreign_log.ldf'); ALTER AUTHORIZATION ON DATABASE::zz_foreign TO zz_other")`,
+        `[void](Q "USE zz_foreign; CREATE TABLE dbo.t (x int); INSERT dbo.t VALUES (7)")`,
+        `[void](Q "BACKUP DATABASE zz_foreign TO DISK = N'${staged}' WITH INIT")`,
+        `[void](Q "USE master; DROP DATABASE zz_foreign; DROP LOGIN zz_other")`,
+        `$as = "EXECUTE AS LOGIN = N'NT SERVICE\\ArasHouseBroker'; "`,
+        `try {`,
+        `[void](Q ($as + "EXEC arashouse_admin.dbo.create_slot_database @database = N'arashouse_12sp9_96'; REVERT;"))`,
+        `$out.readAsBrokerWithoutProcedure = Probe ($as + "RESTORE HEADERONLY FROM DISK = N'${staged}'; REVERT;")`,
+        `$q = $c.CreateCommand(); $q.CommandText = $as + "EXEC arashouse_admin.dbo.read_staged_backup @file = N'${staged}'; REVERT;"; $r = $q.ExecuteReader()`,
+        `$sets = @(); $files = @(); do { while ($r.Read()) { if (@($r.GetSchemaTable().Rows | Where-Object { $_.ColumnName -eq 'LogicalName' }).Count -gt 0) { $files += [string]$r['LogicalName'] } else { $sets += [string]$r['DatabaseName'] } } } while ($r.NextResult()); $r.Close()`,
+        `$out.sets = $sets; $out.files = $files`,
+        `$move = "MOVE N'zz_foreign' TO N'${root}\\sqldata\\arashouse_12sp9_96.mdf', MOVE N'zz_foreign_log' TO N'${root}\\sqldata\\arashouse_12sp9_96_log.ldf'"`,
+        `[void](Q ($as + "RESTORE DATABASE [arashouse_12sp9_96] FROM DISK = N'${staged}' WITH REPLACE, $move; REVERT;"))`,
+        `$out.openBeforeAdopt = Probe ($as + "SELECT x FROM arashouse_12sp9_96.dbo.t; REVERT;")`,
+        `$out.adopted = (Q ($as + "DECLARE @r int; EXEC @r = arashouse_admin.dbo.adopt_slot_database @database = N'arashouse_12sp9_96'; REVERT; SELECT @r AS r")).Rows[0].r`,
+        `$out.openAfterAdopt = Probe ($as + "SELECT x FROM arashouse_12sp9_96.dbo.t; REVERT;")`,
+        `$out.dbo = (Q "SELECT SUSER_SNAME(sid) AS n FROM arashouse_12sp9_96.sys.database_principals WHERE name = N'dbo'").Rows[0].n`,
+        `$out.adoptForeign = Probe ($as + "EXEC arashouse_admin.dbo.adopt_slot_database @database = N'master'; REVERT;")`,
+        `[void](Q ($as + "EXEC arashouse_admin.dbo.drop_slot_database @database = N'arashouse_12sp9_96'; REVERT;"))`,
+        `$out.left = (Q "SELECT COUNT(*) AS n FROM sys.databases WHERE name IN (N'arashouse_12sp9_96', N'zz_foreign')").Rows[0].n`,
+        `} finally { [void](Q "USE master; IF DB_ID(N'arashouse_12sp9_96') IS NOT NULL DROP DATABASE [arashouse_12sp9_96]"); $c.Dispose() }`,
+        `Write-Host ('result:' + ($out | ConvertTo-Json -Compress))`,
+      ].join("\r\n"),
+      "ascii",
+    );
+    const run = runPs(["-File", toHostPath(flow)], 300_000);
+    expect(run.err).toBe("");
+    expect(run.code).toBe(0);
+    expect(result(run.out)).toMatchObject({
+      sets: ["zz_foreign"],
+      files: ["zz_foreign", "zz_foreign_log"],
+      readAsBrokerWithoutProcedure: "refused",
+      openBeforeAdopt: "refused",
+      adopted: 1,
+      openAfterAdopt: "ok",
+      dbo: "NT SERVICE\\ArasHouseBroker",
+      adoptForeign: "refused",
+      left: 0,
+    });
   });
 
   it("-Uninstall refuses while a slot database is left, then drops every object it made, and then has nothing to drop", () => {
@@ -99,19 +160,21 @@ describeWithLocalDb("setup-sql.ps1 on a throw-away LocalDB instance", { timeout:
     expect(refused.errors.join(" ")).toContain("refused: slot databases are left: arashouse_12sp9_97");
     const refusedApply = result(runPs(["-File", toHostPath(script), "-Uninstall", "-Apply"]).out);
     expect(refusedApply).toMatchObject({ ok: false, changes: [] });
-    expect(refusedApply.state).toMatchObject({ adminDatabase: true, poolLogin: true, signerLogin: true, masterCertificate: true });
+    expect(refusedApply.state).toMatchObject({ adminDatabase: true, poolLogin: true });
+    expect(refusedApply.state.signerLogins).toHaveLength(2);
+    expect(refusedApply.state.masterCertificates).toHaveLength(2);
 
     expect(runPs(["-File", toHostPath(slot), "drop_slot_database"]).code).toBe(0);
     const plan = result(runPs(["-File", toHostPath(script), "-Uninstall"]).out);
     expect(plan).toMatchObject({ ok: true, applied: false, changes: [] });
-    expect(plan.planned).toHaveLength(4);
+    expect(plan.planned).toHaveLength(6);
 
     const apply = runPs(["-File", toHostPath(script), "-Uninstall", "-Apply"], 300_000);
     expect(apply.err).toBe("");
     expect(apply.code).toBe(0);
     const removed = result(apply.out);
-    expect(removed.changes).toHaveLength(4);
-    expect(removed.state).toMatchObject({ slotDatabases: [], slotLogins: [], adminDatabase: false, poolLogin: false, signerLogin: false, masterCertificate: false });
+    expect(removed.changes).toHaveLength(6);
+    expect(removed.state).toMatchObject({ slotDatabases: [], slotLogins: [], adminDatabase: false, poolLogin: false, signerLogins: [], masterCertificates: [] });
     expect(existsSync(join(rootOnWsl, "sqldata", "arashouse_admin.mdf"))).toBe(false);
 
     const again = runPs(["-File", toHostPath(script), "-Uninstall", "-Apply"]);

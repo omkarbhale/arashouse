@@ -1,7 +1,7 @@
 # SQL Server setup: `arashouse setup-sql`
 
 Ticket 22. The one-time preparation of the host's SQL Server: the broker's login, the utility database
-`arashouse_admin` and its five name-checked procedures. Ticket 21 (`docs/setup.md`) must have run first: the
+`arashouse_admin` and its seven name-checked procedures (five from ticket 22, two from ticket 39, `docs/restore.md`). Ticket 21 (`docs/setup.md`) must have run first: the
 broker's Windows account and `<root>\sqldata\` have to exist.
 
 **No `sa`.** The plan was to prompt for the `sa` password. Spike 05 found `sa` rejected on this host (ticket 09),
@@ -65,19 +65,31 @@ the pool's, and the procedures' allowlist does not admit their names.
 |---|---|---|
 | login `[NT SERVICE\ArasHouseBroker]` | server | The broker's login: its Windows virtual account, by Windows authentication, so no SQL password exists for it. **In no server role** and holding no server permission but `CONNECT SQL`. |
 | database `arashouse_admin` | `<root>\sqldata\arashouse_admin.mdf`, `_log.ldf` | The utility database. `TRUSTWORTHY OFF`, `DB_CHAINING OFF`, `AUTO_CLOSE OFF`, simple recovery. Owned by the login that ran the script. |
-| user `arashouse_pool` | `arashouse_admin` | The broker login's user. It may `EXECUTE` the five procedures and nothing else (no role, no other permission). |
-| the five procedures | `arashouse_admin.dbo` | Below. Each is signed with the certificate. |
-| certificate `arashouse_admin_signer` | `arashouse_admin` | Signs the procedures. Its private key is removed once they are signed, so no new code can be signed with it. |
+| user `arashouse_pool` | `arashouse_admin` | The broker login's user. It may `EXECUTE` the seven procedures and nothing else (no role, no other permission). |
+| the seven procedures | `arashouse_admin.dbo` | Below. Each is signed with one certificate, and only that one. |
+| certificate `arashouse_admin_signer` | `arashouse_admin` | Signs six of the procedures (all but `adopt_slot_database`). Its private key is removed once they are signed, so no new code can be signed with it. |
 | certificate `arashouse_admin_signer` | `master` | The same certificate's public part. |
-| login `arashouse_admin_signer` | server | Made from the certificate, so nobody can log in as it. It holds `CREATE ANY DATABASE`, `ALTER ANY CONNECTION`, `ALTER ANY LOGIN` and `VIEW SERVER STATE`, and those reach only code signed with the certificate: the five procedures. |
+| login `arashouse_admin_signer` | server | Made from the certificate, so nobody can log in as it. It holds `CREATE ANY DATABASE`, `ALTER ANY CONNECTION`, `ALTER ANY LOGIN` and `VIEW SERVER STATE`, and those reach only code signed with the certificate: those six procedures. |
+| certificate `arashouse_admin_adopter` | `arashouse_admin`, `master` | Ticket 39. Signs `adopt_slot_database` alone; its private key is removed the same way. |
+| login `arashouse_admin_adopter` | server | Made from that certificate. It holds `CONTROL SERVER`, which reaches only `adopt_slot_database` (below, and why). |
 
 The ticket names the pool login `arashouse_pool`. A Windows login cannot be given another name, so the login is the
 broker's account and `arashouse_pool` is its user in `arashouse_admin`.
 
 **Why signing, not `EXECUTE AS OWNER`.** An `EXECUTE AS OWNER` procedure in a `TRUSTWORTHY` database owned by a
 `sysadmin` would let anyone who can change that database act as `sysadmin`. A signature carries only the
-certificate login's four rights, only into the signed procedures (and their dynamic SQL), and with the private key
-gone the set of signed code cannot grow. Spike 06 had not proved either route; the rehearsal below proves this one.
+certificate login's rights, only into the signed procedures (and their dynamic SQL), and with the private key
+gone the set of signed code cannot grow.
+
+**Why a second certificate with `CONTROL SERVER`.** A leaseholder's backup (`get --restore`, ticket 39) comes from
+another instance, and its `dbo` inside is not the broker. Then the broker, though it owns the restored database in
+`sys.databases`, cannot open it, map its users, `ALTER AUTHORIZATION` it back or drop it (ticket 25 measured that,
+below). Handing it back needs `TAKE OWNERSHIP` on a database nobody can open, which only `CONTROL` on the database or
+`CONTROL SERVER` covers: on LocalDB (2026-10-28), signer rights of `CREATE ANY DATABASE`, and of `ALTER ANY DATABASE` as
+well, were refused; `CONTROL SERVER` worked. So that right is on a certificate of its own, which signs one procedure:
+`adopt_slot_database`, which acts only on a slot database name that the broker already owns in `sys.databases`, builds
+its two statements from `QUOTENAME` of that name and the broker's fixed login, and can be reached by no other code. A
+procedure signed by both certificates, or by the wrong one, is not current: the script rebuilds it. Spike 06 had not proved either route; the rehearsal below proves this one.
 
 **A reset needs none of it.** The broker's login owns each slot database it creates, and an owner restores its
 own database `WITH REPLACE` with no server role and stays its owner (spike 06). So ticket 31's reset is a plain
@@ -96,9 +108,11 @@ comes from the backup, and with any other there the broker cannot open, map or d
 | `kill_connections` | `@database` | Ends every other user session in a slot database the broker owns: those whose database it is and those holding a lock on it. | how many | `ALTER ANY CONNECTION`, `VIEW SERVER STATE` |
 | `create_slot_login` | `@login`, `@password` | Creates a slot's SQL login (`CHECK_POLICY` and `CHECK_EXPIRATION` off, default database `master`), or sets the password of the existing one and enables it. | 1 created, 0 password set | `ALTER ANY LOGIN` |
 | `drop_slot_login` | `@login` | Ends a slot login's sessions and drops it. Nothing when there is none. | 1 dropped, 0 absent | `ALTER ANY LOGIN`, `ALTER ANY CONNECTION` |
+| `read_staged_backup` | `@file` | Ticket 39. `RESTORE VERIFYONLY`, then `HEADERONLY` and `FILELISTONLY` of a lease's staged backup: `<root>\staging\<lease_id>\restore.bak` and no other path (a binary-collation pattern of 32 lower-case hex digits in a fixed path). | the header's and the file list's rows | `CREATE ANY DATABASE` (those reads need `CREATE DATABASE`) |
+| `adopt_slot_database` | `@database` | Ticket 39. Makes the broker the `dbo` inside a slot database it owns in `sys.databases` (`ALTER AUTHORIZATION ... TO [NT SERVICE\ArasHouseBroker]`), then `TRUSTWORTHY` and `DB_CHAINING` off. A database that does not exist is 50003. | 1 | `CONTROL SERVER`, from the adopter certificate |
 
-Every procedure first checks its name against the allowlist and refuses anything else with error **50001**, before
-it reads the catalog or builds anything:
+Every procedure first checks its name (or, for `read_staged_backup`, its path) against the allowlist and refuses
+anything else with error **50001**, before it reads the catalog or builds anything:
 
 - a database must be `arashouse_<key>_<NN>` and a login `arashouse_<key>_<NN>_dbo` or `_reg`, for a registered
   flavor key and a slot from `01` to `99`. The patterns are generated from `names.ts` (`databasePatterns()`,
@@ -112,8 +126,8 @@ it reads the catalog or builds anything:
   `<root>\sqldata\` path, from a session id, or from the password with its quotes doubled. `setup-sql.test.ts`
   checks each of these in the generated text.
 
-The procedures take no backup path: a restore is the broker's own (owner restore), and ticket 31's broker verb
-checks that a backup is under `golden\` or `staging\`.
+No procedure restores: a restore is the broker's own (owner restore). Ticket 31's broker verb restores only the
+golden's `ootb.bak`, and ticket 39's only a lease's staged `restore.bak`; `read_staged_backup` reads that one path.
 
 ## The checks
 
@@ -122,15 +136,17 @@ the broker's login (`EXECUTE AS LOGIN`, which only a `sysadmin` can do; so this 
 when the worker's login is a `sysadmin`, as on this host):
 
 1. **The login's roles and rights.** Not in `sysadmin`, `dbcreator` or `securityadmin`; no `CONTROL SERVER`; none
-   of the certificate login's four rights of its own; may execute all five procedures. A role membership or an
+   of the certificate logins' rights of its own; may execute all seven procedures. A role membership or an
    extra server permission found on the login is reported as an error and not removed: the captain takes it out.
 2. **The refusals.** Each procedure called with each made-up name (13 database names and 10 login names: wrong
    flavor, slot `00`, one or three digits, upper case, a leading or trailing space, a quote or bracket injection,
-   `arashouse_admin`, the empty string, ...): all 59 calls must fail with 50001. Then a direct `RESTORE DATABASE`
+   `arashouse_admin`, the empty string, ...), and `read_staged_backup` with 12 made-up paths (another file name, a file
+   loose in `staging\`, upper-case or short hex, `..`, a sub-folder, the golden's `ootb.bak`, another root, a quote
+   injection, the empty string, ...): all 84 calls must fail with 50001. Then a direct `RESTORE DATABASE`
    and `CREATE DATABASE` of the made-up `arashouse_negative_madeup` must fail too (the login lacks
    `CREATE DATABASE`: 262), and none of the made-up names may exist afterwards. Nothing that exists is named.
 3. **`-SelfTest`, a round trip** on the throw-away `arashouse_35_99` (the last flavor's slot 99, which no pool
-   uses), only when it and its login are absent: create it (1), create it again (0), check its owner is the
+   uses), only when it and its login are absent: create it (1), create it again (0), adopt it (1), check its owner is the
    broker's login and its data file is under `sqldata\`, end a `sysadmin` session opened in it (1; the case spike
    06's owner could not clear, `5061`), create its `_dbo` login (1), set its password (0), drop the login (1),
    drop the database (1), drop it again (0). Whatever happens, the two throw-away names are removed at the end.
@@ -179,8 +195,8 @@ by the worker, non-elevated:
 ## Uninstall
 
 `setup-sql.ps1 -Uninstall` (a dry run) and `-Uninstall -Apply` drop what `-Apply` created, and nothing else: the
-database `arashouse_admin` (and with it the user `arashouse_pool`, the five procedures and the certificate in it), the
-certificate's login `arashouse_admin_signer`, the certificate's copy in `master`, and last the broker's login, after
+database `arashouse_admin` (and with it the user `arashouse_pool`, the seven procedures and the certificates in it), the
+certificates' logins `arashouse_admin_signer` and `arashouse_admin_adopter`, their copies in `master`, and last the broker's login, after
 ending its sessions (each broker call opens one). It refuses, with nothing dropped, while a slot's database or login is
 left (matched by the procedures' own patterns, in a binary collation), while the broker's login owns any database, or
 when `arashouse_admin`'s data file is not the one this script puts under `sqldata\`. A second run has nothing to drop.

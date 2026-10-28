@@ -100,6 +100,11 @@ export function splitImports(args: readonly string[], outer: Readonly<Record<str
       continue;
     }
     const step = steps.at(-1);
+    // An option the command has too (`get --skip-version-check`, --restore's) is the command's until the first import.
+    if (step === undefined && outer[name] === "flag" && inline === undefined) {
+      rest.push(arg);
+      continue;
+    }
     if (step === undefined) {
       throw new UsageError(`--${name} belongs to an import: put it after the ${starts === "--import" ? "--import <manifest>" : "<manifest>"} it is for`);
     }

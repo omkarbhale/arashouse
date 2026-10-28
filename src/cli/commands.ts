@@ -59,6 +59,7 @@ import { describeArasPkg, prepareImports, requireArasPkg, runImports, splitImpor
 import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
 import { checkMedia } from "../core/media-check.js";
 import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
+import { folderStaging, hostStaging, resolveRestoreSource } from "./restore.js";
 import { teardownPool, teardownSwitches, type TeardownRequest } from "../core/teardown.js";
 import { writeTeardownBundle } from "./teardown.js";
 
@@ -77,6 +78,7 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]",
     "                     [--code <dir|zip>[:<subpath>]]... [--allow-config] [--allow-servers] [--atomic]",
     "                     [--import <manifest|folder> [<import options>]]... [--keep-on-fail]",
+    "                     [--restore <backup.bak | profile> [--allow-foreign-origin] [--skip-version-check]]",
     "",
     `Leases a clean slot of <flavor> (${FLAVOR_KEYS.join(", ")}) to <task>. With --json, stdout is the`,
     "lease contract (docs/schemas/get.schema.json) and nothing else; it holds the lease's password,",
@@ -86,6 +88,12 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "agent stays stopped. A flavor whose golden has no agent refuses it (exit 7).",
     "--password-fd <n> writes the password and a newline to descriptor <n> (3 or more, opened for the",
     "command, for example `3>file`) instead, and --json then leaves it out.",
+    "--restore restores a SQL Server backup over the lease's database before it is handed over: a",
+    "file (a WSL or Windows path), or a profile, media/<flavor>/profiles/<name>.bak. A backup taken of a",
+    "deny-listed database (OLM_Local, ...) is refused unless --allow-foreign-origin; a database of another",
+    "flavor fails with the flavor to use unless --skip-version-check. If the restore fails, the lease is",
+    "given back. The return resets the slot as always (docs/restore.md). A --skip-version-check before",
+    "the first --import is --restore's; one after an --import is that import's.",
     "--import <manifest|folder> imports a package manifest (imports.mf, or the folder that holds one) onto the",
     "lease with import-export-libs-js (`aras-pkg import`, the flavor's engine), in the order given; the options",
     "after an --import are its own (see `arashouse help import`). A failed import returns the lease and exits 9",
@@ -265,6 +273,7 @@ const OVERVIEW: readonly string[] = [
   "  get <flavor> --holder <task> [--wait <seconds>] [--json]  lease a clean slot",
   "      [--agent]                                             ... with its agent service started",
   "      [--code <dir|zip>[:<subpath>]]... [--atomic]          ... with code deployed into it",
+  "      [--restore <backup.bak | profile>]                    ... brought up from a SQL Server backup",
   "  deploy-code --lease <lease_id> <dir|zip>[:<subpath>]...   deploy code into a leased slot",
   "  return <lease_id> [--wait[=<seconds>]] [--quiet]           give a lease back (its slot is discarded)",
   "  status [--json]                                            every slot and its holder",
@@ -310,7 +319,7 @@ const HINTS: Readonly<Record<number, string>> = {
   [EXIT_CODES.leaseMismatch]: "see `arashouse status`; take a new lease with `arashouse get`",
   [EXIT_CODES.resetFailed]: "see `arashouse status` for the slot and its quarantine reason",
   [EXIT_CODES.hostUnreachable]: "is the Windows host up and the arashouse broker running?",
-  [EXIT_CODES.refused]: "arashouse touches only what it owns; check the name",
+  [EXIT_CODES.refused]: "arashouse touches only what it owns and refuses what it cannot use: the line above says which; check the name or the backup",
   [SECRET_REQUIRED_EXIT_CODE]: "run the command again from a terminal",
   [EXIT_CODES.importFailed]: "read the import's log; `get --keep-on-fail` keeps the lease to look at it",
 };
@@ -380,6 +389,8 @@ async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "
     store: ctx.store,
     host: selected.host,
     secrets: new LeaseFileStore(ctx.store.paths.home),
+    // The fake host stages into a folder of the state's home, never the host's staging folder.
+    staging: selected.kind === "broker" ? hostStaging() : folderStaging(join(ctx.store.paths.home, "fake-staging")),
     resolveUrl: selected.resolveUrl,
     config: reset.config,
     reset: resetHooks(reset, (slot) => spawnResetWorker(ctx.env, slot)),
@@ -422,6 +433,10 @@ const GET_OPTIONS = {
   json: "flag",
   "password-fd": "value",
   "keep-on-fail": "flag",
+  restore: "value",
+  "allow-foreign-origin": "flag",
+  // --restore's: before the first --import only; after one it is that import's (splitImports).
+  "skip-version-check": "flag",
   code: "list",
   "allow-config": "flag",
   "allow-servers": "flag",
@@ -463,6 +478,19 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   }
   // Checked before the lease is taken, so a descriptor that is not open costs no slot.
   const passwordFd = fdText === undefined ? undefined : parsePasswordFd(fdText);
+  const restoreValue = stringOption(parsed, "restore");
+  const allowForeignOrigin = parsed.options["allow-foreign-origin"] === true;
+  const skipVersionCheck = parsed.options["skip-version-check"] === true;
+  if (restoreValue === undefined && (allowForeignOrigin || skipVersionCheck)) {
+    throw new UsageError("--allow-foreign-origin and --skip-version-check go with --restore");
+  }
+  // So is the backup, so a missing file costs no slot either.
+  const restore =
+    restoreValue === undefined
+      ? undefined
+      : isFlavorKey(flavor)
+        ? await resolveRestoreSource(flavor, restoreValue, { allowForeignOrigin, skipVersionCheck, media: { env: ctx.env } })
+        : undefined;
   // So are the code deploys: each source read and planned, so one a guard refuses costs no slot (ticket 40).
   const rules = codeRules(parsed);
   const sources: PlannedSource[] = [];
@@ -478,6 +506,7 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     holder,
     waitSeconds: wait === undefined ? 0 : parseSeconds(wait, "--wait"),
     agent,
+    ...(restore ? { restore } : {}),
   });
   const returnHint = `return it with: arashouse return ${grant.lease_id}`;
   // The code first, then the imports (the bootstrap order: restore, code, imports).

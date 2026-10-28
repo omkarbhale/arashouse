@@ -595,7 +595,7 @@ describe("doctor", () => {
     const ok = await doctor(p.deps, {});
     expect(ok.exitCode).toBe(0);
     expect(ok.lines).toEqual(
-      expect.arrayContaining(["ok    broker: answers (pong)", "ok    sql: the broker's SQL login connects", "ok    sql login: NT SERVICE\\ArasHouseBroker is neither sysadmin nor dbcreator, and executes the 5 arashouse_admin procedures", "ok    disk: 200 GB free at the install root", "ok    ram: 16384 MB free", "ok    media 23: present"]),
+      expect.arrayContaining(["ok    broker: answers (pong)", "ok    sql: the broker's SQL login connects", "ok    sql login: NT SERVICE\\ArasHouseBroker is neither sysadmin nor dbcreator, and executes the 7 arashouse_admin procedures", "ok    disk: 200 GB free at the install root", "ok    ram: 16384 MB free", "ok    media 23: present"]),
     );
     expect(ok.lines.at(-1)).toBe("doctor: every check passed");
 
@@ -632,7 +632,7 @@ describe("doctor", () => {
 
   it("fails a broker SQL login in sysadmin or dbcreator, or one that cannot execute the procedures (ticket 22)", async () => {
     const p = await pool({ "23": 1 });
-    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 };
+    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 7 };
     const lineOf = async () => (await doctor(p.deps, {})).lines.find((l) => l.includes("sql login:"));
 
     p.host.setHostInfo({ sqlLogin: { ...login, sysadmin: true, dbcreator: true } });
@@ -641,7 +641,7 @@ describe("doctor", () => {
     p.host.setHostInfo({ sqlLogin: { ...login, dbcreator: true } });
     expect(await lineOf()).toMatch(/^fail {2}sql login: .* is in dbcreator, so it could restore over any database/);
     p.host.setHostInfo({ sqlLogin: { ...login, procedures: 0 } });
-    expect(await lineOf()).toBe("fail  sql login: NT SERVICE\\ArasHouseBroker is neither sysadmin nor dbcreator, but executes 0 of the 5 arashouse_admin procedures; run `arashouse setup-sql` and the script it writes (docs/setup-sql.md)");
+    expect(await lineOf()).toBe("fail  sql login: NT SERVICE\\ArasHouseBroker is neither sysadmin nor dbcreator, but executes 0 of the 7 arashouse_admin procedures; run `arashouse setup-sql` and the script it writes (docs/setup-sql.md)");
 
     p.host.setHostInfo({ sqlLogin: undefined });
     const old = await doctor(p.deps, {});
@@ -654,7 +654,7 @@ describe("doctor", () => {
 
   it("prints host settings that would help as advice, never as a failure or a warning (ticket 55)", async () => {
     const p = await pool({ "23": 2 });
-    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 };
+    const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 7 };
     // An uncapped SQL Server, and a 15.7 GB WSL VM with 2500 MB free on Windows for three leases of 2048 MB each.
     p.host.setHostInfo({ freeRamMb: 2500, sqlLogin: { ...login, maxServerMemoryMb: 2147483647 } });
     const advised = await doctor({ ...p.deps, wslMemoryMb: () => 16077 }, {});

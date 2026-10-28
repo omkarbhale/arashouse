@@ -2,11 +2,8 @@
 // WSL side first, then sends one request to the broker (ticket 20) through a `BrokerTransport` and
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
-// The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot`,
-// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp`, `resetDatabase`, `backupDatabase`, `setLeaseCredentials` and `healthCheck` so far. Every other
-// method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot stays
-// dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild` is
-// never a verb: a baseline is built in an elevated session (ticket 24).
+// The broker has a verb for every method but `baselineBuild`, which is never a verb: a baseline is built
+// in an elevated session (ticket 24).
 
 import { randomUUID } from "node:crypto";
 import type { FlavorKey } from "../core/flavors.js";
@@ -42,15 +39,11 @@ import type {
   StartOptions,
 } from "./driver.js";
 import { HostError } from "./errors.js";
+import type { RestoreOptions } from "../core/restore.js";
 import { VERIFY_LEVELS, type ManifestDiff, type VerifyLevel } from "../core/manifest.js";
 import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, assertStagedPath, guarded, type OwnedContext } from "./owned.js";
 import { DEFAULT_CODE_SUBPATH, checkSubpath } from "../core/code-deploy.js";
 import { isLeaseId } from "../core/state.js";
-
-/** The ticket that adds each verb the broker does not have yet. */
-const PENDING: Partial<Record<HostMethod, string>> = {
-  restoreDatabase: "39",
-};
 
 export interface BrokerHostOptions {
   readonly clock?: Clock;
@@ -178,14 +171,6 @@ export class BrokerHost implements HostDriver {
     return { result: { ...response.result, detail: redact(response.result.detail) }, ms };
   }
 
-  private pending(verb: HostMethod, guard: () => void): Promise<never> {
-    return Promise.resolve()
-      .then(guard)
-      .then(() => {
-        throw new HostError("Unreachable", `the broker has no ${verb} verb yet (ticket ${PENDING[verb] ?? "?"})`);
-      });
-  }
-
   private slotGuard(slot: SlotRef): () => void {
     return () => void assertSlotOwned(slot, this.owned);
   }
@@ -302,8 +287,11 @@ export class BrokerHost implements HostDriver {
     return { ok: result.ok, ms, detail: result.detail, files, deleted, compiledCleared: result.compiledCleared };
   }
 
-  restoreDatabase(slot: SlotRef, stagedBak: string): Promise<HostResult> {
-    return this.pending("restoreDatabase", this.stagedGuard(slot, stagedBak));
+  async restoreDatabase(slot: SlotRef, stagedBak: string, options: RestoreOptions = {}): Promise<HostResult> {
+    this.stagedGuard(slot, stagedBak)();
+    const args = { file: stagedBak, allowForeignOrigin: options.allowForeignOrigin === true, skipVersionCheck: options.skipVersionCheck === true };
+    const { result, ms } = await this.call("restoreDatabase", { slot: { flavor: slot.flavor, slot: slot.slot } }, args);
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   /** The broker checks again that the slot is leased and the path is inside that lease's staging folder (ticket 43). */

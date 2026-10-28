@@ -168,7 +168,7 @@ describeWithLocalDb("teardown.ps1 dry run on a scratch root and a throw-away Loc
     const r1 = result(refused.out);
     expect(r1.errors).toEqual([expect.stringContaining("refused: slots of the pool are left (slots\\12sp9\\05)")]);
     expect(r1).toMatchObject({ applied: false, ok: false, planned: [], changes: [], steps: { goldens: "skipped", sql: "skipped", host: "not run" } });
-    expect(r1.before.setupSql).toEqual(["arashouse_admin", "arashouse_admin_signer", "NT SERVICE\\ArasHouseBroker"]);
+    expect(r1.before.setupSql).toEqual(["arashouse_admin", "arashouse_admin_adopter", "arashouse_admin_signer", "NT SERVICE\\ArasHouseBroker"]);
     expect(r1.notes.join(" ")).toContain("the deny-list cannot be fingerprinted here");
 
     rmSync(join(rootOnWsl, "slots", "12sp9", "05"), { recursive: true });

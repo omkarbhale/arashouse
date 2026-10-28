@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BUILD_PASSWORDS, sampleGolden } from "./config-samples.fixture.js";
-import { editList, withLicenceElement } from "./edit-lists.js";
+import { editList, withLicenceElement, withSigningCertificate } from "./edit-lists.js";
 import {
   type Edit,
   type EditList,
@@ -28,7 +28,8 @@ const LIC_TYPE = ["Sub", "scription", "-", "T4"].join("");
 const COMPANY = ["Ex", "ample", " Holdings", " & Co"].join("");
 const DBO = ["db", "o", "-", "Pw7", "Xq2", "Lm"].join("");
 const REG = ["re", "g", "-", "Hn4", "Tz8", "Vc"].join("");
-const SECRET_STRINGS = [LICENCE, ACT, LIC_TYPE, COMPANY, DBO, REG];
+const SIGNING = ["oc", "-", "5b1e", "90af", "c3"].join("");
+const SECRET_STRINGS = [LICENCE, ACT, LIC_TYPE, COMPANY, DBO, REG, SIGNING];
 
 const secrets: EditSecrets = {
   licence: Secret.of(LICENCE, "licence"),
@@ -37,6 +38,7 @@ const secrets: EditSecrets = {
   licence_company: Secret.of(COMPANY, "licence"),
   db_dbo_password: Secret.of(DBO, "sql-login"),
   db_reg_password: Secret.of(REG, "sql-login"),
+  oauth_signing_password: Secret.of(SIGNING, "oauth-cert"),
 };
 
 const enc = (text: string) => new Uint8Array(Buffer.from(text, "utf8"));
@@ -47,6 +49,7 @@ function holdsNoSecret(value: unknown): void {
   for (const s of SECRET_STRINGS) expect(text).not.toContain(s);
   expect(text).not.toContain(BUILD_PASSWORDS.dbo);
   expect(text).not.toContain(BUILD_PASSWORDS.reg);
+  expect(text).not.toContain(BUILD_PASSWORDS.oauth);
 }
 
 const list = (flavor: FlavorKey, edits: readonly Edit[]): EditList => parseEditList({ schema: EDIT_LIST_SCHEMA, flavor, edits });
@@ -86,7 +89,7 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
     for (const [file, text] of Object.entries(golden)) {
       const out = dec(renderFile(file, enc(text), edits, vars, secrets).bytes);
       const buildAgentPort = `:${buildScratch(flavor).agent.port}/`;
-      for (const stale of [build.alias, build.database, build.dir, `:${build.agentPort}/`, buildAgentPort, BUILD_PASSWORDS.dbo, BUILD_PASSWORDS.reg]) {
+      for (const stale of [build.alias, build.database, build.dir, `:${build.agentPort}/`, buildAgentPort, BUILD_PASSWORDS.dbo, BUILD_PASSWORDS.reg, BUILD_PASSWORDS.oauth]) {
         expect(out).not.toContain(stale);
       }
       expect(out.split("\r\n")).toHaveLength(text.split("\r\n").length);
@@ -121,6 +124,8 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
     expect(render("Innovator/Server/Innovator.xml")).toContain(`<ConfigFilePath value="${names.slotDir}\\InnovatorServerConfig.xml">`);
     const oauth = render("OAuthServer/OAuth.config");
     expect(oauth.split(`/${names.alias}/Client/OAuth/`)).toHaveLength(21);
+    // The slot's own signing certificate's password, where the OAuth server reads it to sign tokens and its own assertions.
+    expect(oauth.split(`<certificate filePath="App_Data/Certificates/OAuthServer.pfx" password="${SIGNING}"></certificate>`)).toHaveLength(3);
     expect(render("OAuthServer/OAuthServer.config")).toContain(`value="${innovatorServerUrl(names.alias)}"`);
     expect(render("VaultServer/vault.config")).toContain(`<add key="LocalPath" value="${names.vaultDir}\\"></add>`);
     if (flavor !== "35") {
@@ -145,8 +150,16 @@ describe.each(FLAVOR_KEYS)("the %s edit list on sample golden configs", (flavor)
     );
   });
 
-  it("needs the whole licence element and both SQL login passwords", () => {
-    expect(secretsNeeded(edits).sort()).toEqual(["db_dbo_password", "db_reg_password", "licence", "licence_act_key", "licence_company", "licence_type"]);
+  it("needs the whole licence element, both SQL login passwords and the signing certificate's password", () => {
+    expect(secretsNeeded(edits).sort()).toEqual([
+      "db_dbo_password",
+      "db_reg_password",
+      "licence",
+      "licence_act_key",
+      "licence_company",
+      "licence_type",
+      "oauth_signing_password",
+    ]);
   });
 
   it("round-trips through edits.json", () => {
@@ -340,6 +353,30 @@ describe("withLicenceElement", () => {
     expect(withLicenceElement(current)).toBe(current);
     const noLicence = list("12sp9", current.edits.filter((e) => !licence(e.path)));
     expect(withLicenceElement(noLicence)).toBe(noLicence);
+  });
+});
+
+describe("withSigningCertificate", () => {
+  const current = editList("23");
+  const signing = (e: Edit) => e.value === "{{secret:oauth_signing_password}}";
+  const before54 = list("23", current.edits.filter((e) => !signing(e)));
+
+  it("adds the signing certificate's password a golden's list from before ticket 54 lacks, and renders as the current list does", () => {
+    const merged = withSigningCertificate(before54);
+    expect(merged.edits.filter(signing).map((e) => e.path)).toEqual([
+      "/oauth/server/tokenSigning/certificate/@password",
+      "/oauth/client[@id='OAuthServer']/secret/certificate/@password",
+    ]);
+    const golden = enc(sampleGolden("23")["OAuthServer/OAuth.config"] ?? "");
+    const vars = editVars({ flavor: "23", slot: 1 });
+    expect(dec(renderFile("OAuthServer/OAuth.config", golden, merged, vars, secrets).bytes)).toBe(
+      dec(renderFile("OAuthServer/OAuth.config", golden, current, vars, secrets).bytes),
+    );
+    expect(secretsNeeded(merged)).toContain("oauth_signing_password");
+  });
+
+  it("leaves a current list as it is", () => {
+    expect(withSigningCertificate(current)).toBe(current);
   });
 });
 

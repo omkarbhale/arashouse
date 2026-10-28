@@ -94,7 +94,7 @@ missing). It never throws for the file's content. Ticket 32 runs it after a rese
 | `SelfServiceReportConfig.xml` | the `<add connectionString name>` the MSI writes: database, regular login and its password |
 | `Innovator/Client/Innovator.xml`, `Innovator/Server/Innovator.xml` | `<ConfigFilePath value>` |
 | `SelfServiceReporting/SelfServiceReport.xml` | the build directory in its `ConfigFilePath` (text) |
-| `OAuthServer/OAuth.config` | the alias in the redirect URIs (text, 20 places) |
+| `OAuthServer/OAuth.config` | the alias in the redirect URIs (text, 20 places); the signing certificate's password in `<tokenSigning>` and the OAuth server's own client (`{{secret:oauth_signing_password}}`, ticket 54) |
 | `OAuthServer/OAuthServer.config` | `InnovatorServerUrl` |
 | `VaultServer/vault.config` | `InnovatorServerUrl`; `LocalPath` (the slot's own vault folder) |
 
@@ -120,8 +120,9 @@ conversion server is not installed (`INSTALL_CONVERSION_SERVER=0`), so there is 
 
 Not edited: `ConversionServerConfig.xml` (not installed with the default features); the per-application
 `OAuth.config` files, the applications' `appsettings.json` and `InnovatorServer.config` (no slot name in them, spike
-07); `<Mail SMTPServer>` (`queue` in the install). The OAuth certificates are copied with the tree, so all slots of a
-flavor share them (design 5.2).
+07); `<Mail SMTPServer>` (`queue` in the install). The OAuth client certificates are copied with the tree, so all slots
+of a flavor share them (design 5.2); the signing certificate is the slot's own, made new at every render with the
+password above (`docs/reset.md`).
 
 **Measured, and new against the spike's clone script:** the MSI's script writes the regular login's
 password into `SelfServiceReportConfig.xml` as well, which `spike/20-clone-slot.ps1` did not

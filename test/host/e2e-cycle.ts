@@ -275,6 +275,14 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     return new Map(readdirSync(bin).filter((f) => /\.dll$/i.test(f)).map((f) => [f, sha256(readFileSync(join(bin, f)))]));
   };
   const configHash = (slot: string) => sha256(readFileSync(join(slotDir(slot), "InnovatorServerConfig.xml")));
+  /** The OAuth signing certificate's public part as each application holds it (ticket 54): SHA-256 by tree path. */
+  const signingCers = (slot: string): Map<string, string> => {
+    const dir = slotDir(slot);
+    const apps = readdirSync(dir).flatMap((a) => (a === "Innovator" ? ["Innovator/Client", "Innovator/Server"] : [a]));
+    return new Map(
+      apps.map((a) => `${a}/App_Data/Certificates/OAuthServer.cer`).filter((f) => existsSync(join(dir, f))).map((f) => [f, sha256(readFileSync(join(dir, f)))]),
+    );
+  };
   /** OAuth's runtime files (flavors.ts RUNTIME_DIRS): each `key-*.xml` by SHA-256, each `*.sqlite*` by name only. */
   const oauthFiles = (slot: string): Map<string, string> => {
     const dir = join(slotDir(slot), "OAuthServer/App_Data");
@@ -358,7 +366,11 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     } catch {
       server = undefined;
     }
-    check("2.the server is the flavor's build", server === getFlavor(flavor).serverBuild, `server ${server ?? "not in the summary"}, registry ${getFlavor(flavor).serverBuild}, engine ${options.engine}`);
+    // The 14.x engines name the build (`14.0.9.36073`); the 12.0 engine names the release and service pack it read
+    // (`12.0 SP9 Build 0`, ticket 54's run), which is the registry's release for 12sp9.
+    const flavorInfo = getFlavor(flavor);
+    const sameServer = server === flavorInfo.serverBuild || (server !== undefined && server.startsWith(`${flavorInfo.release} `));
+    check("2.the server is the flavor's build", sameServer, `server ${server ?? "not in the summary"}, registry ${flavorInfo.serverBuild} (${flavorInfo.release}), engine ${options.engine}`);
     let goldenLanguages: string[] = [];
     if (options.importOptions1435) {
       const langs = await aras.apply(token, `<Item type="Language" action="get" select="code"/>`);
@@ -366,7 +378,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
       must("2.golden's languages", goldenLanguages.includes("en"), goldenLanguages.join(", ") || langs.fault || "none");
     }
 
-    const before = { bin: binHashes(A.slot), config: configHash(A.slot) };
+    const before = { bin: binHashes(A.slot), config: configHash(A.slot), cers: signingCers(A.slot) };
     const oauthBefore = options.oauthState ? { files: oauthFiles(A.slot), grants: await persistedGrants(A.slot) } : undefined;
 
     // ---- 3. dirty it as a leaseholder could ---------------------------------------------------------------------
@@ -555,11 +567,19 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
       check("6.the OAuth SQLite file holds no grant of the lease", grants === oauthBefore.grants, `persisted grants ${grants}, ${oauthBefore.grants} before the dirt`);
       const refreshed = offline?.ok && offline.refreshToken ? await aras2.refresh(offline.refreshToken) : undefined;
       check("6.the old lease's refresh token is refused", refreshed !== undefined && !refreshed.ok, refreshed === undefined ? "no refresh token" : refreshed.ok ? "a new access token was issued" : refreshed.detail);
-      // A known limit, recorded and not checked (docs/e2e-23.md): an access token is a JWT signed with golden's certificate,
-      // so the old lease's is answered on the same slot until it expires; another slot refuses it (it names its database). The fix, a per-reset OAuth signing certificate, is map ticket 54.
-      const oldToken = await aras2.apply(token, `<Item type="User" action="get" select="id"><login_name>root</login_name></Item>`);
-      record("6.the old lease's access token (observed, a known limit)", true, 0, oldToken.ok ? "answered on the same slot after the reset" : `refused: ${oldToken.fault ?? ""}`);
     }
+
+    // An access token is a self-contained JWT (accessTokenLifetime 3600 s): only the signing certificate the reset made new
+    // (ticket 54) stops the old lease's from being answered on the same slot. The token answered on lease A at step 3.
+    const cersAfter = signingCers(A2.slot);
+    const newCer = [...cersAfter.values()];
+    check(
+      "6.the slot signs with a new OAuth certificate",
+      cersAfter.size === before.cers.size && cersAfter.size > 0 && newCer.every((h) => h === newCer[0]) && [...before.cers.values()].every((h) => !newCer.includes(h)),
+      `${cersAfter.size} copies of OAuthServer.cer, all one certificate, not lease A's (compared by SHA-256)`,
+    );
+    const oldToken = await aras2.apply(token, `<Item type="User" action="get" select="id"><login_name>root</login_name></Item>`);
+    check("6.the old lease's access token is refused", !oldToken.ok, oldToken.ok ? "answered on the same slot after the reset" : `refused: ${oldToken.fault ?? ""}`);
 
     // ---- 7. kill the reset worker mid-reset ---------------------------------------------------------------------
     const ret2 = await cli(["return", A2.lease_id]);
@@ -642,7 +662,9 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const changed = Object.keys({ ...denyBefore, ...denyAfter }).filter((k) => denyBefore[k] !== denyAfter[k]);
     check("9.deny-list objects unchanged", changed.length === 0, changed.length === 0 ? `${Object.keys(denyAfter).length} objects the same` : `changed: ${changed.join(", ")}`);
     const final = await status();
-    check("9.the pool is left free", final.filter((r) => r.slot.startsWith(`${flavor}-0`)).every((r) => r.status === "free"), final.map((r) => `${r.slot} ${r.status}`).join(", "));
+    // The cycle's two slots, as step 1: a pool with more (12sp9 x3, ticket 37) runs it with the others disabled.
+    const left = final.filter((r) => r.slot === `${flavor}-01` || r.slot === `${flavor}-02`);
+    check("9.the pool is left free", left.length === 2 && left.every((r) => r.status === "free"), left.map((r) => `${r.slot} ${r.status}`).join(", "));
     const places: Record<string, string> = {
       "state file": readFileSync(join(home, "state.json"), "utf8"),
       "events log": readFileSync(join(home, "events.log"), "utf8"),

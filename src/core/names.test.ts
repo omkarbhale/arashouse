@@ -15,6 +15,7 @@ import {
   databaseName,
   goldenDir,
   isSecretName,
+  slotOAuthSecretName,
   loginName,
   logsDir,
   parseSlotId,
@@ -182,6 +183,7 @@ describe("the names ticket 25 adds", () => {
   it("names a slot's stored login passwords and the broker's slot script", () => {
     expect(slotLoginSecretName({ flavor: "23", slot: 2 }, "dbo")).toBe("slot-23-02-dbo");
     expect(isSecretName(slotLoginSecretName({ flavor: "12sp9", slot: 99 }, "reg"))).toBe(true);
+    expect(slotOAuthSecretName({ flavor: "35", slot: 1 })).toBe("slot-35-01-oauth");
     expect(() => slotLoginSecretName({ flavor: "23", slot: 2 }, "sa" as never)).toThrow(/role/);
     expect(slotStepsScript()).toBe("C:\\aras_installations\\broker\\slot-steps.ps1");
   });

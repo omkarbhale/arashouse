@@ -12,12 +12,14 @@ export type SecretStepRunner = (step: Extract<SlotStep, "secret-put" | "secret-g
 
 /**
  * The kind of the secret a stored name holds: `licence-<line>` a licence key, `slot-<key>-<NN>-dbo|reg` a slot's SQL login
- * password, `slot-<key>-<NN>-root` a free slot's Aras `root` password and `ootb-root-<key>` the one its golden backup holds.
+ * password, `slot-<key>-<NN>-root` a free slot's Aras `root` password, `ootb-root-<key>` the one its golden backup holds,
+ * and `slot-<key>-<NN>-oauth` the password of the slot's OAuth signing certificate (ticket 54).
  */
 export function storedSecretKind(name: string): SecretKind {
   if (/^licence-/.test(name)) return "licence";
   if (/^slot-[a-z0-9]+-\d{2}-(dbo|reg)$/.test(name)) return "sql-login";
   if (/^slot-[a-z0-9]+-\d{2}-root$/.test(name) || /^ootb-root-[a-z0-9]+$/.test(name)) return "aras-login";
+  if (/^slot-[a-z0-9]+-\d{2}-oauth$/.test(name)) return "oauth-cert";
   throw new Error(`no stored secret is named like "${name}"`);
 }
 

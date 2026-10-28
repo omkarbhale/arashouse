@@ -58,6 +58,7 @@ export type EditVars = Readonly<Record<EditVariable, string>>;
 
 /** The secret handles a template can use, and the kind of Secret each must be. */
 const SQL_LOGIN = "sql-login";
+const OAUTH_CERT = "oauth-cert";
 export const SECRET_HANDLES = {
   licence: "licence",
   // The rest of the `<License>` element that goes with a key; a key alone is refused ("License Key is invalid",
@@ -67,6 +68,8 @@ export const SECRET_HANDLES = {
   licence_company: "licence",
   db_dbo_password: SQL_LOGIN,
   db_reg_password: SQL_LOGIN,
+  // The slot's own OAuth signing certificate's pfx password, new at every render (ticket 54).
+  oauth_signing_password: OAUTH_CERT,
 } as const satisfies Record<string, SecretKind>;
 export type SecretHandle = keyof typeof SECRET_HANDLES;
 export type EditSecrets = Readonly<Partial<Record<SecretHandle, Secret>>>;

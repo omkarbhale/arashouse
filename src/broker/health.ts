@@ -6,7 +6,7 @@
 // The checks: the stamp (present, from the flavor's golden now, a reset time, no lease); the slot's own server answers
 // `Client/`, lists exactly the slot's database in `Server/DBList.aspx` and serves the OAuth discovery document; the
 // tree is golden's (the `fast` manifest verify) and the eight config files hold their rendering (the edit list's verify
-// mode); the database marker carries the stamp's golden hash and a reset time, and the version rows are the flavor's
+// mode), with the OAuth signing certificate the slot's own (ticket 54, signing-cert.ts); the database marker carries the stamp's golden hash and a reset time, and the version rows are the flavor's
 // server build; and `root` logs in with a one-time password. That last check is the randomisation of ticket 31's note:
 // after a restore `root` and `admin` have the golden backup's password, so the broker logs in with it (or with the
 // free slot's stored random one), sets both to a new random password through the slot's server (an AML edit through ticket 34's
@@ -31,6 +31,7 @@ import { parseSlotStamp, type WireResult } from "./protocol.js";
 import { SlotLocks, configSecrets, errorText, goldenEditList, seconds, storedLogins, type SlotSystem, type WarmAnswer } from "./provision.js";
 import { versionProblem } from "./reset-database.js";
 import { currentGoldenManifest, diffText } from "./reset-tree.js";
+import { signingFiles, signingProblem } from "./signing-cert.js";
 
 /** The checks, in the order the result lists them. */
 export const HEALTH_CHECKS = ["stamp", "client", "dblist", "oauth", "tree", "configs", "marker", "version", "login"] as const;
@@ -182,14 +183,17 @@ export async function healthCheckOnHost(system: SlotSystem, slot: SlotRef, names
     (async () => {
       const list = await goldenEditList(system, slot, root);
       const rendered = editListFiles(list);
+      // The signing certificate's files are the slot's own, not golden's: the configs check holds them instead.
+      const signing = signingFiles(manifest);
       const tree = await timed("tree", async () => {
-        const diff = withoutStamp(await system.verifyTree(slot, manifest, rendered));
+        const diff = withoutStamp(await system.verifyTree(slot, manifest, [...rendered, signing.pfx, ...signing.cers]));
         return diff.ok ? pass(`${diff.checked} files match golden ${short(manifest.manifestHash)}`) : fail(diffText(diff));
       });
       const configs = await timed("configs", async () => {
         const logins = await storedLogins(system.secrets, slot);
         if (logins === undefined) return fail(`the stored SQL login passwords of ${id} are missing`);
-        const { secrets } = await configSecrets(system, slot, list, logins);
+        const { secrets, signed } = await configSecrets(system, slot, list, logins);
+        if (!signed) return fail(`the password of ${id}'s OAuth signing certificate is not stored (a slot provisioned before ticket 54; a reset makes it one)`);
         const vars = editVars(slot, root);
         const differ: string[] = [];
         for (const file of rendered) {
@@ -200,7 +204,9 @@ export async function healthCheckOnHost(system: SlotSystem, slot: SlotRef, names
           }
           for (const o of verifyFile(file, bytes, list, vars, secrets).outcomes) if (o.status !== "ok") differ.push(`${file} ${o.path}: ${o.detail ?? o.status}`);
         }
-        return differ.length === 0 ? pass(`${rendered.length} files hold their rendering`) : fail(`${differ.length} edits do not hold: ${differ.slice(0, 5).join("; ")}`);
+        if (differ.length > 0) return fail(`${differ.length} edits do not hold: ${differ.slice(0, 5).join("; ")}`);
+        const problem = await signingProblem(system, slot, root, manifest);
+        return problem ? fail(problem) : pass(`${rendered.length} files hold their rendering; the OAuth signing certificate is the slot's own`);
       });
       return [tree, configs];
     })(),

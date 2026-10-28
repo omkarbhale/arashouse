@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { encodeLicence, licenceElement, licenceSecretName } from "../core/licence.js";
 import { editList } from "../core/edit-lists.js";
 import { serializeEditList } from "../core/edits.js";
-import { DEFAULT_INSTALL_ROOT, goldenLayout, slotLoginSecretName, slotNames, stampFile, type SlotRef } from "../core/names.js";
+import { DEFAULT_INSTALL_ROOT, goldenLayout, slotLoginSecretName, slotNames, slotOAuthSecretName, stampFile, type SlotRef } from "../core/names.js";
 import { Secret } from "../core/secret.js";
 import { HostError } from "../host/errors.js";
 import { Broker } from "./broker.js";
 import { destroySlotOnHost, provisionSlotOnHost, registerSlotVerbs } from "./provision.js";
-import { FAKE_GOLDEN_HASH, FakeSlotSystem } from "./slot-system.fixture.js";
+import { FAKE_GOLDEN_HASH, FakeSlotSystem, GOLDEN_SIGNING_FILES } from "./slot-system.fixture.js";
 
 const ROOT = DEFAULT_INSTALL_ROOT;
 const s1: SlotRef = { flavor: "12sp9", slot: 1 };
@@ -45,6 +45,7 @@ describe("provisionSlot", () => {
       "createIis 12sp9-01",
       "createAgent 12sp9-01",
       "restoreDatabase 12sp9-01",
+      "newSigningCertificate 12sp9-01",
       "snapshotDenyList",
     ]);
     expect(system.calls.at(-2)).toBe("writeFile");
@@ -55,7 +56,7 @@ describe("provisionSlot", () => {
       lastResetAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
       leaseId: null,
     });
-    expect(result.detail).toMatch(/^provisioned 12sp9-01 from golden 999999999999 in \d+\.\d s \(7 IIS applications; no agent; configs: 9 files, \d+ edits; no licence key is stored for line 12/);
+    expect(result.detail).toMatch(/^provisioned 12sp9-01 from golden 999999999999 in \d+\.\d s \(7 IIS applications; no agent; configs: 9 files, \d+ edits, a new OAuth signing certificate \(4 files\); no licence key is stored for line 12/);
     expect(result.detail).toMatch(/golden 0\.1, snapshot 0\.1, folders 0\.1, tree 0\.1, iis 0\.1, agent 0\.1, database [\d.]+, configs [\d.]+, stamp [\d.]+, deny-list 0\.1\)$/);
   });
 
@@ -87,6 +88,51 @@ describe("provisionSlot", () => {
     expect(system.text(win32.join(names.slotDir, "OAuthServer", "OAuth.config"))).not.toContain("ah-build-12sp9");
     // The golden's own copy is untouched.
     expect(system.text(win32.join(ROOT, "golden", "12sp9", "tree", "InnovatorServerConfig.xml"))).toContain(`database="arashouse_build_12sp9"`);
+  });
+
+  it("gives the slot its own OAuth signing certificate: its password stored and in OAuth.config, its files over golden's", async () => {
+    const system = new FakeSlotSystem();
+    const result = await provision(system);
+    const password = (await system.secrets.get(slotOAuthSecretName(s1)))!;
+    expect(password.kind).toBe("oauth-cert");
+    expect(password.length).toBe(32);
+    expect(system.signingCertificates).toEqual([{ slot: "12sp9-01", password }]);
+    const oauth = system.text(win32.join(names.slotDir, "OAuthServer", "OAuth.config"))!;
+    expect(oauth.split(`<certificate filePath="App_Data/Certificates/OAuthServer.pfx" password="${password.reveal()}"></certificate>`)).toHaveLength(3);
+    expect(oauth).not.toContain("build-oauth-placeholder");
+    expect(system.text(win32.join(names.slotDir, "OAuthServer", "App_Data", "Certificates", "OAuthServer.pfx"))).toBe("fake pfx 1 of 12sp9-01");
+    const cers = Object.keys(GOLDEN_SIGNING_FILES).filter((f) => f.endsWith(".cer"));
+    const slotCer = (f: string) => system.text(win32.join(names.slotDir, ...f.split("/")));
+    for (const f of cers) expect(slotCer(f)).toBe(slotCer(cers[0]!));
+    expect(slotCer(cers[0]!)).not.toBe("golden cer");
+    expect(JSON.stringify(result)).not.toContain(password.reveal());
+
+    // Another slot gets another certificate and password; destroying a slot forgets its password.
+    const s2: SlotRef = { flavor: "12sp9", slot: 2 };
+    await provision(system, s2);
+    const other = (await system.secrets.get(slotOAuthSecretName(s2)))!;
+    expect(other.reveal()).not.toBe(password.reveal());
+    expect(system.text(win32.join(slotNames(s2, ROOT).slotDir, "OAuthServer", "App_Data", "Certificates", "OAuthServer.cer"))).not.toBe(slotCer(cers[0]!));
+    await destroySlotOnHost(system, s2, slotNames(s2, ROOT));
+    expect(await system.secrets.has(slotOAuthSecretName(s2))).toBe(false);
+  });
+
+  it("renders the signing certificate's password from a golden whose edits.json predates it", async () => {
+    const system = new FakeSlotSystem();
+    const current = editList("12sp9");
+    system.put(goldenLayout("12sp9", ROOT).edits, serializeEditList({ ...current, edits: current.edits.filter((e) => !e.value.includes("oauth_signing_password")) }));
+    expect((await provision(system)).ok).toBe(true);
+    const password = (await system.secrets.get(slotOAuthSecretName(s1)))!;
+    expect(system.text(win32.join(names.slotDir, "OAuthServer", "OAuth.config"))).toContain(`password="${password.reveal()}"`);
+  });
+
+  it("rolls back when the host makes no usable certificate, and stores no password", async () => {
+    const system = new FakeSlotSystem();
+    system.failNext("newSigningCertificate", new Error("signing-cert failed (exit 1): error: the request carries no usable certificate password"));
+    const err = await failure(provision(system));
+    expect(err.message).toMatch(/^provision of 12sp9-01 failed at configs: signing-cert failed/);
+    expect(await system.secrets.has(slotOAuthSecretName(s1))).toBe(false);
+    expect(await system.leftovers(s1)).toEqual([]);
   });
 
   it("puts the stored licence key in, when the host has one for the flavor's line", async () => {

@@ -1,6 +1,6 @@
 import { win32 } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INSTALL_ROOT, buildScratch, slotLoginSecretName, slotNames, stampFile, type SlotRef } from "../core/names.js";
+import { DEFAULT_INSTALL_ROOT, buildScratch, slotLoginSecretName, slotNames, slotOAuthSecretName, stampFile, type SlotRef } from "../core/names.js";
 import { encodeLicence, licenceElement, licenceSecretName } from "../core/licence.js";
 import { HostError } from "../host/errors.js";
 import { Broker } from "./broker.js";
@@ -75,7 +75,7 @@ describe("resetTree", () => {
     await quiesceOnHost(system, s1);
     const result = await reset(system);
     expect(result.ok).toBe(true);
-    expect(steps(system)).toEqual(["quiesce 12sp9-01", "resetTree 12sp9-01", "verifyTree 12sp9-01"]);
+    expect(steps(system)).toEqual(["quiesce 12sp9-01", "resetTree 12sp9-01", "newSigningCertificate 12sp9-01", "verifyTree 12sp9-01"]);
     expect(system.calls.at(-1)).toBe("writeFile");
 
     const hash = system.manifest("12sp9").manifestHash;
@@ -103,7 +103,7 @@ describe("resetTree", () => {
     expect(result.detail).toMatch(
       new RegExp(
         `^reset the tree of 12sp9-01 to golden ${hash.slice(0, 12)} in \\d+\\.\\d s \\(robocopy 0\\.3, clearing 0\\.1: 1 runtime, 1 vault and 1 ASP\\.NET temporary entries cleared; ` +
-          `configs: 9 files, \\d+ edits; no licence key is stored for line 12, so the slot cannot log in yet; \\d+ files verified; golden [\\d.]+, mirror [\\d.]+, configs [\\d.]+, verify [\\d.]+, stamp [\\d.]+\\)$`,
+          `configs: 9 files, \\d+ edits, a new OAuth signing certificate \\(4 files\\); no licence key is stored for line 12, so the slot cannot log in yet; \\d+ files verified; golden [\\d.]+, mirror [\\d.]+, configs [\\d.]+, verify [\\d.]+, stamp [\\d.]+\\)$`,
       ),
     );
   });
@@ -122,14 +122,33 @@ describe("resetTree", () => {
     for (const value of Object.values(values)) expect(JSON.stringify(result)).not.toContain(value);
   });
 
-  it("is idempotent: a second reset of a clean slot gives the same tree", async () => {
+  it("makes a new OAuth signing certificate and password every time, so no token of the last lease validates", async () => {
+    const system = await provisioned();
+    const cer = inSlot("OAuthServer/App_Data/Certificates/OAuthServer.cer");
+    const before = { cer: system.text(cer), password: (await system.secrets.get(slotOAuthSecretName(s1)))! };
+    // A leaseholder could read the pfx and its password, or put a certificate of their own in.
+    system.put(inSlot("Innovator/Server/App_Data/Certificates/OAuthServer.cer"), "the lease's certificate");
+    await quiesceOnHost(system, s1);
+    expect((await reset(system)).ok).toBe(true);
+    const after = (await system.secrets.get(slotOAuthSecretName(s1)))!;
+    expect(after.reveal()).not.toBe(before.password.reveal());
+    expect(system.text(cer)).not.toBe(before.cer);
+    expect(system.text(inSlot("Innovator/Server/App_Data/Certificates/OAuthServer.cer"))).toBe(system.text(cer));
+    expect(system.text(inSlot("OAuthServer/OAuth.config"))).toContain(`password="${after.reveal()}"`);
+    expect(system.text(inSlot("OAuthServer/OAuth.config"))).not.toContain(before.password.reveal());
+    expect(system.text(goldenFile("OAuthServer/App_Data/Certificates/OAuthServer.cer"))).toBe("golden cer");
+  });
+
+  it("is idempotent: a second reset of a clean slot gives the same tree, but for the slot's new signing certificate", async () => {
     const system = await provisioned();
     await quiesceOnHost(system, s1);
     await reset(system);
+    const own = (f: string) => f.endsWith(".arashouse-slot.json") || /\\certificates\\oauthserver\.(pfx|cer)$/.test(f) || f === "oauthserver\\oauth.config";
     const before = system.filesUnder(names.slotDir).map((f) => [f, system.text(inSlot(f))]);
     await reset(system);
     const after = system.filesUnder(names.slotDir).map((f) => [f, system.text(inSlot(f))]);
-    expect(after.filter(([f]) => !f!.endsWith(".arashouse-slot.json"))).toEqual(before.filter(([f]) => !f!.endsWith(".arashouse-slot.json")));
+    expect(after.filter(([f]) => !own(f!))).toEqual(before.filter(([f]) => !own(f!)));
+    expect(after.filter(([f]) => own(f!))).toHaveLength(6);
   });
 
   it("refuses a slot that is not quiesced or not provisioned, and changes nothing", async () => {

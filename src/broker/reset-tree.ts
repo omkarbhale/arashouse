@@ -7,18 +7,20 @@
 // `resetTree` runs on a quiesced slot only: the mirror from golden (`robocopy /MIR /XJ`, which removes
 // the old stamp with everything else golden does not have), the runtime state the mirror leaves (the
 // whole runtime folders emptied, the vault folder, ASP.NET's temporary files of the alias), the config
-// files rendered again from golden with the edit list, the `fast` verify of the tree against the golden
+// files rendered again from golden with the edit list and a new OAuth signing certificate (ticket 54), the `fast` verify of the tree against the golden
 // manifest with each rendered file compared with its rendering, and only then the new stamp. A reset
 // that fails before the stamp leaves the slot without one, so nothing can take it for clean.
 
 import { win32 } from "node:path";
 import { goldenJson } from "../core/baseline.js";
-import { ManifestError, parseManifest, summarizeDiff, type Manifest, type ManifestDiff } from "../core/manifest.js";
-import { buildScratch, goldenLayout, slotId, stampFile, type SlotNames, type SlotRef } from "../core/names.js";
+import { summarizeDiff, type Manifest, type ManifestDiff } from "../core/manifest.js";
+import { slotId, stampFile, type SlotNames, type SlotRef } from "../core/names.js";
 import { HostError, isHostError } from "../host/errors.js";
 import type { Broker, VerbContext } from "./broker.js";
 import { ProtocolError, parseSlotStamp, type WireResult } from "./protocol.js";
-import { SlotLocks, Timings, errorText, provisionStamp, renderConfigs, seconds, storedLogins, type SlotSystem } from "./provision.js";
+import { SlotLocks, Timings, currentGoldenManifest, errorText, provisionStamp, renderConfigs, seconds, storedLogins, type SlotSystem } from "./provision.js";
+
+export { currentGoldenManifest };
 
 /** The tree reset's steps, in order. */
 export const RESET_TREE_STEPS = ["golden", "mirror", "configs", "verify", "stamp"] as const;
@@ -38,25 +40,6 @@ export function diffText(diff: ManifestDiff): string {
 
 export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((byte, i) => byte === b[i]);
-}
-
-/** The flavor's golden manifest as it is now: `Retryable` while a new golden is moved into place or when there is none. */
-export async function currentGoldenManifest(system: SlotSystem, slot: SlotRef, root: string): Promise<Manifest> {
-  if ((await system.readFile(buildScratch(slot.flavor, root).promotingMarker)) !== null) {
-    throw new HostError("Retryable", `a new ${slot.flavor} golden is being moved into place`);
-  }
-  const file = goldenLayout(slot.flavor, root).manifest;
-  const bytes = await system.readFile(file);
-  if (bytes === null) throw new HostError("Retryable", `${file} does not exist (is the ${slot.flavor} baseline built?)`);
-  let manifest: Manifest;
-  try {
-    manifest = parseManifest(new TextDecoder().decode(bytes));
-  } catch (err) {
-    if (!(err instanceof ManifestError)) throw err;
-    throw new HostError("Retryable", `the ${slot.flavor} golden manifest is unusable: ${err.message}`);
-  }
-  if (manifest.flavor !== slot.flavor) throw new HostError("Refused", `${file} is the manifest of flavor ${manifest.flavor}`);
-  return manifest;
 }
 
 /** The flavor's golden manifest, which must carry `hash` (the golden the reset began with). */
@@ -103,7 +86,7 @@ export async function resetTreeOnHost(system: SlotSystem, slot: SlotRef, names: 
     if (tree.state === "serving") throw new HostError("Refused", `slot ${id} is not quiesced: ${tree.serving.join(", ")} still running`);
 
     step = "configs";
-    const configs = await timings.run(step, () => renderConfigs(system, slot, root, logins));
+    const configs = await timings.run(step, () => renderConfigs(system, slot, root, logins, manifest));
 
     step = "verify";
     const diff = await timings.run(step, async () => {

@@ -11,7 +11,7 @@ import { buildNames, buildScratch } from "./names.js";
 const crlf = (lines: readonly string[]) => `${lines.join("\r\n")}\r\n`;
 
 /** The build's SQL login passwords as a golden would hold them; the render replaces both. */
-export const BUILD_PASSWORDS = { dbo: "build-dbo-placeholder", reg: "build-reg-placeholder" } as const;
+export const BUILD_PASSWORDS = { dbo: "build-dbo-placeholder", reg: "build-reg-placeholder", oauth: "build-oauth-placeholder" } as const;
 
 /** The machine names that appear in the OAuth client's redirect URIs (placeholders). */
 const HOSTS = ["localhost", "EXAMPLEHOST", "EXAMPLEHOST.example.com", "192.0.2.10", "198.51.100.1"];
@@ -53,19 +53,31 @@ export function sampleGolden(flavor: FlavorKey): Record<string, string> {
     `<?xml version="1.0" encoding="utf-8"?>`,
     `<oauth>`,
     `\t<server>`,
-    `\t\t<tokenSigning><certificate file='App_Data\\Certificates\\OAuth.pfx' /></tokenSigning>`,
-    `\t</server>`,
-    `\t<clientRegistries>`,
-    `\t\t<clientRegistry id='InnovatorClient' enabled='true'>`,
-    `\t\t\t<allowedScopes><scope name='Innovator' /></allowedScopes>`,
-    `\t\t\t<redirectUris>`,
+    `\t\t<clientRegistries>`,
+    `\t\t\t<clientRegistry id="OAuthServer" enabled="true">`,
+    `\t\t\t\t<secrets><secret type="JwtBearerAssertionServerSecret"><certificate filePath="App_Data/Certificates/OAuthServer.cer"></certificate></secret></secrets>`,
+    `\t\t\t</clientRegistry>`,
+    `\t\t\t<clientRegistry id='InnovatorClient' enabled='true'>`,
+    `\t\t\t\t<allowedScopes><scope name='Innovator' /></allowedScopes>`,
+    `\t\t\t\t<redirectUris>`,
     ...redirects(["RedirectCallback", "SilentCallback", "PopupCallback"]),
-    `\t\t\t</redirectUris>`,
-    `\t\t\t<postLogoutRedirectUris>`,
+    `\t\t\t\t</redirectUris>`,
+    `\t\t\t\t<postLogoutRedirectUris>`,
     ...redirects(["PostLogoutCallback"]),
-    `\t\t\t</postLogoutRedirectUris>`,
-    `\t\t</clientRegistry>`,
-    `\t</clientRegistries>`,
+    `\t\t\t\t</postLogoutRedirectUris>`,
+    `\t\t\t</clientRegistry>`,
+    `\t\t</clientRegistries>`,
+    // The signing certificate and its password, which the install generates (spike 07); measured on 12sp9, 23 and 35.
+    `\t\t<tokenSigning>`,
+    `\t\t\t<certificate filePath="App_Data/Certificates/OAuthServer.pfx" password="${BUILD_PASSWORDS.oauth}"></certificate>`,
+    `\t\t</tokenSigning>`,
+    `\t</server>`,
+    `\t<client id="OAuthServer">`,
+    `\t\t<secret type="JwtBearerAssertionClientSecret">`,
+    `\t\t\t<certificate filePath="App_Data/Certificates/OAuthServer.pfx" password="${BUILD_PASSWORDS.oauth}"></certificate>`,
+    `\t\t\t<tokenLifetime assertionTokenLifetime="300"></tokenLifetime>`,
+    `\t\t</secret>`,
+    `\t</client>`,
     `</oauth>`,
   ]);
   const appSettings = (rows: readonly string[]) => [`\t<appSettings>`, ...rows.map((r) => `\t\t${r}`), `\t</appSettings>`];

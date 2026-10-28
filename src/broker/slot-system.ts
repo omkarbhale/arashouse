@@ -5,7 +5,8 @@
 // whenever the file differs, then runs it.
 //
 // Secrets: the slot's SQL login passwords go only on the `database` step's stdin, and into the
-// slot's rendered config files (edits.ts); a stored secret only on a secret step's stdin or stdout.
+// slot's rendered config files (edits.ts); a stored secret only on a secret step's stdin or stdout; a new
+// signing certificate's password only on the `signing-cert` step's stdin (signing-cert.ts).
 
 import { constants } from "node:fs";
 import { copyFile, mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
@@ -142,6 +143,11 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
     },
     async quiesce(slot) {
       return (await slotStep("quiesce", slot)).provisioned === true;
+    },
+    async newSigningCertificate(slot, password) {
+      const r = await slotStep("signing-cert", slot, { secrets: { password: password.reveal() } });
+      if (typeof r.pfx !== "string" || typeof r.cer !== "string") throw new Error("signing-cert answered no certificate");
+      return { pfx: new Uint8Array(Buffer.from(r.pfx, "base64")), cer: new Uint8Array(Buffer.from(r.cer, "base64")) };
     },
     async resetTree(slot): Promise<TreeReset> {
       const r = await slotStep("reset-tree", slot);

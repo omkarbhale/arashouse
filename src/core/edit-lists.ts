@@ -6,7 +6,7 @@
 // for `SelfServiceReportConfig.xml`, from the 12.0 MSI's own script that writes it. 35: six files,
 // Release 23's eight without the two SelfServiceReporting ones, which the 14.35 installer no longer
 // ships (spike 08, docs/spike-08-release-35.md). Ticket 33b adds each release's agent configuration (docs/edits.md): the
-// goldens built since carry the agent.
+// goldens built since carry the agent. Ticket 54 adds the OAuth signing certificate's password, the same for all three.
 
 import { type FlavorKey } from "./flavors.js";
 import { EDIT_LIST_SCHEMA, type Edit, type EditList, parseEditList } from "./edits.js";
@@ -84,9 +84,24 @@ const configFilePaths: readonly Edit[] = ["Innovator/Client/Innovator.xml", "Inn
   (file): Edit => ({ file, kind: "xml", path: "/ConfigFilePath/@value", value: "{{slotDir}}\\InnovatorServerConfig.xml" }),
 );
 
+/**
+ * The password of the slot's own OAuth signing certificate (`OAuthServer.pfx`), which every render makes new (ticket 54,
+ * src/broker/signing-cert.ts): the OAuth server signs its tokens with it, and signs its own client assertions with it too.
+ */
+const SIGNING_EDITS: readonly Edit[] = [
+  { file: "OAuthServer/OAuth.config", kind: "xml", path: "/oauth/server/tokenSigning/certificate/@password", value: "{{secret:oauth_signing_password}}" },
+  {
+    file: "OAuthServer/OAuth.config",
+    kind: "xml",
+    path: "/oauth/client[@id='OAuthServer']/secret/certificate/@password",
+    value: "{{secret:oauth_signing_password}}",
+  },
+];
+
 const oauthAndVault: readonly Edit[] = [
   // The client's redirect URIs name the alias (20 of them: localhost, the machine names and addresses).
   { file: "OAuthServer/OAuth.config", kind: "text", path: "/{{build.alias}}/", value: "/{{alias}}/", many: true },
+  ...SIGNING_EDITS,
   {
     file: "OAuthServer/OAuthServer.config",
     kind: "xml",
@@ -141,5 +156,15 @@ export function withLicenceElement(list: EditList): EditList {
   const has = (edit: Edit) => list.edits.some((e) => e.file.toLowerCase() === edit.file.toLowerCase() && e.path === edit.path);
   if (!has(LICENCE_EDITS[0]!)) return list;
   const missing = LICENCE_EDITS.filter((edit) => !has(edit));
+  return missing.length === 0 ? list : parseEditList({ schema: list.schema, flavor: list.flavor, edits: [...list.edits, ...missing] });
+}
+
+/**
+ * A golden's list with the OAuth signing certificate's password (ticket 54): a list from a golden built before it gets the
+ * two edits, so every slot renders its own certificate without a rebuild. A list that has them is returned as it is.
+ */
+export function withSigningCertificate(list: EditList): EditList {
+  const has = (edit: Edit) => list.edits.some((e) => e.file.toLowerCase() === edit.file.toLowerCase() && e.path === edit.path);
+  const missing = SIGNING_EDITS.filter((edit) => !has(edit));
   return missing.length === 0 ? list : parseEditList({ schema: list.schema, flavor: list.flavor, edits: [...list.edits, ...missing] });
 }

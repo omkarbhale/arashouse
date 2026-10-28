@@ -16,6 +16,20 @@
     "user": { "type": "string", "minLength": 1 },
     "lease_id": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "128 random bits. Pass it to `return --if-lease-id`." },
     "holder": { "type": "string", "minLength": 1, "maxLength": 500 },
-    "password": { "type": "string", "minLength": 1, "description": "The lease's Aras password, for `user` (and `admin`). Shown once; absent with `--password-fd`, which writes it to that descriptor instead." }
+    "password": { "type": "string", "minLength": 1, "description": "The lease's Aras password, for `user` (and `admin`). Shown once; absent with `--password-fd`, which writes it to that descriptor instead." },
+    "imports": {
+      "type": "array",
+      "description": "Present with `--import`: each import that ran, in order (docs/import.md). With `--keep-on-fail` the last may have failed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["manifest", "exit_code", "log"],
+        "properties": {
+          "manifest": { "type": "string", "minLength": 1, "description": "The manifest's absolute path (imports.mf)." },
+          "exit_code": { "type": "integer", "description": "aras-pkg's exit code: 0 done, 1 failed, 2 done with errors the engine reported, 64 usage." },
+          "log": { "type": "string", "minLength": 1, "description": "The libs-js log: $ARASHOUSE_HOME/logs/<lease_id>-import-<n>.log." }
+        }
+      }
+    }
   }
 }

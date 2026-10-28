@@ -101,3 +101,4 @@ Stable; `docs/cli.md` repeats them. `src/core/exit-codes.ts` is the source.
 | 6 | host unreachable (a `Unreachable` or `Retryable` host error) |
 | 7 | refused by a guard (a `Refused` host error) |
 | 8 | a step needs a secret and no TTY can ask (`licence.ts`) |
+| 9 | an import failed: `get --import` or `import` (`docs/import.md`) |

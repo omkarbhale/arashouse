@@ -13,6 +13,8 @@ export const EXIT_CODES = {
   hostUnreachable: 6,
   /** A guard refused: the host or a core guard would not touch what was named. */
   refused: 7,
+  /** A `get --import` or `import` step failed (libs-js `aras-pkg import` exited non-zero); `get` returned the lease unless `--keep-on-fail`. */
+  importFailed: 9,
 } as const;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];

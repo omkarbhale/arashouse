@@ -212,6 +212,19 @@ describe("FakeHost guards", () => {
     expect(await kindOf(() => host.restoreDatabase(slot, `${stagingDir("lease1")}\\x.bak`))).toBe("none");
   });
 
+  it("backs up only a leased slot's database, as the broker does, and stages its file through writeBackup", async () => {
+    const written: string[] = [];
+    const host = new FakeHost({ writeBackup: (path) => written.push(path) });
+    await host.provisionSlot(slot);
+    const staged = `${stagingDir("lease1")}\\x.bak`;
+    expect(await kindOf(() => host.backupDatabase(slot, staged))).toBe("Refused");
+    const stamp = (await host.readStamp(slot)).stamp!;
+    await host.writeStamp(slot, { ...stamp, leaseId: "lease1" });
+    expect(await kindOf(() => host.backupDatabase(slot, staged))).toBe("none");
+    expect(written).toEqual([staged]);
+    expect(host.inspect(slot)?.backedUp).toEqual([staged]);
+  });
+
   it("refuses a staged path with a junction in it", async () => {
     const staging = stagingDir("lease1");
     const host = new FakeHost({ isReparsePoint: (p) => p === `${staging}\\link` });

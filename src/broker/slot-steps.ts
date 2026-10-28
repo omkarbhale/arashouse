@@ -27,6 +27,7 @@ import {
   buildScratch,
   databaseFiles,
   databaseName,
+  extractBackupScratch,
   goldenDir,
   slotDir,
   slotLoginSecretName,
@@ -50,6 +51,7 @@ export const SLOT_STEPS = [
   "start",
   "reset-database",
   "read-database",
+  "backup-database",
   "stop",
   "quiesce",
   "reset-tree",
@@ -80,6 +82,7 @@ function checkNameRules(root: string): void {
     [goldenDir(ref.flavor, root), `${root}\\golden\\${ref.flavor}`],
     [databaseFiles(databaseName(ref), root).data, `${root}\\sqldata\\arashouse_${ref.flavor}_07.mdf`],
     [databaseFiles(databaseName(ref), root).log, `${root}\\sqldata\\arashouse_${ref.flavor}_07_log.ldf`],
+    [extractBackupScratch(ref, root), `${root}\\sqldata\\arashouse_${ref.flavor}_07-extract.bak`],
     [slotLoginSecretName(ref, "dbo"), `slot-${ref.flavor}-07-dbo`],
     [slotRootSecretName(ref), `slot-${ref.flavor}-07-root`],
   ];
@@ -161,6 +164,7 @@ if (${list(SECRET_STEPS)} -ccontains $Step) {
     $SqlData = Join-Path $Root 'sqldata'
     $DataFile = Join-Path $SqlData "$Database.mdf"
     $LogFile = Join-Path $SqlData "$($Database)_log.ldf"
+    $ExtractBackup = Join-Path $SqlData "$($Database)-extract.bak"
     $SlotSecrets = @("slot-$Flavor-$NN-dbo", "slot-$Flavor-$NN-reg", "slot-$Flavor-$NN-root")
 }
 
@@ -567,6 +571,19 @@ switch ($Step) {
             $version = Read-Version $c $db
         } finally { $c.Dispose() }
         Write-Result @{ marker = $marker; version = $version }
+    }
+    'backup-database' {
+        # A leaseholder's extraction (ticket 43, docs/extract.md): a COPY_ONLY backup of the slot database by its owner, the broker,
+        # to sqldata\\<database>-extract.bak, replacing an older one (the SQL Server account may write sqldata\\ only). The broker copies
+        # it into the lease's staging folder and removes this one. COPY_ONLY leaves the database's backup sequence as it was.
+        $c = New-Sql
+        try {
+            if (@(Invoke-Sql $c 'SELECT name FROM sys.databases WHERE name = @n' @{ '@n' = $Database }).Count -eq 0) { Write-Result @{ missing = $true }; return }
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            Invoke-Sql $c ("BACKUP DATABASE " + (Format-Ident $Database) + " TO DISK = " + (Format-Str $ExtractBackup) + " WITH COPY_ONLY, INIT, FORMAT, CHECKSUM") | Out-Null
+            $watch.Stop()
+        } finally { $c.Dispose() }
+        Write-Result @{ backupMs = [int]$watch.ElapsedMilliseconds; bytes = [long](Get-Item -LiteralPath $ExtractBackup).Length }
     }
     'stop' {
         # The slot's agent and pools stopped, and its worker processes gone, so nothing holds a file or a session (ticket 33; before a

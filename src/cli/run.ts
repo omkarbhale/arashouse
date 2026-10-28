@@ -12,7 +12,7 @@ import { getFlavor } from "../core/flavors.js";
 import { LEASE_USER, LeaseError, UsageError, leaseRef, leaseSecretName } from "../core/lease.js";
 import { databaseName, webAlias } from "../core/names.js";
 import type { SecretStore } from "../core/secret-store.js";
-import { isLeaseId } from "../core/state.js";
+import { isLeaseId, type Slot } from "../core/state.js";
 import type { StateStore } from "../core/store.js";
 
 /** The variables `run` sets in the child's environment. */
@@ -47,6 +47,15 @@ function staleLease(message: string): LeaseError {
   return new LeaseError(EXIT_CODES.leaseMismatch, message);
 }
 
+/** The slot that holds `leaseId` now; exit 4 when the lease was returned or never existed (`run`, `extract`). */
+export async function heldSlot(store: StateStore, leaseId: string): Promise<Slot> {
+  const slot = Object.values((await store.read()).slots).find((s) => s.lease?.lease_id === leaseId);
+  if (!slot || slot.status !== "leased") {
+    throw staleLease(`lease ${leaseRef(leaseId)} is not held: it was returned, or never existed`);
+  }
+  return slot;
+}
+
 /** Starts the command with the lease's environment and resolves with its exit code. */
 export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<number> {
   const { leaseId, command } = request;
@@ -55,10 +64,7 @@ export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<
   const [program, ...args] = command;
   if (program === undefined || program === "") throw new UsageError("run needs a command after --");
 
-  const slot = Object.values((await deps.store.read()).slots).find((s) => s.lease?.lease_id === leaseId);
-  if (!slot || slot.status !== "leased") {
-    throw staleLease(`lease ${leaseRef(leaseId)} is not held: it was returned, or never existed`);
-  }
+  const slot = await heldSlot(deps.store, leaseId);
   const secret = await deps.secrets.get(leaseSecretName(leaseId));
   if (!secret) {
     throw staleLease(`the password of lease ${leaseRef(leaseId)} on ${slot.id} is gone (the state was recovered); return the lease and take a new one`);

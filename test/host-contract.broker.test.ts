@@ -1,8 +1,8 @@
 // The host-driver contract suite against `BrokerHost` on the real host (tickets 25 and 35). It provisions and destroys
 // the slot 12sp9-98, which no pool uses, so it runs only when asked: ARASHOUSE_TEST_BROKER=1, from WSL, with the
-// broker installed and the 12sp9 golden built. Ticket 35 ran it green (docs/e2e-12sp9.md); the bootstrap verbs
-// (`deployCode`, `restoreDatabase`, `backupDatabase`, tickets 39, 40 and 43) are not on the broker yet, so their staged
-// paths are refused by `BrokerHost`'s own guard, as FakeHost refuses them.
+// broker installed and the 12sp9 golden built. Ticket 35 ran it green (docs/e2e-12sp9.md). A bad staged path of
+// `deployCode`, `restoreDatabase` or `backupDatabase` (tickets 39, 40 and 43) is refused by `BrokerHost`'s own guard
+// before it reaches the broker, as FakeHost refuses it.
 
 import { describe, it } from "vitest";
 import { DEFAULT_INSTALL_ROOT, goldenLayout } from "../src/core/names.js";

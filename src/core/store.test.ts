@@ -75,6 +75,22 @@ describe("StateStore", () => {
     expect(await readFile(store.paths.events, "utf8")).not.toContain("ab".repeat(16));
   });
 
+  it("marks a held lease extracted with an event, and does nothing for a lease the slot no longer holds", async () => {
+    const store = new StateStore({ home, newLeaseId: () => "cd".repeat(16) });
+    await store.update((tx) => {
+      tx.addSlot(slot);
+      tx.transition("23-01", { to: "free", golden_hash: "g", reset_ms: 10 });
+      tx.transition("23-01", { to: "leased", holder: "task-9" });
+    });
+    expect(await store.update((tx) => tx.markExtracted("23-01", "ef".repeat(16), "db"))).toBe(false);
+    expect(await store.update((tx) => tx.markExtracted("23-01", "cd".repeat(16), "code"))).toBe(true);
+    expect((await store.read()).slots["23-01"]?.lease).toMatchObject({ holder: "task-9", extracted: true });
+    expect((await store.events()).at(-1)).toMatchObject({ event: "lease-extracted", slot: "23-01", lease: "cdcdcdcd", holder: "task-9", reason: "code" });
+    await store.update((tx) => tx.transition("23-01", { to: "dirty" }));
+    expect((await store.read()).slots["23-01"]?.lease).toBeUndefined();
+    expect(await store.update((tx) => tx.markExtracted("23-01", "cd".repeat(16), "code"))).toBe(false);
+  });
+
   it("writes nothing when the callback throws, and nothing when it changes nothing", async () => {
     const store = new StateStore({ home });
     await store.update((tx) => void tx.addSlot(slot));

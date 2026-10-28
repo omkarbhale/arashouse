@@ -3,7 +3,7 @@
 // turns the response into the driver's result or a `HostError`. `ms` is this side's round trip.
 //
 // The broker has `ping`, `hostInfo`, `readStamp`, `listSlots`, `baselineVerify`, `provisionSlot`,
-// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp`, `resetDatabase`, `setLeaseCredentials` and `healthCheck` so far. Every other
+// `destroySlot`, `startSlot`, `stopSlot`, `quiesce`, `resetTree`, `writeStamp`, `resetDatabase`, `backupDatabase`, `setLeaseCredentials` and `healthCheck` so far. Every other
 // method fails `Unreachable`, naming the ticket that adds its verb, so a reset waits (the slot stays
 // dirty) rather than being quarantined for a verb the broker does not have yet. `baselineBuild` is
 // never a verb: a baseline is built in an elevated session (ticket 24).
@@ -47,7 +47,6 @@ import { assertFlavorOwned, assertGoldenPath, assertSlotOwned, assertStagedPath,
 const PENDING: Partial<Record<HostMethod, string>> = {
   deployCode: "40",
   restoreDatabase: "39",
-  backupDatabase: "43",
 };
 
 export interface BrokerHostOptions {
@@ -290,8 +289,12 @@ export class BrokerHost implements HostDriver {
     return this.pending("restoreDatabase", this.stagedGuard(slot, stagedBak));
   }
 
-  backupDatabase(slot: SlotRef, stagedPath: string): Promise<HostResult> {
-    return this.pending("backupDatabase", this.stagedGuard(slot, stagedPath));
+  /** The broker checks again that the slot is leased and the path is inside that lease's staging folder (ticket 43). */
+  async backupDatabase(slot: SlotRef, stagedPath: string): Promise<HostResult> {
+    assertSlotOwned(slot, this.owned);
+    const path = assertStagedPath(slot, stagedPath, this.owned);
+    const { result, ms } = await this.call("backupDatabase", { slot: { flavor: slot.flavor, slot: slot.slot } }, { path });
+    return { ok: result.ok, ms, detail: result.detail };
   }
 
   async healthCheck(slot: SlotRef): Promise<HealthResult> {

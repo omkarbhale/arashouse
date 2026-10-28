@@ -7,7 +7,8 @@
 // Secrets: the slot's SQL login passwords go only on the `database` step's stdin, and into the
 // slot's rendered config files (edits.ts); a stored secret only on a secret step's stdin or stdout.
 
-import { mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ManifestError, summarizeDiff } from "../core/manifest.js";
 import { buildScratch, goldenDir, secretFile, slotDir, slotStepsScript, type SlotRef } from "../core/names.js";
@@ -19,11 +20,12 @@ import type { BrokerFs } from "./fs.js";
 import { readManifest, verifyGolden, verifyTree } from "./manifest-fs.js";
 import type { DatabaseReading, GoldenCheck, SlotLogins, SlotSystem, TreeReset } from "./provision.js";
 import { runPsScript } from "./ps-step.js";
+import type { DatabaseBackup } from "./backup-database.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 import { renderSlotStepsScript, type SlotStep } from "./slot-steps.js";
 
-/** How long one step may take: the mirror copies a golden tree, the rest take seconds. */
-const STEP_TIMEOUT_MS: Readonly<Partial<Record<SlotStep, number>>> = { mirror: 20 * 60_000, "reset-tree": 20 * 60_000 };
+/** How long one step may take: the mirror copies a golden tree, a backup a database the lease may have grown, the rest take seconds. */
+const STEP_TIMEOUT_MS: Readonly<Partial<Record<SlotStep, number>>> = { mirror: 20 * 60_000, "reset-tree": 20 * 60_000, "backup-database": 9 * 60_000 };
 const DEFAULT_STEP_TIMEOUT_MS = 5 * 60_000;
 
 export interface WindowsSlotSystemOptions {
@@ -122,6 +124,11 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
       if (r.missing === true) return { state: "missing" };
       return { state: "restored", restoreMs: Number(r.restoreMs), killed: Number(r.killed), access: String(r.access), marker: texts(r.marker), version: texts(r.version) };
     },
+    async backupDatabase(slot): Promise<DatabaseBackup> {
+      const r = await slotStep("backup-database", slot);
+      if (r.missing === true) return { state: "missing" };
+      return { state: "backed-up", backupMs: Number(r.backupMs), bytes: Number(r.bytes) };
+    },
     async stop(slot) {
       const r = await slotStep("stop", slot);
       return { pools: Number(r.pools), agent: r.agent === "stopped" ? "stopped" : "none" };
@@ -173,6 +180,18 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
       await mkdir(dirname(local(path)), { recursive: true });
       await writeFile(local(path), data);
     },
+    async copyFile(from, to) {
+      await mkdir(dirname(local(to)), { recursive: true });
+      try {
+        // COPYFILE_EXCL: never over a file that is there. The copy takes the destination folder's inherited ACL.
+        await copyFile(local(from), local(to), constants.COPYFILE_EXCL);
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+        throw err;
+      }
+    },
+    removeFile: (path) => rm(local(path), { force: true, maxRetries: 5, retryDelay: 500 }),
     removeDir: (path) => rm(local(path), { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }),
     async removeEmptyDir(path) {
       try {

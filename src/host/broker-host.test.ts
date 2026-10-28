@@ -13,7 +13,7 @@ import { registerCoreVerbs, type BrokerSystem } from "../broker/verbs.js";
 import { buildManifest, writeManifestOnce } from "../broker/manifest-fs.js";
 import { FakeAras } from "../../test/fake-aras.js";
 import { makeSampleTree } from "../../test/sample-tree.js";
-import { slotRootSecretName } from "../core/names.js";
+import { slotRootSecretName, stampFile } from "../core/names.js";
 import { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
 import { BrokerHost } from "./broker-host.js";
@@ -148,6 +148,7 @@ describe("BrokerHost against an in-process broker", () => {
         | "startSlot"
         | "stopSlot"
         | "resetDatabase"
+        | "backupDatabase"
         | "quiesce"
         | "resetTree"
         | "writeStamp"
@@ -158,9 +159,8 @@ describe("BrokerHost against an in-process broker", () => {
     > = {
       deployCode: () => host.deployCode(s1, `${ROOT}\\staging\\l\\code`),
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
-      backupDatabase: () => host.backupDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
     };
-    expect(Object.keys(calls).length + 16).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 17).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");
@@ -299,6 +299,25 @@ describe("BrokerHost against an in-process broker", () => {
       expect((await rejection(host.resetDatabase(s1, backup))).kind, backup.file).toBe("Refused");
     }
     expect((await rejection(host.resetDatabase({ flavor: "OLM_Local" as never, slot: 1 }, { flavor: "12sp9", file: ootb, hash: FAKE_GOLDEN_HASH }))).kind).toBe("Refused");
+    expect(transport.requests).toHaveLength(sent);
+  });
+
+  it("backs a leased slot's database up through the broker's backupDatabase verb, guarded on both sides", async () => {
+    await host.provisionSlot(s1);
+    const lease = "0123456789abcdef0123456789abcdef";
+    const staged = `${ROOT}\\staging\\${lease}\\extract-db-1.bak`;
+    // Not leased: the broker refuses.
+    expect(await rejection(host.backupDatabase(s1, staged))).toMatchObject({ kind: "Refused", message: "slot 12sp9-01 is not leased: only a leased slot's database is backed up" });
+    slots.put(stampFile(s1, ROOT), JSON.stringify({ ...JSON.parse(slots.text(stampFile(s1, ROOT))!), leaseId: lease }));
+    const done = await host.backupDatabase(s1, staged);
+    expect(done).toMatchObject({ ok: true, detail: expect.stringMatching(/^backed up the database of 12sp9-01 \(COPY_ONLY, .* MB, 0\.9 s\) to extract-db-1\.bak in /) });
+    expect(transport.requests.at(-1)).toMatchObject({ verb: "backupDatabase", slot: s1, args: { path: staged } });
+    expect(slots.text(staged)).toBe("COPY_ONLY backup of arashouse_12sp9_01");
+    const sent = transport.requests.length;
+    for (const path of [`${ROOT}\\staging\\x.bak`, `${ROOT}\\golden\\12sp9\\db\\ootb.bak`, "C:\\Program Files\\Microsoft SQL Server\\olm.bak"]) {
+      expect((await rejection(host.backupDatabase(s1, path))).kind, path).toBe("Refused");
+    }
+    expect((await rejection(host.backupDatabase({ flavor: "OLM_Local" as never, slot: 1 }, staged))).kind).toBe("Refused");
     expect(transport.requests).toHaveLength(sent);
   });
 

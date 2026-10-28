@@ -9,7 +9,7 @@
 
 **The invariant:** a slot that `get` hands out is always clean. **When** the reset runs is a choice,
 and it is not "return wipes at once". The holder's duty is to take out anything durable before
-returning (ticket 43 gives it helpers); after `return` the holder may assume the slot is gone.
+returning (`arashouse extract`, `docs/extract.md`); after `return` the holder may assume the slot is gone.
 
 ## Who resets, and when
 

@@ -143,6 +143,8 @@ export interface FakeHostOptions {
   readonly info?: Partial<HostInfo>;
   /** Reports a junction or other reparse point, as the real host would for a path segment. */
   readonly isReparsePoint?: (path: string) => boolean;
+  /** Writes the file a successful `backupDatabase` stages, where a test can read it (the CLI's fake host does). */
+  readonly writeBackup?: (stagedPath: string, slot: SlotRef) => void;
 }
 
 const DEFAULT_INFO: HostInfo = {
@@ -183,6 +185,7 @@ export class FakeHost implements HostDriver {
   private faults: ActiveFault[] = [];
   private hangs: (() => void)[] = [];
   private readonly record: CallRecord[] = [];
+  private readonly writeBackup?: (stagedPath: string, slot: SlotRef) => void;
 
   constructor(options: FakeHostOptions = {}) {
     this.clock = options.clock ?? new FakeClock();
@@ -191,6 +194,7 @@ export class FakeHost implements HostDriver {
     this.baselines = new Set(options.baselines ?? []);
     this.info = { ...DEFAULT_INFO, ...options.info };
     this.owned = { root: this.root, isReparsePoint: options.isReparsePoint };
+    this.writeBackup = options.writeBackup;
   }
 
   // ---- test controls ---------------------------------------------------------------------------
@@ -431,6 +435,9 @@ export class FakeHost implements HostDriver {
         assertStagedPath(slot, stagedPath, this.owned, this.stateOf(slot).stamp?.leaseId);
       },
       () => {
+        // As the broker: only a leased slot's database (ticket 43).
+        if (!this.stateOf(slot).stamp?.leaseId) throw new HostError("Refused", `slot ${slotId(slot)} is not leased: only a leased slot's database is backed up`);
+        this.writeBackup?.(stagedPath, slot);
         this.stateOf(slot).backedUp.push(stagedPath);
         return { ok: true, detail: `backed up the database of ${slotId(slot)}` };
       },

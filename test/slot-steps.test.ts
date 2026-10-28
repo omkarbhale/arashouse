@@ -47,11 +47,14 @@ describe("slot-steps.ps1 (static)", () => {
     for (const key of FLAVOR_KEYS) expect(steps).toContain(`'${key}' = @{ data = '${FLAVORS[key].backupFiles.data}'; log = '${FLAVORS[key].backupFiles.log}' }`);
   });
 
-  it("reaches SQL Server only through the name-checked procedures, but for the owner's own restore and user mapping", () => {
+  it("reaches SQL Server only through the name-checked procedures, but for the owner's own restore, user mapping and extraction backup", () => {
     const sql = [...steps.matchAll(/'(EXEC|DECLARE @r int; EXEC @r =) arashouse_admin\.dbo\.(\w+)/g)].map((m) => m[2]);
     expect([...new Set(sql)].sort()).toEqual(["create_slot_database", "create_slot_login", "drop_slot_database", "drop_slot_login", "kill_connections"]);
     expect(steps).not.toMatch(/(CREATE|DROP) (DATABASE|LOGIN)/);
-    expect(steps).not.toMatch(/\bKILL \d|SINGLE_USER|BACKUP DATABASE|FILELISTONLY/);
+    expect(steps).not.toMatch(/\bKILL \d|SINGLE_USER|FILELISTONLY|BACKUP LOG/);
+    // A leaseholder's extraction (ticket 43): the slot's own database, COPY_ONLY, to its derived scratch file only.
+    const backups = [...steps.matchAll(/BACKUP DATABASE [^\n]*/g)].map((m) => m[0]);
+    expect(backups).toEqual(['BACKUP DATABASE " + (Format-Ident $Database) + " TO DISK = " + (Format-Str $ExtractBackup) + " WITH COPY_ONLY, INIT, FORMAT, CHECKSUM") | Out-Null']);
     for (const m of steps.matchAll(/RESTORE DATABASE [^\n]*/g)) expect(m[0]).toMatch(/^RESTORE DATABASE " \+ \(Format-Ident \$Database\) \+ " FROM DISK = " \+ \(Format-Str \$bak\)/);
     expect(steps).toContain("$bak = Join-Path $Golden 'db\\ootb.bak'");
     for (const m of steps.matchAll(/ALTER USER [^\n]*/g)) expect(m[0]).toContain("WITH LOGIN = \" + (Format-Ident $login))");

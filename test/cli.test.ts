@@ -182,6 +182,118 @@ describe("get --password-fd", () => {
   });
 });
 
+describe("get --code and deploy-code", () => {
+  /** A one-file client overlay, and the install root the CLI stages into, both under the test's home. */
+  async function overlay(): Promise<{ src: string; env: NodeJS.ProcessEnv }> {
+    const src = join(home, "overlay");
+    await mkdir(join(src, "Client", "scripts"), { recursive: true });
+    await writeFile(join(src, "Client", "scripts", "fix.js"), "// fixed");
+    const root = join(home, "root");
+    await mkdir(root);
+    return { src, env: { ARASHOUSE_LOCAL_ROOT: root } };
+  }
+
+  async function slotOf(id: string) {
+    return (await new StateStore({ home }).read()).slots[id];
+  }
+
+  it("deploys after the lease, prints what it did in the contract, and records it on the lease without contents", async () => {
+    await seed({ "12sp9": 1 });
+    const { src, env } = await overlay();
+    const r = await cli(["get", "12sp9", "--holder", "t", "--json", "--code", src, "--code", `${src}:Innovator/Client`], env);
+    expect(r.code, r.stderr).toBe(0);
+    const grant = JSON.parse(r.stdout) as Grant & { bootstrap: { code: { subpath: string; ok: boolean }[] } };
+    const validate = await validator("get.schema.json");
+    expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+    expect(grant.bootstrap.code.map((c) => [c.subpath, c.ok])).toEqual([
+      ["Innovator", true],
+      ["Innovator/Client", true],
+    ]);
+    const bootstrap = (await slotOf("12sp9-01"))?.lease?.bootstrap;
+    expect(bootstrap).toMatchObject({ code_deploys: 2, code: expect.stringMatching(/^\d+ files, manifest [0-9a-f]{64}$/) });
+    expect(JSON.stringify(bootstrap)).not.toContain("fixed");
+    expect(await readdir(join(home, "root", "staging"))).toEqual([]);
+  });
+
+  it("refuses a deploy a guard refuses before it takes a lease (exit 7)", async () => {
+    await seed({ "12sp9": 1 });
+    const { env } = await overlay();
+    const cfg = join(home, "cfg");
+    await mkdir(cfg);
+    await writeFile(join(cfg, "InnovatorServerConfig.xml"), "<Innovator/>");
+    const r = await cli(["get", "12sp9", "--holder", "t", "--json", "--code", `${cfg}:.`], env);
+    expect(r.code).toBe(EXIT_CODES.refused);
+    expect(r.stderr).toMatch(/--allow-config/);
+    expect(r.stdout).toBe("");
+    expect((await slotOf("12sp9-01"))?.status).toBe("free");
+    for (const flag of ["--atomic", "--allow-config", "--allow-servers"]) {
+      expect((await cli(["get", "12sp9", "--holder", "t", flag], env)).code, flag).toBe(EXIT_CODES.usage);
+    }
+  });
+
+  it("keeps the lease and shows it when a deploy fails (exit 10); --atomic returns it instead", async () => {
+    await seed({ "12sp9": 2 });
+    const { src, env } = await overlay();
+    const faults = { ARASHOUSE_FAKE_FAULTS: JSON.stringify([{ method: "deployCode", kind: "fail", error: "Retryable", message: "robocopy failed (16)" }]) };
+    const kept = await cli(["get", "12sp9", "--holder", "t", "--json", "--code", src], { ...env, ...faults });
+    expect(kept.code).toBe(EXIT_CODES.codeFailed);
+    const grant = JSON.parse(kept.stdout) as Grant & { bootstrap: { code: { ok: boolean; detail: string }[] } };
+    expect(grant.bootstrap.code).toEqual([expect.objectContaining({ ok: false, detail: "robocopy failed (16)" })]);
+    expect(kept.stderr).toMatch(/the code deploy failed .*; the lease is still held/);
+    expect((await slotOf(grant.slot))?.status).toBe("leased");
+
+    const atomic = await cli(["get", "12sp9", "--holder", "t", "--json", "--atomic", "--code", src], { ...env, ...faults });
+    expect(atomic.code).toBe(EXIT_CODES.codeFailed);
+    expect(atomic.stdout).toBe("");
+    expect(atomic.stderr).toMatch(/--atomic returned the lease, and the slot is reset/);
+    expect((await slotOf("12sp9-02"))?.status).toBe("dirty");
+  });
+
+  it("deploys the code before the imports, and runs no import after a deploy that failed", async () => {
+    await seed({ "12sp9": 2 });
+    const { src, env } = await overlay();
+    const dir = join(home, "packages", "p");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "imports.mf"), `exit=0\n<imports><package name="LIBSJS-SCRATCH-p" path="p\\Import" /></imports>\n`);
+    const apkg = { ARASHOUSE_APKG: join(repoRoot, "test", "fixtures", "fake-aras-pkg.mjs"), FAKE_APKG_RECORD: join(home, "apkg-runs.jsonl") };
+    const both = await cli(["get", "12sp9", "--holder", "t", "--json", "--code", src, "--import", join(dir, "imports.mf")], { ...env, ...apkg });
+    expect(both.code, both.stderr).toBe(0);
+    const grant = JSON.parse(both.stdout) as Record<string, unknown>;
+    const validate = await validator("get.schema.json");
+    expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+    expect(grant).toMatchObject({ bootstrap: { code: [{ ok: true }] }, imports: [{ exit_code: 0 }] });
+    const events = (await readFile(join(home, "events.log"), "utf8")).trim().split("\n").map((l) => JSON.parse(l) as { event: string });
+    expect(events.some((e) => e.event === "bootstrap")).toBe(true);
+
+    const faults = { ARASHOUSE_FAKE_FAULTS: JSON.stringify([{ method: "deployCode", kind: "fail", error: "Retryable", message: "robocopy failed (16)" }]) };
+    const failed = await cli(["get", "12sp9", "--holder", "t", "--json", "--code", src, "--import", join(dir, "imports.mf")], { ...env, ...apkg, ...faults });
+    expect(failed.code).toBe(EXIT_CODES.codeFailed);
+    expect(JSON.parse(failed.stdout)).not.toHaveProperty("imports");
+    expect(failed.stderr).toMatch(/the lease is still held, and no import ran/);
+    const runs = existsSync(join(home, "apkg-runs.jsonl")) ? (await readFile(join(home, "apkg-runs.jsonl"), "utf8")).trim().split("\n") : [];
+    expect(runs).toHaveLength(1);
+  });
+
+  it("deploy-code deploys onto a lease already held, and refuses a lease that is not held", async () => {
+    await seed({ "23": 1 });
+    const { src, env } = await overlay();
+    const grant = await lease("23");
+    const r = await cli(["deploy-code", "--lease", grant.lease_id, "--json", src], env);
+    expect(r.code, r.stderr).toBe(0);
+    const report = JSON.parse(r.stdout) as Record<string, unknown>;
+    const validate = await validator("deploy-code.schema.json");
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+    expect(report).toMatchObject({ slot: "23-01", code: [{ subpath: "Innovator", ok: true }] });
+    expect((await slotOf("23-01"))?.lease?.bootstrap).toMatchObject({ code_deploys: 1 });
+    expect((await cli(["deploy-code", "--lease", "f".repeat(32), src], env)).code).toBe(EXIT_CODES.leaseMismatch);
+    expect((await cli(["deploy-code", "--lease", grant.lease_id], env)).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["deploy-code", src], env)).code).toBe(EXIT_CODES.usage);
+    const evil = join(home, "evil.zip");
+    await writeFile(evil, buildZip([{ name: "../x.js", data: "x" }]));
+    expect((await cli(["deploy-code", "--lease", grant.lease_id, evil], env)).code).toBe(EXIT_CODES.refused);
+  });
+});
+
 describe("run --lease", () => {
   it("gives the password to the child's environment and to nothing else", async () => {
     await seed({ "23": 2 });

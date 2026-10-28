@@ -2,7 +2,8 @@
 
 The worker-facing commands, thin over the lease core (`docs/lease.md`), and the operator commands,
 thin over `src/core/operator.ts`. Source: `src/cli/commands.ts`. `get --bootstrap` and its steps are
-tickets 39 to 42 (`get --import` and `import`, ticket 41, are in `docs/import.md`); the extraction helpers (`extract`, ticket 43) are in `docs/extract.md`.
+tickets 39 to 42 (the code deploy, `get --code` and `deploy-code`, ticket 40, is in `docs/code-deploy.md`; `get --import` and
+`import`, ticket 41, are in `docs/import.md`); the extraction helpers (`extract`, ticket 43) are in `docs/extract.md`.
 
 > "The philosophy is that Aras are disposable, and anything durable should be taken out by whoever
 > took the lease before giving it back."
@@ -11,7 +12,8 @@ tickets 39 to 42 (`get --import` and `import`, ticket 41, are in `docs/import.md
 
 | command | what it does |
 |---|---|
-| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]` | Leases a clean slot of the flavor; `--agent` starts its agent service too; `--password-fd` writes the password to a descriptor. |
+| `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>] [--code <dir\|zip>[:<subpath>]]... [--allow-config] [--allow-servers] [--atomic]` | Leases a clean slot of the flavor; `--agent` starts its agent service too; `--password-fd` writes the password to a descriptor; `--code` deploys code into it (`docs/code-deploy.md`). |
+| `arashouse deploy-code --lease <lease_id> <dir\|zip>[:<subpath>]... [--allow-config] [--allow-servers] [--json]` | Deploys a folder or zip over a leased slot's tree (`docs/code-deploy.md`). |
 | `arashouse get <flavor> --holder <task> --import <manifest\|folder> [<import options>] ... [--keep-on-fail]` | The same, then imports package manifests onto the lease with import-export-libs-js, in order (`docs/import.md`). |
 | `arashouse import --lease <lease_id> <manifest\|folder> [<import options>] ...` | Imports package manifests onto a held lease (`docs/import.md`). |
 | `arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]` | Gives the lease back; its slot is discarded. |
@@ -67,6 +69,20 @@ and so is a descriptor that is not open or is Node's own (its event loop opens d
 lowest free number, so one the caller did not open is never written to). It is checked before the
 lease is taken, so a mistake costs no slot (exit 2). If the write fails after the lease is taken, the
 lease is returned at once.
+
+`--code <dir|zip>[:<subpath>]` (repeatable, applied in order, before any `--import`) deploys code into the slot once it is leased, as
+`deploy-code` does (`docs/code-deploy.md`). Each source is read and checked before the lease is taken, so a deploy a
+guard refuses costs no slot (exit 7). If a deploy fails after the lease is taken, the lease is still held: `get` prints
+it as usual (with `bootstrap.code` in the JSON saying what failed) and exits 10; no `--import` runs. With `--atomic` it
+returns the lease instead (the reset removes whatever was deployed) and exits 10 without printing one. `--allow-config`,
+`--allow-servers` and `--atomic` go only with `--code`.
+
+### `deploy-code`
+
+`arashouse deploy-code --lease <lease_id> <dir|zip>[:<subpath>]...` deploys onto a lease already held: each source
+is staged, copied over the slot's tree and the slot started again, in order (`docs/code-deploy.md`). With `--json`,
+stdout is `{ slot, code }` (`docs/schemas/deploy-code.schema.json`). A lease that is not held exits 4; a deploy a
+guard refuses exits 7 and changes nothing; one that fails after it started exits 10, the lease still held.
 
 `--import <manifest|folder>` (repeatable) imports each package manifest onto the lease after it is taken, in
 order, with import-export-libs-js's `aras-pkg import` and the flavor's engine; the options after an `--import`
@@ -278,6 +294,7 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | 7 | refused by a guard: the name is not one arashouse owns, or is on the deny-list; or an operator command the slot's status does not allow (destroying a leased slot, a `teardown` while a slot is leased, repairing one that is not quarantined), or `repair --rebuild` under the disk gate |
 | 8 | a step needs a secret and no terminal can ask for it |
 | 9 | an import failed: `aras-pkg import` exited non-zero in `get --import` (the lease was returned, unless `--keep-on-fail`) or `import` (the lease is kept); stderr names its exit code and log |
+| 10 | a code deploy (`get --code`, `deploy-code`; `docs/code-deploy.md`) failed after the lease was taken: the lease is still held (`get` still prints it), unless `get --atomic` returned it |
 | 127 | `run` could not start its command |
 
 ## Environment
@@ -293,3 +310,4 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | `ARASHOUSE_MEDIA` | the folder holding `media/<flavor>/` (`docs/media-check.md`) |
 | `ARASHOUSE_APKG` | the import-export-libs-js CLI for `get --import` and `import`: a checkout's `dist/cli.js` (run with this Node) or an executable; else `aras-pkg` on `PATH` (`docs/import.md`) |
 | `ARASHOUSE_DEBUG` | `1` prints the stack of an error |
+| `ARASHOUSE_LOCAL_ROOT` | the install root as the CLI opens it, for staging a code deploy (default `/mnt/c/aras_installations`); the CLI tests point it at a folder |

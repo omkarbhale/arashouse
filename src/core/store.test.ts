@@ -124,6 +124,23 @@ describe("StateStore", () => {
     await expect(store.update((tx) => void tx.addSlot(slot))).rejects.toThrow(/already exists/);
   });
 
+  it("records bootstrap keys on the slot's current lease only, refusing a secret-looking key", async () => {
+    const store = new StateStore({ home });
+    const lease = await store.update((tx) => {
+      tx.addSlot(slot);
+      tx.transition("23-01", { to: "free", golden_hash: "g", reset_ms: 1 });
+      return tx.transition("23-01", { to: "leased", holder: "t", bootstrap: { agent: true } }).lease!;
+    });
+    expect(await store.update((tx) => tx.recordBootstrap("23-01", lease.lease_id, { code: "1 files, manifest x", code_deploys: 1 }))).toBe(true);
+    expect((await store.read()).slots["23-01"]?.lease?.bootstrap).toEqual({ agent: true, code: "1 files, manifest x", code_deploys: 1 });
+    expect(await store.update((tx) => tx.recordBootstrap("23-01", "f".repeat(32), { code: "x" }))).toBe(false);
+    await expect(store.update((tx) => tx.recordBootstrap("23-01", lease.lease_id, { lease_token: "x" }))).rejects.toThrow(/looks like a secret/);
+    const events = (await readFile(store.paths.events, "utf8")).trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(events.at(-1)).toMatchObject({ event: "bootstrap", slot: "23-01", lease: lease.lease_id.slice(0, 8), reason: "recorded code, code_deploys" });
+    await store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    expect(await store.update((tx) => tx.recordBootstrap("23-01", lease.lease_id, { code: "x" }))).toBe(false);
+  });
+
   it("keeps the state file private to its owner", async () => {
     const store = new StateStore({ home });
     await store.update((tx) => void tx.addSlot(slot));

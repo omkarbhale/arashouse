@@ -96,7 +96,7 @@ export function splitImports(args: readonly string[], outer: Readonly<Record<str
     if (kind === undefined) {
       rest.push(arg);
       // The command's own value option keeps its value, so a value that looks like an import option is not read as one.
-      if (outer[name] === "value" && inline === undefined && i + 1 < args.length && args[i + 1] !== "--") rest.push(args[++i]!);
+      if ((outer[name] === "value" || outer[name] === "list") && inline === undefined && i + 1 < args.length && args[i + 1] !== "--") rest.push(args[++i]!);
       continue;
     }
     const step = steps.at(-1);

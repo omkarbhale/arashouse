@@ -100,6 +100,17 @@ export type TreeReset =
       readonly aspnetFolders: number;
     };
 
+/** What is at a path, never following a link: a junction, symbolic link or other reparse point is a `link`. */
+export type EntryKind = "missing" | "file" | "dir" | "link" | "other";
+
+/** A walk of a staged folder that follows no link (ticket 40). */
+export interface StagedListing {
+  /** Its plain files, relative and `/`-separated, in the case the disk has them. */
+  readonly files: readonly { readonly path: string; readonly size: number }[];
+  /** What is neither a plain file nor a plain folder (a link, a junction, a device), relative; not walked into. */
+  readonly refused: readonly string[];
+}
+
 /** Every effect the slot verbs have on the host. The slot's names and paths are derived on both sides of this seam. */
 export interface SlotSystem {
   now(): number;
@@ -154,6 +165,18 @@ export interface SlotSystem {
   removeDir(path: string): Promise<void>;
   /** Removes a folder only when it is empty. */
   removeEmptyDir(path: string): Promise<void>;
+  /** What is at `path`, without following a link. */
+  entryKind(path: string): Promise<EntryKind>;
+  /** The staged folder `dir`, walked without following a link (ticket 40). */
+  listStaged(dir: string): Promise<StagedListing>;
+  /** A staged file's bytes, read from a handle checked to be the plain, single-link file at `path`; refused past `maxBytes`. */
+  readStaged(path: string, maxBytes: number): Promise<Uint8Array>;
+  /** Copies the staged file `from`, checked as `readStaged` checks it, to `to` (its folders made) through a temporary file renamed over it. */
+  copyStaged(from: string, to: string): Promise<{ readonly bytes: number }>;
+  /** Deletes the plain file at `path` in a slot's tree (a deploy's delete list); false when there is none. A folder or link is refused. */
+  removeTreeFile(path: string): Promise<boolean>;
+  /** Clears ASP.NET's temporary files of the slot's alias (compiled pages, shadow copies of its bin); answers how many folders went. */
+  clearCompiled(slot: SlotRef): Promise<number>;
   /** Machine-scope DPAPI under `<root>\secrets\` on the host. */
   readonly secrets: SecretStore;
   /** Logins and password edits through a slot's own Aras server, on this machine (ticket 34). */

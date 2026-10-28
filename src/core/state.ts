@@ -232,7 +232,8 @@ export function transitionSlot(slot: Slot, request: TransitionRequest, context: 
 
 const SECRET_KEY = /pass|secret|token|credential|licen[cs]e|api.?key|private|hash|salt|\bkey\b|_key\b/i;
 
-function checkBootstrap(info: BootstrapInfo): BootstrapInfo {
+/** `info` checked: scalar values, short strings, and no key that looks like a secret. Throws otherwise. */
+export function checkBootstrap(info: BootstrapInfo): BootstrapInfo {
   const out: Record<string, string | number | boolean | null> = {};
   for (const [key, value] of Object.entries(info)) {
     if (SECRET_KEY.test(key)) throw new Error(`bootstrap key "${key}" looks like a secret; the state file holds none`);

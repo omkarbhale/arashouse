@@ -55,6 +55,7 @@ export const SLOT_STEPS = [
   "stop",
   "quiesce",
   "reset-tree",
+  "clear-aspnet",
   "remove-agent",
   "remove-database",
   "remove-iis",
@@ -626,6 +627,12 @@ switch ($Step) {
                 Write-Result @{ provisioned = $true; quiesced = $true; robocopy = $rc; mirrorMs = $mirrorMs; clearMs = $watch.ElapsedMilliseconds; runtimeEntries = $runtime; vaultEntries = $vault; aspnetFolders = $aspnet }
             }
         }
+    }
+    'clear-aspnet' {
+        # After a code deploy into Server\\bin or Server\\dll (ticket 40), on a quiesced slot only: ASP.NET's temporary files of the alias.
+        $serving = @(Get-Serving)
+        if ($serving.Count -gt 0) { Stop-Step "the slot still runs: $($serving -join ', ')" }
+        Write-Result @{ aspnetFolders = (Clear-AspNetTemp) }
     }
     'remove-agent' {
         $svc = Get-SlotService

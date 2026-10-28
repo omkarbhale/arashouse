@@ -62,6 +62,8 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<BrokerVerb, number>>> = {
   // The health check waits for a cold start (up to 2 minutes), verifies the tree (about a second; minutes on a cold
   // cache), and logs in three or four times.
   healthCheck: 10 * 60_000,
+  // A deploy quiesces the slot (up to 10 minutes, as \`quiesce\`), copies the staged tree, and starts and warms it again (as \`startSlot\`).
+  deployCode: 30 * 60_000,
 };
 
 /** How long `verb` may run on the broker. */

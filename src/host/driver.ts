@@ -147,6 +147,29 @@ export interface BaselineVerifyResult extends HostResult {
   readonly diff?: ManifestDiff;
 }
 
+/** How a staged code tree is deployed onto a leased slot (ticket 40, docs/code-deploy.md). */
+export interface DeployOptions {
+  /** The lease the caller holds: the slot's stamp must name it, and the staged folder must be inside `staging\<lease_id>`. */
+  readonly leaseId: string;
+  /** Where the staged folder lands in the slot's tree, `/`-separated, "" for its top; `Innovator` when absent. */
+  readonly subpath?: string;
+  /** May overwrite or delete the secrets and identity files (`InnovatorServerConfig.xml`, `*.pfx`, ...). */
+  readonly allowConfig?: boolean;
+  /** May write `VaultServer\` and `OAuthServer\` as well as `Innovator\`. */
+  readonly allowServers?: boolean;
+  /** Start the slot's agent again after the deploy (the lease was taken with `get --agent`). */
+  readonly agent?: boolean;
+}
+
+/** A deploy that ran: the files are in place. `ok: false` when the slot did not come back up after it (the warm-up failed). */
+export interface DeployResult extends HostResult {
+  readonly files: number;
+  /** Files the `deploy.json` delete list removed (one that did not exist is not counted). */
+  readonly deleted: number;
+  /** Whether ASP.NET's temporary files of the alias were cleared (the deploy touched `Server\bin` or `Server\dll`). */
+  readonly compiledCleared: boolean;
+}
+
 /** The host driver. Every method may throw `HostError`; see errors.ts. */
 export interface HostDriver {
   ping(): Promise<HostResult>;
@@ -168,8 +191,11 @@ export interface HostDriver {
   /** Stops the agent and takes the applications offline (ticket 33). */
   stopSlot(slot: SlotRef): Promise<HostResult>;
 
-  /** Deploys a code tree the leaseholder staged under `staging\<lease_id>` (ticket 40). */
-  deployCode(slot: SlotRef, stagedPath: string): Promise<HostResult>;
+  /**
+   * Overlays a code tree the leaseholder staged under `staging\<lease_id>` onto the leased slot's tree (ticket 40): the
+   * slot quiesced, the files copied, its pools started again and warmed. A refusal changes nothing.
+   */
+  deployCode(slot: SlotRef, stagedPath: string, options: DeployOptions): Promise<DeployResult>;
   /** Restores a `.bak` the leaseholder staged under `staging\<lease_id>` (ticket 39). */
   restoreDatabase(slot: SlotRef, stagedBak: string): Promise<HostResult>;
   /** Backs the slot's database up to a path under `staging\<lease_id>` (ticket 43). */

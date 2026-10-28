@@ -447,7 +447,8 @@ async function attemptGet(
     for (const w of tx.waiters()) if (w.ticket !== ticket && !live.includes(w)) tx.leaveQueue(w.ticket, "gone");
     const verdict = await governor.check({ slots: Object.values(tx.snapshot()), flavor, holder, queue: live, ticket, host: info });
     if (!verdict.ok) return { kind: "refused", reason: verdict.reason } as const;
-    const leased = tx.transition(candidate.id, { to: "leased", holder });
+    // A lease taken with its agent says so, so a later code deploy (ticket 40) starts the agent again after its quiesce.
+    const leased = tx.transition(candidate.id, { to: "leased", holder, ...(agent ? { bootstrap: { agent: true } } : {}) });
     if (ticket !== null) tx.leaveQueue(ticket, "leased");
     return { kind: "reserved", lease: leased.lease as Lease } as const;
   });

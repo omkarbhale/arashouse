@@ -7,9 +7,11 @@
 import { createHash } from "node:crypto";
 import { FLAVOR_KEYS, isFlavorKey, type FlavorKey } from "../core/flavors.js";
 import { assertValidRoot } from "../core/guards.js";
+import { DEFAULT_CODE_SUBPATH, checkSubpath } from "../core/code-deploy.js";
 import { VERIFY_LEVELS } from "../core/manifest.js";
 import { DEFAULT_INSTALL_ROOT, goldenDir, slotId, type SlotRef } from "../core/names.js";
 import { ADMIN_PROCEDURES, POOL_LOGIN } from "../core/setup-sql.js";
+import { isLeaseId } from "../core/state.js";
 import { FakeClock } from "./clock.js";
 import {
   HOST_METHODS,
@@ -24,6 +26,8 @@ import {
   type HostMethod,
   type BaselineVerifyOptions,
   type BaselineVerifyResult,
+  type DeployOptions,
+  type DeployResult,
   type HostResult,
   type ListSlotsResult,
   type SecretRef,
@@ -391,19 +395,24 @@ export class FakeHost implements HostDriver {
     });
   }
 
-  deployCode(slot: SlotRef, stagedPath: string): Promise<HostResult> {
-    return this.call(
+  deployCode(slot: SlotRef, stagedPath: string, options: DeployOptions): Promise<DeployResult> {
+    return this.call<DeployResult>(
       "deployCode",
-      { slot, args: { path: stagedPath } },
+      { slot, args: { path: stagedPath, subpath: options.subpath ?? DEFAULT_CODE_SUBPATH, allowConfig: options.allowConfig === true, allowServers: options.allowServers === true } },
       () => {
         assertSlotOwned(slot, this.owned);
-        assertStagedPath(slot, stagedPath, this.owned, this.stateOf(slot).stamp?.leaseId);
+        checkSubpath(options.subpath ?? DEFAULT_CODE_SUBPATH);
+        if (!isLeaseId(options.leaseId)) throw new HostError("Refused", "a deploy names the lease it is for");
+        assertStagedPath(slot, stagedPath, this.owned, options.leaseId);
       },
       () => {
         const state = this.stateOf(slot);
+        if (state.stamp?.leaseId !== options.leaseId) throw new HostError("Refused", `slot ${slotId(slot)} is not leased by that lease`);
         state.treeDirty = true;
         state.deployed.push(stagedPath);
-        return { ok: true, detail: `deployed code into ${slotId(slot)}` };
+        state.online = true;
+        state.agent = options.agent === true;
+        return { ok: true, detail: `deployed code into ${slotId(slot)}`, files: 0, deleted: 0, compiledCleared: false };
       },
     );
   }

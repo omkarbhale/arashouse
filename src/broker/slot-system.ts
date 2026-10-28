@@ -23,6 +23,7 @@ import { runPsScript } from "./ps-step.js";
 import type { DatabaseBackup } from "./backup-database.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 import { renderSlotStepsScript, type SlotStep } from "./slot-steps.js";
+import { copyStaged, entryKind, listStaged, readStaged, removeFile as removeTreeFile } from "./staged-fs.js";
 
 /** How long one step may take: the mirror copies a golden tree, a backup a database the lease may have grown, the rest take seconds. */
 const STEP_TIMEOUT_MS: Readonly<Partial<Record<SlotStep, number>>> = { mirror: 20 * 60_000, "reset-tree": 20 * 60_000, "backup-database": 9 * 60_000 };
@@ -200,6 +201,16 @@ export function windowsSlotSystem(options: WindowsSlotSystemOptions): SlotSystem
         const code = (err as NodeJS.ErrnoException).code;
         if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw err;
       }
+    },
+    entryKind: (path) => entryKind(local(path)),
+    listStaged: (dir) => listStaged(local(dir)),
+    readStaged: (path, maxBytes) => readStaged(local(path), maxBytes),
+    async copyStaged(from, to) {
+      return { bytes: (await copyStaged(local(from), local(to))).bytes };
+    },
+    removeTreeFile: (path) => removeTreeFile(local(path)),
+    async clearCompiled(slot) {
+      return Number((await slotStep("clear-aspnet", slot)).aspnetFolders);
     },
     secrets: dpapiSecretStore((name, request) => step(name, request), (name) => options.fs.isFile(secretFile(name, options.root))),
     aras: arasHttp(),

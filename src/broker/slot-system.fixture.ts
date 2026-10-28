@@ -24,7 +24,8 @@ import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, extract
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
 import type { ArasHttp } from "./aras-http.js";
-import type { DatabaseReading, GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
+import { HostError } from "../host/errors.js";
+import type { DatabaseReading, EntryKind, GoldenCheck, SlotLogins, SlotSystem, StagedListing, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
 import type { DatabaseBackup } from "./backup-database.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 
@@ -84,6 +85,8 @@ export class FakeSlotSystem implements SlotSystem {
   /** What `golden` answers. */
   goldenState: GoldenCheck = { state: "ok", hash: FAKE_GOLDEN_HASH };
   denyList: Record<string, string> = { "IIS pool DefaultAppPool": "p1", "install root C:\\Program Files (x86)\\Aras12\\Innovator": "c1" };
+  /** Paths (lower-case) that are links or junctions, as a leaseholder or a worker could make them. */
+  readonly links = new Set<string>();
   private readonly files = new Map<string, Uint8Array>();
   private readonly faults = new Map<Method, unknown>();
   private clock = 0;
@@ -364,5 +367,58 @@ export class FakeSlotSystem implements SlotSystem {
   async removeEmptyDir(path: string): Promise<void> {
     this.record("removeEmptyDir");
     void path;
+  }
+
+  private kind(path: string): EntryKind {
+    const key = path.toLowerCase();
+    if (this.links.has(key)) return "link";
+    if (this.files.has(key)) return "file";
+    if (this.objects.has(path) || this.filesUnder(path).length > 0) return "dir";
+    return "missing";
+  }
+
+  async entryKind(path: string): Promise<EntryKind> {
+    this.record("entryKind");
+    return this.kind(path);
+  }
+
+  async listStaged(dir: string): Promise<StagedListing> {
+    this.record("listStaged");
+    if (this.kind(dir) !== "dir") throw new HostError("Refused", `the staged folder ${dir} is missing or not a plain folder`);
+    const prefix = `${dir.toLowerCase()}\\`;
+    const refused = [...this.links].filter((l) => l.startsWith(prefix)).map((l) => l.slice(prefix.length).replace(/\\/g, "/"));
+    const files = this.filesUnder(dir)
+      .filter((rel) => !refused.some((r) => rel.replace(/\\/g, "/").startsWith(`${r}/`)))
+      .map((rel) => ({ path: rel.replace(/\\/g, "/"), size: this.files.get(`${prefix}${rel}`)!.length }));
+    return { files, refused };
+  }
+
+  async readStaged(path: string, maxBytes: number): Promise<Uint8Array> {
+    this.record("readStaged");
+    const bytes = this.files.get(path.toLowerCase());
+    if (bytes === undefined || this.links.has(path.toLowerCase())) throw new HostError("Refused", `the staged ${path} is not a plain file`);
+    if (bytes.length > maxBytes) throw new HostError("Refused", `the staged file ${path} is larger than ${maxBytes} bytes`);
+    return bytes;
+  }
+
+  async copyStaged(from: string, to: string): Promise<{ readonly bytes: number }> {
+    this.record("copyStaged");
+    const bytes = this.files.get(from.toLowerCase());
+    if (bytes === undefined || this.links.has(from.toLowerCase())) throw new HostError("Refused", `the staged ${from} is not a plain file`);
+    this.put(to, bytes);
+    return { bytes: bytes.length };
+  }
+
+  async removeTreeFile(path: string): Promise<boolean> {
+    this.record("removeTreeFile");
+    const kind = this.kind(path);
+    if (kind === "missing") return false;
+    if (kind !== "file") throw new HostError("Refused", `${path} is a ${kind}, not a file`);
+    return this.files.delete(path.toLowerCase());
+  }
+
+  async clearCompiled(slot: SlotRef): Promise<number> {
+    this.record("clearCompiled", slot);
+    return this.objects.delete(`ASP.NET temporary files ${slotNames(slot, this.root).alias}`) ? 1 : 0;
   }
 }

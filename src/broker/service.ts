@@ -17,6 +17,7 @@ import { registerOotbRootVerb } from "./ootb-root.js";
 import { SlotLocks, registerSlotVerbs, type SlotSystem } from "./provision.js";
 import { registerHealthVerb } from "./health.js";
 import { registerResetVerbs } from "./reset-tree.js";
+import { registerDeployVerb } from "./code-deploy.js";
 import { windowsSlotSystem } from "./slot-system.js";
 import { Broker } from "./broker.js";
 import { nodeBrokerFs, type BrokerFs } from "./fs.js";
@@ -82,6 +83,7 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
   registerSlotVerbs(broker, slotSystem, locks);
   registerResetVerbs(broker, slotSystem, locks);
   registerHealthVerb(broker, slotSystem, locks);
+  registerDeployVerb(broker, slotSystem, locks);
   registerLicenceVerbs(broker, slotSystem.secrets);
   registerOotbRootVerb(broker, slotSystem.secrets);
   const token = newToken();

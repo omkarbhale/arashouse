@@ -655,7 +655,7 @@ function holdLock(path: string, seconds: number): Promise<{ locked: boolean; pid
   });
 }
 
-const runPs = (args: string[], input?: string) => runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args], input);
+export const runPs = (args: string[], input?: string) => runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args], input);
 
 /**
  * A slot's memory, measured by process tree (spike 07: from 14.0 each running application is its own `Aras.Server.exe`,
@@ -681,7 +681,7 @@ export async function slotMemory(flavor: FlavorKey, nn: string): Promise<string>
  * `InnovatorServerConfig.xml` (read only, never printed) and the deny-listed agent services (name, start type, state).
  * The IIS objects need elevation; every provision and destroy fingerprints those in the broker (docs/provision.md).
  */
-async function denyListPrints(): Promise<Record<string, string>> {
+export async function denyListPrints(): Promise<Record<string, string>> {
   const prints: Record<string, string> = {};
   const { DENIED_INSTALL_ROOTS, DENIED_SERVICE_PREFIXES } = await import("../../src/core/guards.js");
   for (const root of DENIED_INSTALL_ROOTS) {

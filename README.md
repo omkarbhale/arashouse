@@ -49,6 +49,7 @@ Flavors: `12sp9` (12.0 SP9), `23` (Release 23, 14.0 SP9), `35` (Release 35, 14.3
 | 44, 55 | host settings, the operator's choice | [`docs/host-tuning.md`](docs/host-tuning.md) |
 | 48 | the worker guide and the operator runbook | [`docs/using-a-lease.md`](docs/using-a-lease.md), [`docs/runbook.md`](docs/runbook.md) |
 | 49 | teardown and uninstall | [`docs/teardown.md`](docs/teardown.md) |
+| 51 | the v1 sign-off record: what exists, the evidence, what is left out | [`docs/v1-readiness.md`](docs/v1-readiness.md) |
 | 53 | bootstrap: a git baseline of the tree | [`docs/git-baseline.md`](docs/git-baseline.md) |
 
 Tickets 45 to 47 (libs-js on leases) live in the import-export-libs-js repo.

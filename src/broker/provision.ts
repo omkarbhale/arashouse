@@ -175,6 +175,8 @@ export interface SlotSystem {
   copyStaged(from: string, to: string): Promise<{ readonly bytes: number }>;
   /** Deletes the plain file at `path` in a slot's tree (a deploy's delete list); false when there is none. A folder or link is refused. */
   removeTreeFile(path: string): Promise<boolean>;
+  /** Removes a staged folder and everything in it, each link or junction removed itself, never followed. */
+  removeStaged(path: string): Promise<void>;
   /** Clears ASP.NET's temporary files of the slot's alias (compiled pages, shadow copies of its bin); answers how many folders went. */
   clearCompiled(slot: SlotRef): Promise<number>;
   /** Machine-scope DPAPI under `<root>\secrets\` on the host. */

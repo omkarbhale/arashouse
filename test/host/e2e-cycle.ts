@@ -679,7 +679,7 @@ async function toWindows(path: string): Promise<string> {
   return r.stdout.trim();
 }
 
-function runProcess(cmd: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+export function runProcess(cmd: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";

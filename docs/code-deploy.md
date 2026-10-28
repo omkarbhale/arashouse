@@ -97,7 +97,7 @@ staged copy:
       `ok: false`: the files are in place, the slot did not come back up.
 
    A failure after the quiesce starts the slot again before it is answered, so a failed deploy does not leave the
-   holder with a stopped slot. The staged folder is deleted in every case, by the broker and by the CLI.
+   holder with a stopped slot. The staged folder is deleted in every case, by the broker (each link or junction in it removed itself, never followed) and by the CLI.
 4. **Record.** The lease's `bootstrap` record in `state.json` gets `code: "<n> files, manifest <hash>"` and
    `code_deploys: <k>`, an event `bootstrap` in `events.log` naming the keys: the file count and a SHA-256 over the targets and each file's SHA-256 (and the deletes),
    chained over the deploys in order. No path or content is recorded.

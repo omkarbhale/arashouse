@@ -42,7 +42,7 @@ async function failure(promise: Promise<unknown>): Promise<HostError> {
 
 /** The calls that change the host, in order. */
 function steps(system: FakeSlotSystem): string[] {
-  return system.calls.filter((c) => /^(quiesce|start|stop|copyStaged|removeTreeFile|clearCompiled|removeDir)/.test(c));
+  return system.calls.filter((c) => /^(quiesce|start|stop|copyStaged|removeTreeFile|clearCompiled|removeStaged)/.test(c));
 }
 
 describe("deployCode", () => {
@@ -53,7 +53,7 @@ describe("deployCode", () => {
     const result = await deployCodeOnHost(system, s1, names, ROOT, args());
     expect(result).toMatchObject({ ok: true, files: 2, deleted: 0, compiledCleared: false });
     expect(result.detail).toMatch(/^deployed 2 files \(13 bytes\) into 12sp9-01\\innovator in \d+\.\d s; the slot is up: started 12sp9-01/);
-    expect(steps(system)).toEqual(["quiesce 12sp9-01", "copyStaged", "copyStaged", "start 12sp9-01", "removeDir"]);
+    expect(steps(system)).toEqual(["quiesce 12sp9-01", "copyStaged", "copyStaged", "start 12sp9-01", "removeStaged"]);
     expect(system.text(inSlot("innovator/client/added.js"))).toBe("added");
     expect(system.text(inSlot("innovator/client/scripts/main.js"))).toBe("replaced");
     // An overlay: the golden files the deploy does not name are still there.
@@ -83,7 +83,7 @@ describe("deployCode", () => {
     const result = await deployCodeOnHost(system, s1, names, ROOT, args({ subpath: "innovator/server/bin", agent: true }));
     expect(result).toMatchObject({ ok: true, files: 1, compiledCleared: true });
     expect(result.detail).toContain("1 ASP.NET temporary folders of the alias cleared");
-    expect(steps(system)).toEqual(["quiesce 12sp9-01", "copyStaged", "clearCompiled 12sp9-01", "start 12sp9-01", "removeDir"]);
+    expect(steps(system)).toEqual(["quiesce 12sp9-01", "copyStaged", "clearCompiled 12sp9-01", "start 12sp9-01", "removeStaged"]);
     expect(system.text(inSlot("innovator/server/bin/aras.server.core.dll"))).toBe("patched");
     expect(system.agentRunning.has("12sp9-01")).toBe(true);
   });
@@ -103,7 +103,7 @@ describe("deployCode", () => {
       const err = await failure(deployCodeOnHost(system, s1, names, ROOT, a));
       expect(err.kind).toBe("Refused");
       expect(err.message).toMatch(message);
-      expect(steps(system).filter((s) => s !== "removeDir")).toEqual([]);
+      expect(steps(system).filter((s) => s !== "removeStaged")).toEqual([]);
       expect(system.serving.has("12sp9-01")).toBe(true);
     };
 
@@ -123,7 +123,7 @@ describe("deployCode", () => {
       for (const path of [stagingDir(LEASE, ROOT), win32.join(stagingDir(OTHER, ROOT), "code", "1"), win32.join(stagingDir(LEASE, ROOT), "code", "x"), names.slotDir, `${staged}\\..\\..\\..`]) {
         system.put(win32.join(path, "client", "a.js"), "a");
         await refused(system, args({ staged: path }), "a staged code tree is");
-        expect(system.calls).not.toContain("removeDir");
+        expect(system.calls).not.toContain("removeStaged");
       }
     });
 
@@ -175,7 +175,7 @@ describe("deployCode", () => {
     system.failNext("copyStaged", new Error("disk full"));
     const err = await failure(deployCodeOnHost(system, s1, names, ROOT, args()));
     expect(err).toMatchObject({ kind: "Retryable", message: expect.stringMatching(/^deploy into 12sp9-01 failed at copy: disk full; the slot was started again$/) });
-    expect(steps(system)).toEqual(["quiesce 12sp9-01", "copyStaged", "start 12sp9-01", "removeDir"]);
+    expect(steps(system)).toEqual(["quiesce 12sp9-01", "copyStaged", "start 12sp9-01", "removeStaged"]);
     expect(system.serving.has("12sp9-01")).toBe(true);
   });
 

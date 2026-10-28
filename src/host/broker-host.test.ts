@@ -160,7 +160,7 @@ describe("BrokerHost against an in-process broker", () => {
     > = {
       restoreDatabase: () => host.restoreDatabase(s1, `${ROOT}\\staging\\l\\db.bak`),
     };
-    expect(Object.keys(calls).length + 17).toBe(HOST_METHODS.length);
+    expect(Object.keys(calls).length + 18).toBe(HOST_METHODS.length);
     for (const [method, call] of Object.entries(calls)) {
       const err = await rejection(call());
       expect(err.kind, method).toBe("Unreachable");

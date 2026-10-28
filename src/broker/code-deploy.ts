@@ -9,7 +9,7 @@
 // stopped, ticket 30), the targets checked again, the delete list applied and the files copied, ASP.NET's temporary
 // files of the alias cleared when the deploy touched `Server\bin` or `Server\dll`, and the slot started and warmed
 // (ticket 33). A refusal changes nothing. A failure after the quiesce starts the slot again before it is answered.
-// The staged folder is removed in every case.
+// The staged folder is removed in every case, each link in it removed itself, never followed.
 //
 // The staged folder is the worker's to change while the broker reads it, so each file is copied from a handle the
 // host checks is the plain, single-link file the walk found (`copyStaged`), and written through a temporary file
@@ -224,7 +224,7 @@ export async function deployCodeOnHost(system: SlotSystem, slot: SlotRef, names:
     const kind = err instanceof GuardError || err instanceof ProtocolError ? "Refused" : isHostError(err) ? err.kind : "Retryable";
     throw new HostError(kind, `deploy into ${id} failed at ${step}: ${errorText(err)}${restarted}`, { cause: err });
   } finally {
-    if (staged !== undefined) await system.removeDir(staged).catch(() => undefined);
+    if (staged !== undefined) await system.removeStaged(staged).catch(() => undefined);
   }
 }
 

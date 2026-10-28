@@ -7,7 +7,7 @@
 // reports a junction, as well as a symbolic link, as a symbolic link.
 
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, open, readdir, rename, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, rmdir, unlink, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { HostError } from "../host/errors.js";
 import type { EntryKind, StagedListing } from "./provision.js";
@@ -129,4 +129,36 @@ export async function removeFile(path: string): Promise<boolean> {
   if (kind !== "file") throw new HostError("Refused", `${path} is a ${kind === "dir" ? "folder" : kind}, not a file`);
   await unlink(path);
   return true;
+}
+
+/** Removes a link or junction itself, never what it points at: `unlink`, or `rmdir` for a directory link on Windows. */
+async function removeLink(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== "EPERM" && code !== "EISDIR") throw err;
+    await rmdir(path);
+  }
+}
+
+/**
+ * Removes the staged folder `path` and everything in it, never following a link or junction (one the worker put there
+ * may point at `secrets\`): each link is removed itself. Nothing when it does not exist.
+ */
+export async function removeStaged(path: string): Promise<void> {
+  const kind = await entryKind(path);
+  if (kind === "missing") return;
+  if (kind !== "dir") {
+    await (kind === "link" ? removeLink(path) : unlink(path));
+    return;
+  }
+  for (const entry of await readdir(path)) {
+    const full = join(path, entry);
+    const info = await lstat(full);
+    if (info.isSymbolicLink()) await removeLink(full);
+    else if (info.isDirectory()) await removeStaged(full);
+    else await unlink(full);
+  }
+  await rmdir(path);
 }

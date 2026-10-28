@@ -417,6 +417,14 @@ export class FakeSlotSystem implements SlotSystem {
     return this.files.delete(path.toLowerCase());
   }
 
+  async removeStaged(path: string): Promise<void> {
+    this.record("removeStaged");
+    const key = path.toLowerCase();
+    for (const l of [...this.links]) if (l === key || l.startsWith(`${key}\\`)) this.links.delete(l);
+    this.objects.delete(path);
+    for (const rel of this.filesUnder(path)) this.files.delete(`${key}\\${rel}`);
+  }
+
   async clearCompiled(slot: SlotRef): Promise<number> {
     this.record("clearCompiled", slot);
     return this.objects.delete(`ASP.NET temporary files ${slotNames(slot, this.root).alias}`) ? 1 : 0;

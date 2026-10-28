@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HostError } from "../host/errors.js";
-import { copyStaged, entryKind, listStaged, readStaged, removeFile } from "./staged-fs.js";
+import { copyStaged, entryKind, listStaged, readStaged, removeFile, removeStaged } from "./staged-fs.js";
 
 let dir: string;
 let staged: string;
@@ -91,5 +91,16 @@ describe("removeFile and entryKind", () => {
     expect((await refusal(removeFile(join(staged, "Client")))).kind).toBe("Refused");
     expect((await refusal(removeFile(join(staged, "sym.bin")))).kind).toBe("Refused");
     expect(await readFile(secret, "utf8")).toBe("SECRET-BYTES");
+  });
+});
+
+describe("removeStaged", () => {
+  it("removes the staged folder, each link in it removed itself and never followed", async () => {
+    await symlink(join(dir, "secrets"), join(staged, "Client", "linked"));
+    await symlink(secret, join(staged, "x.bin"));
+    await removeStaged(staged);
+    expect(await entryKind(staged)).toBe("missing");
+    expect(await readFile(secret, "utf8")).toBe("SECRET-BYTES");
+    await removeStaged(staged);
   });
 });

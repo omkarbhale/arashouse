@@ -40,6 +40,10 @@ Left out of the manifest, ignored by every verify level, and cleared by the rese
   nothing in a real tree, and ticket 24 corrected them before the first golden was written.)
 - `Innovator/Client/jsBundles`: only `data.json`, which the client rewrites when it first serves (spike 06).
 - `OAuthServer/App_Data`: only files directly in it named `*.sqlite*` or `key-*.xml`.
+- `Innovator/Client/App_Data` and `Innovator/Server/App_Data`: only files directly in them named `key-*.xml`, the
+  data-protection keys of 14.x's ASP.NET Core client and server. A `23` slot's client writes its first key when it
+  first serves after a start, which the golden build never asks it to, and either app writes a new one when golden's
+  expires (ticket 36, `docs/e2e-23.md`).
 
 Matching is case-insensitive. The vault lives outside the tree (`<root>\vaults\<key>-<NN>`), so a tree
 scan never meets it. Whether `key-*.xml` copies appear anywhere else in a real install is for ticket 24's

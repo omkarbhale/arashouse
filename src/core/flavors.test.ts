@@ -44,7 +44,7 @@ describe("flavor registry", () => {
 
   it("lists the runtime directories the manifest leaves out, for every flavor", () => {
     const dirs = RUNTIME_DIRS.map((r) => r.dir);
-    expect(dirs).toEqual(["Innovator/Server/temp", "Innovator/Server/dll", "Innovator/Server/logs", "Innovator/Client/jsBundles", "OAuthServer/App_Data"]);
+    expect(dirs).toEqual(["Innovator/Server/temp", "Innovator/Server/dll", "Innovator/Server/logs", "Innovator/Client/jsBundles", "OAuthServer/App_Data", "Innovator/Client/App_Data", "Innovator/Server/App_Data"]);
     expect(RUNTIME_DIRS.find((r) => r.dir === "OAuthServer/App_Data")?.files).toEqual(["*.sqlite*", "key-*.xml"]);
     for (const key of FLAVOR_KEYS) expect(FLAVORS[key].runtimeDirs).toEqual(RUNTIME_DIRS);
   });

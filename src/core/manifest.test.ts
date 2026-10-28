@@ -51,6 +51,15 @@ describe("runtime directories", () => {
     expect(isRuntimeDir("OAuthServer/App_Data", RUNTIME_DIRS)).toBe(false);
   });
 
+  it("matches the 14.x client and server data-protection keys and nothing else in their App_Data", () => {
+    for (const p of ["Innovator/Client/App_Data/key-3eb86b36-9737-4c47-952b-ebec180b19b8.xml", "Innovator/Server/App_Data/KEY-1.xml"]) {
+      expect(isRuntimePath(p, RUNTIME_DIRS)).toBe(true);
+    }
+    for (const p of ["Innovator/Client/App_Data/readme.xml", "Innovator/Server/App_Data/a.sqlite", "Innovator/Client/App_Data/sub/key-1.xml"]) {
+      expect(isRuntimePath(p, RUNTIME_DIRS)).toBe(false);
+    }
+  });
+
   it("hashes configs and Innovator/Server/bin DLLs in the fast set only", () => {
     expect(isFastHashed("Server/web.config")).toBe(true);
     expect(isFastHashed("Client/Web.Config")).toBe(true);

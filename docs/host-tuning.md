@@ -21,7 +21,7 @@ arashouse version applied (below).
 | Firewall | inbound TCP 80 is allowed by IIS's own rule `IIS-WebServerRole-HTTP-In-TCP`, from any address and on every profile. The host's WSL-side address is 172.19.0.1/20 |
 | Power | sleep: never on AC and on battery; hibernate: never on AC, 2147483647 s (effectively never) on battery; the lid action is hidden on this machine |
 
-The spike (ticket 09) measured about 0.4 GB per lightly active slot (1 GB is the planning figure) and 0 GB for an idle one. Three
+The spike (ticket 09) measured about 0.4 GB per lightly active slot (1 GB is the planning figure) and 0 GB for an idle one; ticket 38 measured 0.7 to 1.1 GB per busy slot (`docs/capacity.md`). Three
 active slots therefore need about 1.2 to 3 GB on Windows, on top of the `min_free_ram_mb` gate (2048 MB, `docs/governor.md`). With
 2.5 to 3 GB free that day, the gate would refuse a lease under load; that is the case doctor's `wsl memory` advice
 names.

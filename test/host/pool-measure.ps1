@@ -3,7 +3,8 @@
 #
 # For every slot folder C:\aras_installations\slots\<flavor>\<NN> it sums the files of the slot's tree, of its vault folder
 # vaults\<flavor>-<NN>, of its database files sqldata\arashouse_<flavor>_<NN>.mdf and _log.ldf, and of ASP.NET's temporary
-# files of its alias ah-<flavor>-<NN>; then each golden\<flavor> folder, and the free space of the install root's drive.
+# files of its alias ah-<flavor>-<NN> and its sub-applications; then each golden\<flavor> folder, and the free space of
+# the install root's drive.
 # It reads sizes only: no file's contents, nothing under secrets\ or logs\, nothing outside the pool's own names. It
 # changes nothing and prints no secret.
 #
@@ -59,9 +60,13 @@ foreach ($flavor in $Flavors) {
         $mdf = Measure-File (Join-Path $Root "sqldata\arashouse_${flavor}_$nn.mdf")
         $ldf = Measure-File (Join-Path $Root "sqldata\arashouse_${flavor}_${nn}_log.ldf")
         $asp = [long]0
+        # The alias and its sub-applications (ah-<flavor>-<NN>_server, ...), as the broker's destroy matches them.
+        $alias = "ah-$flavor-$nn"
         foreach ($base in $aspTemp) {
-            $alias = Join-Path $base "ah-$flavor-$nn"
-            $asp += (Measure-Folder $alias).Bytes
+            if (-not (Test-Path -LiteralPath $base -PathType Container)) { continue }
+            foreach ($d in @(Get-ChildItem -LiteralPath $base -Directory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq $alias -or $_.Name -like "$($alias)_*" })) {
+                $asp += (Measure-Folder $d.FullName).Bytes
+            }
         }
         $total = $tree.Bytes + $vault.Bytes + $mdf + $ldf + $asp
         $sum += $total

@@ -366,7 +366,11 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     } catch {
       server = undefined;
     }
-    check("2.the server is the flavor's build", server === getFlavor(flavor).serverBuild, `server ${server ?? "not in the summary"}, registry ${getFlavor(flavor).serverBuild}, engine ${options.engine}`);
+    // The 14.x engines name the build (`14.0.9.36073`); the 12.0 engine names the release and service pack it read
+    // (`12.0 SP9 Build 0`, ticket 54's run), which is the registry's release for 12sp9.
+    const flavorInfo = getFlavor(flavor);
+    const sameServer = server === flavorInfo.serverBuild || (server !== undefined && server.startsWith(`${flavorInfo.release} `));
+    check("2.the server is the flavor's build", sameServer, `server ${server ?? "not in the summary"}, registry ${flavorInfo.serverBuild} (${flavorInfo.release}), engine ${options.engine}`);
     let goldenLanguages: string[] = [];
     if (options.importOptions1435) {
       const langs = await aras.apply(token, `<Item type="Language" action="get" select="code"/>`);
@@ -658,7 +662,9 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const changed = Object.keys({ ...denyBefore, ...denyAfter }).filter((k) => denyBefore[k] !== denyAfter[k]);
     check("9.deny-list objects unchanged", changed.length === 0, changed.length === 0 ? `${Object.keys(denyAfter).length} objects the same` : `changed: ${changed.join(", ")}`);
     const final = await status();
-    check("9.the pool is left free", final.filter((r) => r.slot.startsWith(`${flavor}-0`)).every((r) => r.status === "free"), final.map((r) => `${r.slot} ${r.status}`).join(", "));
+    // The cycle's two slots, as step 1: a pool with more (12sp9 x3, ticket 37) runs it with the others disabled.
+    const left = final.filter((r) => r.slot === `${flavor}-01` || r.slot === `${flavor}-02`);
+    check("9.the pool is left free", left.length === 2 && left.every((r) => r.status === "free"), left.map((r) => `${r.slot} ${r.status}`).join(", "));
     const places: Record<string, string> = {
       "state file": readFileSync(join(home, "state.json"), "utf8"),
       "events log": readFileSync(join(home, "events.log"), "utf8"),

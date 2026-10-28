@@ -34,6 +34,7 @@ export interface RuntimeRule {
  * `Innovator\Server\` in an installed tree (spike record, code follow-ups), and the client rewrites
  * `jsBundles\data.json` when it first serves (spike 06) and writes `jsBundles\compile.log` when it first
  * compiles its bundles after a start (ticket 32's host proof: the first health check after a reset found it extra).
+ * The `key-*.xml` rules are ASP.NET Core data-protection key rings (OAuth from 12.0, the client and server from 14.0).
  */
 export const RUNTIME_DIRS: readonly RuntimeRule[] = [
   { dir: "Innovator/Server/temp" },
@@ -41,6 +42,10 @@ export const RUNTIME_DIRS: readonly RuntimeRule[] = [
   { dir: "Innovator/Server/logs" },
   { dir: "Innovator/Client/jsBundles", files: ["data.json", "compile.log"] },
   { dir: "OAuthServer/App_Data", files: ["*.sqlite*", "key-*.xml"] },
+  // 14.x's ASP.NET Core client and server keep their data-protection keys here: the client writes its first one when it
+  // first serves after a reset, and either writes a new one when golden's expires (ticket 36's host proof).
+  { dir: "Innovator/Client/App_Data", files: ["key-*.xml"] },
+  { dir: "Innovator/Server/App_Data", files: ["key-*.xml"] },
 ];
 
 /**

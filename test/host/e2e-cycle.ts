@@ -1,8 +1,9 @@
 // Ticket 35: the whole lease cycle on the host for one flavor, with a deliberately dirtied slot. It proves the
 // captain's promise end to end: "It doesn't necessarily clean it up ON freeing the lease, but the worker can assume it
 // has cleaned up." A returned slot is wiped, and the next lease is clean. Run from WSL, non-elevated, by
-// test/host/e2e-12sp9.test.ts (ARASHOUSE_TEST_E2E=1); every step is recorded in `<out>/cycle-<n>.json` and `.log` for
-// docs/e2e-12sp9.md.
+// test/host/e2e-12sp9.test.ts and test/host/e2e-23.test.ts (ARASHOUSE_TEST_E2E=1); every step is recorded in
+// `<out>/cycle-<n>.json` and `.log` for docs/e2e-12sp9.md and docs/e2e-23.md (ticket 36, which adds the 14.x OAuth
+// server's runtime state: its SQLite file, where a lease's refresh token lives, and its data-protection keys).
 //
 // It drives the built CLI (`dist/`) as a worker would, and dirties the lease only as a leaseholder could: logged in as
 // root with the lease's password it imports a LIBSJS-SCRATCH package with libs-js `aras-pkg`, adds items through the
@@ -20,16 +21,21 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../src/core/redact.js";
 import { Secret } from "../../src/core/secret.js";
-import type { FlavorKey } from "../../src/core/flavors.js";
+import { type FlavorKey, getFlavor } from "../../src/core/flavors.js";
 import { BrokerHost, interopTransport } from "../../src/host/index.js";
 import { repoRoot } from "../helpers.js";
-import { ArasClient, isNoItems, newItemId, xmlText } from "./aras-client.js";
+import { ArasClient, type Login, isNoItems, newItemId, xmlText } from "./aras-client.js";
 
 const CLI = join(repoRoot, "dist/cli/index.js");
 const ROOT_WSL = "/mnt/c/aras_installations";
 const ROOT_WIN = "C:\\aras_installations";
 /** How long the leaseholder's lock in step 8 is held: enough for a reset to fail twice (about 30 s), and then it ends. */
 const LOCK_SECONDS = 150;
+/**
+ * A `get` that should lease at once waits out a dip in the host's free RAM under `min_free_ram_mb` (docs/governor.md),
+ * which the laptop's other work causes now and then (ticket 36); a slot the cycle expects is free is leased at once.
+ */
+const RAM_WAIT = ["--wait", "300"];
 
 export interface CycleOptions {
   /** The cycle's number (1, 2, ...): its record files and the path the recovery takes. */
@@ -43,6 +49,19 @@ export interface CycleOptions {
   readonly arasPkg: string;
   /** The golden backup's root password file (ConvertFrom-SecureString output); without it the OOTB checks are skipped. */
   readonly ootbFile?: string;
+  /**
+   * 14.x: also dirty and check the OAuth server's runtime state (design report 5.2, `OAuthServer\App_Data`): a refresh
+   * token in its SQLite file and extra `key-*.xml` and `*.sqlite` files, which the reset must take away, and the old
+   * lease's access and refresh tokens, which the next lease must refuse.
+   */
+  readonly oauthState?: boolean;
+  /**
+   * Who holds step 8's lock. `pool` (12sp9): a process the leaseholder's Method starts as the slot's pool identity, which
+   * outlives the pool stop. On 14.x that process does not outlive the quiesce (the reset simply succeeded, ticket 36), so
+   * `worker`: the Method only writes the file, and the worker's own Windows process holds it open with no sharing, as a
+   * leaseholder's editor or tool could.
+   */
+  readonly lockHolder?: "pool" | "worker";
 }
 
 interface StepRecord {
@@ -91,6 +110,8 @@ string tag = this.getProperty("tag", "");
 string mode = this.getProperty("mode", "");
 if (!System.Text.RegularExpressions.Regex.IsMatch(tag, "^[a-z0-9]{8}$")) return inn.newError("arashouse e2e: bad tag");
 string server = System.IO.Path.GetFullPath(System.AppDomain.CurrentDomain.BaseDirectory).TrimEnd('\\\\');
+// 12.0's server is an ASP.NET application rooted in Innovator\\Server; 14.x's is Aras.Server.exe, run from its bin folder.
+if (System.IO.Path.GetFileName(server).Equals("bin", System.StringComparison.OrdinalIgnoreCase)) server = System.IO.Path.GetDirectoryName(server);
 string innovatorDir = System.IO.Path.GetDirectoryName(server);
 string slotDir = System.IO.Path.GetDirectoryName(innovatorDir);
 if (!slotDir.StartsWith(@"${ROOT_WIN}\\slots\\", System.StringComparison.OrdinalIgnoreCase)) return inn.newError("arashouse e2e: not a slot folder: " + slotDir);
@@ -113,6 +134,10 @@ if (mode == "dirt") {
   using (System.IO.FileStream fs = new System.IO.FileStream(dll, System.IO.FileMode.Append, System.IO.FileAccess.Write)) { fs.Write(pad, 0, pad.Length); }
   return inn.newResult("dll=" + System.IO.Path.GetFileName(dll));
 }
+if (mode == "lockfile") {
+  System.IO.File.WriteAllText(System.IO.Path.Combine(innovatorDir, @"Client\\arashouse-e2e-lock-" + tag + ".txt"), "arashouse e2e lock " + tag);
+  return inn.newResult("lockfile=1");
+}
 if (mode == "lock") {
   // A process of the leaseholder's that outlives the lease and holds an extra file open with no sharing. Its command line
   // does not name the slot folder (the path is in its environment), so the reset cannot tell it is the slot's.
@@ -128,6 +153,14 @@ if (mode == "lock") {
   psi.EnvironmentVariables["ARASHOUSE_E2E_LOCK"] = lockFile;
   System.Diagnostics.Process p = System.Diagnostics.Process.Start(psi);
   return inn.newResult("pid=" + p.Id);
+}
+if (mode == "oauth") {
+  // Files the OAuth server's runtime rules match (key-*.xml, *.sqlite*), as a leaseholder's code could leave them. The key
+  // ring ignores an element that is not a key, so the server runs on unharmed.
+  string appData = System.IO.Path.Combine(slotDir, @"OAuthServer\\App_Data");
+  System.IO.File.WriteAllText(System.IO.Path.Combine(appData, "key-arashouse-e2e-" + tag + ".xml"), "<?xml version=\\"1.0\\" encoding=\\"utf-8\\"?><arashouseE2e tag=\\"" + tag + "\\" />");
+  System.IO.File.WriteAllText(System.IO.Path.Combine(appData, "arashouse-e2e-" + tag + ".sqlite"), "arashouse e2e dirt " + tag);
+  return inn.newResult("oauth=2");
 }
 if (mode == "probe") {
   string vault = this.getProperty("vault", "");
@@ -235,6 +268,35 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     return new Map(readdirSync(bin).filter((f) => /\.dll$/i.test(f)).map((f) => [f, sha256(readFileSync(join(bin, f)))]));
   };
   const configHash = (slot: string) => sha256(readFileSync(join(slotDir(slot), "InnovatorServerConfig.xml")));
+  /** OAuth's runtime files (flavors.ts RUNTIME_DIRS): each `key-*.xml` by SHA-256, each `*.sqlite*` by name only. */
+  const oauthFiles = (slot: string): Map<string, string> => {
+    const dir = join(slotDir(slot), "OAuthServer/App_Data");
+    return new Map(
+      readdirSync(dir)
+        .filter((f) => /\.sqlite/i.test(f) || /^key-.*\.xml$/i.test(f))
+        .map((f) => [f, /^key-/i.test(f) ? sha256(readFileSync(join(dir, f))) : "sqlite"]),
+    );
+  };
+  /** The OAuth server's persisted grants (a refresh token is one), counted in a copy of its SQLite file, deleted after. */
+  const persistedGrants = async (slot: string): Promise<number> => {
+    // The server keeps the file in WAL mode: the copy takes the write-ahead log with it, where the latest grants are.
+    const copy = join(out, `cycle-${cycle}-oauth.sqlite`);
+    const source = join(slotDir(slot), "OAuthServer/App_Data/OAuthServer.sqlite");
+    writeFileSync(copy, readFileSync(source));
+    if (existsSync(`${source}-wal`)) writeFileSync(`${copy}-wal`, readFileSync(`${source}-wal`));
+    try {
+      // node:sqlite is Node 22.5 or newer, and the host runs the cycle only: CI on Node 20 must still load this module.
+      const sqlite = (await import("node:sqlite" as string)) as { DatabaseSync: new (path: string, options: { readOnly: boolean }) => { prepare(sql: string): { get(): unknown }; close(): void } };
+      const db = new sqlite.DatabaseSync(copy, { readOnly: true });
+      try {
+        return (db.prepare(`SELECT count(*) AS n FROM "PersistedGrants"`).get() as { n: number }).n;
+      } finally {
+        db.close();
+      }
+    } finally {
+      for (const f of [copy, `${copy}-wal`, `${copy}-shm`]) rmSync(f, { force: true });
+    }
+  };
 
   /** The golden backup's password tried as root, inside login-check.ps1: true when it logs in. */
   const ootbLogsIn = async (slot: string): Promise<{ loggedIn: boolean; line: string } | undefined> => {
@@ -256,14 +318,14 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     // ---- 1. provision ------------------------------------------------------------------------------------------
     let t = Date.now();
     const provision = await cli(["provision", flavor, "2"]);
-    must("1.provision 12sp9 2", provision.code === 0, oneLine(provision), provision.ms);
+    must(`1.provision ${flavor} 2`, provision.code === 0, oneLine(provision), provision.ms);
     const initial = await status();
     const ours = initial.filter((r) => r.slot === `${flavor}-01` || r.slot === `${flavor}-02`);
     must("1.both slots free", ours.length === 2 && ours.every((r) => r.status === "free"), ours.map((r) => `${r.slot} ${r.status}`).join(", "));
 
     // ---- 2. get, log in, export --------------------------------------------------------------------------------
     t = Date.now();
-    const a = await get(`e2e-${cycle}-a`);
+    const a = await get(`e2e-${cycle}-a`, RAM_WAIT);
     must("2.get --json", a.grant !== undefined, a.grant ? `${a.grant.slot} at ${a.grant.url}, lease ${a.grant.lease_id.slice(0, 8)}` : oneLine(a.run), a.run.ms);
     const A = a.grant!;
     const aras = new ArasClient(A.url, A.database);
@@ -279,11 +341,20 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const exportDir = join(out, `cycle-${cycle}-export`);
     rmSync(exportDir, { recursive: true, force: true });
     t = Date.now();
-    const exp = await cli(["run", "--lease", A.lease_id, "--", "node", options.arasPkg, "export", "--engine", options.engine, "--log", join(out, `cycle-${cycle}-export.log`), exportDir, `ItemType:${langTypeId}`]);
+    const exp = await cli(["run", "--lease", A.lease_id, "--", "node", options.arasPkg, "export", "--engine", options.engine, "--json", "--log", join(out, `cycle-${cycle}-export.log`), exportDir, `ItemType:${langTypeId}`]);
     const exported = existsSync(join(exportDir, "imports.mf"));
     must("2.aras-pkg export ItemType:Language through run --lease", exp.code === 0 && exported, `exit ${exp.code}; imports.mf ${exported ? "written (extracted to the record folder)" : "missing"}`, since(t));
+    // The engine's version probe names the server it logged in to: the registry's build for the flavor.
+    let server: string | undefined;
+    try {
+      server = (JSON.parse(exp.stdout) as { server?: string }).server;
+    } catch {
+      server = undefined;
+    }
+    check("2.the server is the flavor's build", server === getFlavor(flavor).serverBuild, `server ${server ?? "not in the summary"}, registry ${getFlavor(flavor).serverBuild}, engine ${options.engine}`);
 
     const before = { bin: binHashes(A.slot), config: configHash(A.slot) };
+    const oauthBefore = options.oauthState ? { files: oauthFiles(A.slot), grants: await persistedGrants(A.slot) } : undefined;
 
     // ---- 3. dirty it as a leaseholder could ---------------------------------------------------------------------
     const pkgName = `LIBSJS-SCRATCH-E2E-${TAG}`;
@@ -330,16 +401,29 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const dirtied = { client: existsSync(clientFile), temp: existsSync(tempFile), config: configHash(A.slot) !== before.config, dll: binHashes(A.slot).get(dll!) !== before.bin.get(dll!) };
     must("3.the tree is dirty (read back from WSL)", Object.values(dirtied).every(Boolean), JSON.stringify(dirtied));
 
+    let offline: Login | undefined;
+    if (oauthBefore) {
+      offline = await aras.login("root", A.password, "offline_access");
+      must("3.a refresh token issued to the lease (offline_access)", offline.ok && offline.refreshToken !== undefined, offline.ok ? (offline.refreshToken ? "issued" : "no refresh token") : offline.detail);
+      const oauthDirt = await aras.apply(token, `<Item type="Method" action="${methodName}"><mode>oauth</mode><tag>${tag}</tag></Item>`);
+      must("3.the Method writes OAuth runtime files (key-*.xml, *.sqlite)", oauthDirt.ok, oauthDirt.ok ? `key-arashouse-e2e-${tag}.xml, arashouse-e2e-${tag}.sqlite` : oauthDirt.fault ?? "");
+      const grants = await persistedGrants(A.slot);
+      const files = oauthFiles(A.slot);
+      const oauthDirty = { grants: grants > oauthBefore.grants, key: files.has(`key-arashouse-e2e-${tag}.xml`), sqlite: files.has(`arashouse-e2e-${tag}.sqlite`) };
+      must("3.the OAuth state is dirty (read back from WSL)", Object.values(oauthDirty).every(Boolean), `${JSON.stringify(oauthDirty)}; persisted grants ${oauthBefore.grants} before, ${grants} now`);
+    }
+    record("3.the leased slot's memory", true, 0, await slotMemory(flavor, slotNumber(A.slot)));
+
     // ---- 4. return: at once, not handed out ---------------------------------------------------------------------
     const ret = await cli(["return", A.lease_id]);
     check("4.return exits at once", ret.code === 0 && ret.ms < 10_000, `exit ${ret.code} in ${(ret.ms / 1000).toFixed(2)} s: ${oneLine(ret)}`, ret.ms);
     const afterReturn = await rowOf(A.slot);
     check("4.the returned slot is dirty or resetting", afterReturn?.status === "dirty" || afterReturn?.status === "resetting", `${A.slot} ${afterReturn?.status}`);
-    const b = await get(`e2e-${cycle}-b`);
+    const b = await get(`e2e-${cycle}-b`, RAM_WAIT);
     must("4.a concurrent get gets the other slot", b.grant !== undefined && b.grant.slot !== A.slot, b.grant ? `${b.grant.slot}` : oneLine(b.run), b.run.ms);
     const B = b.grant!;
     const busy = await get(`e2e-${cycle}-c`, ["--wait", "0"]);
-    check("4.get --wait 0 with both busy exits 3", busy.run.code === 3, `exit ${busy.run.code}: ${oneLine(busy.run)}`, busy.run.ms);
+    check("4.get --wait 0 with both busy exits 3", busy.run.code === 3 && !/free RAM/.test(oneLine(busy.run)), `exit ${busy.run.code}: ${oneLine(busy.run)}`, busy.run.ms);
 
     // ---- 5. the reset ------------------------------------------------------------------------------------------
     const freed = await waitFor(A.slot, ["free"], 15 * 60_000, ["quarantined"]);
@@ -360,7 +444,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
       `health ${health.ok ? "ok" : health.detail}; verify ${goldenHash?.slice(0, 12)}; marker ${health.marker?.goldenHash?.slice(0, 12)}; stamp ${stampHash?.slice(0, 12)}`,
       since(t),
     );
-    const a2 = await get(`e2e-${cycle}-a2`);
+    const a2 = await get(`e2e-${cycle}-a2`, RAM_WAIT);
     must("6.get the same physical slot again", a2.grant?.slot === A.slot, a2.grant ? a2.grant.slot : oneLine(a2.run), a2.run.ms);
     const A2 = a2.grant!;
     const aras2 = new ArasClient(A2.url, A2.database);
@@ -401,6 +485,22 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const vaultFiles = /vault=(-?\d+)/.exec(probe.body)?.[1];
     check("6.the vault is empty", vaultFiles === "0", vaultFiles !== undefined ? `${vaultFiles} files` : probe.fault ?? "");
 
+    if (oauthBefore) {
+      const files = oauthFiles(A2.slot);
+      const lease = [...files.keys()].filter((f) => f.includes("arashouse-e2e"));
+      check("6.the lease's OAuth runtime files are gone", lease.length === 0, lease.length === 0 ? `${files.size} runtime files, none of the lease's` : lease.join(", "));
+      const keys = (m: Map<string, string>) => [...m].filter(([f]) => /^key-/i.test(f)).sort().join(";");
+      check("6.the OAuth data-protection keys equal the provisioned ones", keys(files) === keys(oauthBefore.files), `${[...files.keys()].filter((f) => /^key-/i.test(f)).length} key files (compared by SHA-256, not printed)`);
+      const grants = await persistedGrants(A2.slot);
+      check("6.the OAuth SQLite file holds no grant of the lease", grants === oauthBefore.grants, `persisted grants ${grants}, ${oauthBefore.grants} before the dirt`);
+      const refreshed = offline?.ok && offline.refreshToken ? await aras2.refresh(offline.refreshToken) : undefined;
+      check("6.the old lease's refresh token is refused", refreshed !== undefined && !refreshed.ok, refreshed === undefined ? "no refresh token" : refreshed.ok ? "a new access token was issued" : refreshed.detail);
+      // A known limit, recorded and not checked (docs/e2e-23.md): an access token is a JWT signed with golden's certificate,
+      // so the old lease's is answered on the same slot until it expires; another slot refuses it (it names its database). The fix, a per-reset OAuth signing certificate, is map ticket 54.
+      const oldToken = await aras2.apply(token, `<Item type="User" action="get" select="id"><login_name>root</login_name></Item>`);
+      record("6.the old lease's access token (observed, a known limit)", true, 0, oldToken.ok ? "answered on the same slot after the reset" : `refused: ${oldToken.fault ?? ""}`);
+    }
+
     // ---- 7. kill the reset worker mid-reset ---------------------------------------------------------------------
     const ret2 = await cli(["return", A2.lease_id]);
     must("7.return", ret2.code === 0, oneLine(ret2), ret2.ms);
@@ -428,7 +528,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
       const fix = await cli(["doctor", "--fix", "--yes"]);
       const fixed = await waitFor(A2.slot, ["free"], 15 * 60_000, ["quarantined"]);
       check("7.doctor --fix recovers the slot", fixed.row?.status === "free", `doctor exit ${fix.code}; ${A2.slot} ${fixed.row?.status}${fixed.row?.quarantine_reason ? `: ${fixed.row.quarantine_reason}` : ""}`, since(t));
-      a3 = await get(`e2e-${cycle}-a3`);
+      a3 = await get(`e2e-${cycle}-a3`, RAM_WAIT);
     } else {
       a3 = await get(`e2e-${cycle}-a3`, ["--wait", "900"]);
     }
@@ -436,17 +536,26 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const A3 = a3.grant!;
 
     // ---- 8. quarantine: a reset that fails twice --------------------------------------------------------------
-    // The lock is held by a process of the leaseholder's, as the slot's pool identity: a handle the worker opens itself
-    // in slots\ (where it may only read) does not keep others out (docs/e2e-12sp9.md).
+    // The lock is held by a process of the leaseholder's: as the slot's pool identity (`pool`), or the worker's own Windows
+    // process on a file the Method wrote (`worker`, 14.x). A handle the worker opens from WSL in slots\ (where it may only
+    // read) does not keep others out (docs/e2e-12sp9.md); one a Windows process opens does.
     const aras3 = new ArasClient(A3.url, A3.database);
     const login3 = await aras3.login("root", A3.password);
     must("8.root logs in to the third lease", login3.ok, login3.ok ? "token issued" : login3.detail);
     const token3 = (login3 as { token: Secret }).token;
     const addLocker = await aras3.apply(token3, `<Item type="Method" action="add"><name>${methodName}</name><method_type>C#</method_type><method_code><![CDATA[${methodCode()}]]></method_code></Item>`);
     const lockStarted = Date.now();
-    const locker = addLocker.ok ? await aras3.apply(token3, `<Item type="Method" action="${methodName}"><mode>lock</mode><tag>${tag}</tag><seconds>${LOCK_SECONDS}</seconds></Item>`) : addLocker;
-    const lockPid = /pid=(\d+)/.exec(locker.body)?.[1];
-    must("8.a leaseholder's process holds a slot file locked", locker.ok && lockPid !== undefined, locker.ok ? `Innovator\\Client\\arashouse-e2e-lock-${tag}.txt, no sharing, for ${LOCK_SECONDS} s (pid ${lockPid})` : locker.fault ?? "");
+    const lockName = `Innovator\\Client\\arashouse-e2e-lock-${tag}.txt`;
+    if (options.lockHolder === "worker") {
+      const written = addLocker.ok ? await aras3.apply(token3, `<Item type="Method" action="${methodName}"><mode>lockfile</mode><tag>${tag}</tag></Item>`) : addLocker;
+      must("8.the leaseholder's Method writes a file to lock", written.ok, written.ok ? lockName : written.fault ?? "");
+      const lock = await holdLock(`${ROOT_WIN}\\slots\\${flavor}\\${slotNumber(A3.slot)}\\${lockName}`, LOCK_SECONDS);
+      must("8.the worker's own Windows process holds it open with no sharing", lock.locked, lock.locked ? `${lockName}, for ${LOCK_SECONDS} s (pid ${lock.pid})` : lock.detail);
+    } else {
+      const locker = addLocker.ok ? await aras3.apply(token3, `<Item type="Method" action="${methodName}"><mode>lock</mode><tag>${tag}</tag><seconds>${LOCK_SECONDS}</seconds></Item>`) : addLocker;
+      const lockPid = /pid=(\d+)/.exec(locker.body)?.[1];
+      must("8.a leaseholder's process holds a slot file locked", locker.ok && lockPid !== undefined, locker.ok ? `${lockName}, no sharing, for ${LOCK_SECONDS} s (pid ${lockPid})` : locker.fault ?? "");
+    }
     await sleep(5000);
     t = Date.now();
     const ret3 = await cli(["return", A3.lease_id]);
@@ -454,7 +563,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const q = await waitFor(A3.slot, ["quarantined"], LOCK_SECONDS * 1000, ["free"]);
     check("8.the slot is quarantined with the reason", q.row?.status === "quarantined" && Boolean(q.row.quarantine_reason), `${A3.slot} ${q.row?.status}: ${q.row?.quarantine_reason}`, since(t));
     const never = await get(`e2e-${cycle}-d`, ["--wait", "0"]);
-    check("8.a quarantined slot is never handed out", never.run.code === 3, `exit ${never.run.code}: ${oneLine(never.run)}`, never.run.ms);
+    check("8.a quarantined slot is never handed out", never.run.code === 3 && !/free RAM/.test(oneLine(never.run)), `exit ${never.run.code}: ${oneLine(never.run)}`, never.run.ms);
     // The holder ends by itself; repair after it has.
     await sleep(Math.max(0, lockStarted + LOCK_SECONDS * 1000 + 15_000 - Date.now()));
     t = Date.now();
@@ -492,10 +601,11 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
   } catch (err) {
     if (!(err instanceof CycleFailed)) record("error", false, 0, String((err as Error)?.stack ?? err));
     else failures = Math.max(failures, 1);
-    for (const lease of [...held]) {
-      const r = await cli(["return", lease]);
-      record("cleanup.return a lease the cycle still held", r.code === 0, r.ms, oneLine(r));
-    }
+  }
+  // A check that failed can leave a lease the cycle did not mean to take (a `get` that should have been refused).
+  for (const lease of [...held]) {
+    const r = await cli(["return", lease]);
+    record("cleanup.return a lease the cycle still held", r.code === 0, r.ms, oneLine(r));
   }
   record("cycle", failures === 0, since(t0), failures === 0 ? "passed" : `${failures} check(s) failed`);
   writeFileSync(join(out, `cycle-${cycle}.json`), `${JSON.stringify({ cycle, flavor, tag, records }, null, 2)}\n`);
@@ -517,11 +627,54 @@ function runProcess(cmd: string, args: string[], input?: string): Promise<{ code
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
     child.on("close", (code) => resolve({ code, stdout, stderr }));
+    // A command that does not read its stdin may end before the write lands: EPIPE then, which changes nothing.
+    child.stdin.on("error", () => undefined);
     child.stdin.end(input ?? "");
   });
 }
 
+/**
+ * Opens `path` (a Windows path) for reading with no sharing from a Windows process of the worker's, and keeps it open for
+ * `seconds`, then ends. The path goes on stdin, so the process's command line names no slot folder and the quiesce, which
+ * ends a slot's processes by their path or command line, leaves it alone. Resolves once the handle is open, or failed.
+ */
+function holdLock(path: string, seconds: number): Promise<{ locked: boolean; pid?: number; detail: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$f = [IO.File]::Open([Console]::In.ReadLine(), 'Open', 'Read', 'None'); [Console]::Out.WriteLine('locked'); Start-Sleep -Seconds ${seconds}; $f.Close()`], {
+      cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => {
+      if (d.toString("utf8").includes("locked")) resolve({ locked: true, pid: child.pid, detail: "locked" });
+    });
+    child.stderr.on("data", (d: Buffer) => (stderr += d.toString("utf8")));
+    child.on("close", (code) => resolve({ locked: false, detail: `exit ${code}: ${stderr.trim().slice(0, 300)}` }));
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(`${path}\n`);
+  });
+}
+
 const runPs = (args: string[], input?: string) => runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args], input);
+
+/**
+ * A slot's memory, measured by process tree (spike 07: from 14.0 each running application is its own `Aras.Server.exe`,
+ * `Aras.Client.exe` or `dotnet.exe` beside its `w3wp.exe`): the slot's pools' `w3wp.exe` and their children, and its agent
+ * service. A worker cannot read another identity's command line, so the pools' processes come from IIS's `W3SVC_W3WP`
+ * counter instances, named `<pid>_<pool>`. One line: the process count and the summed working set and private bytes.
+ */
+export async function slotMemory(flavor: FlavorKey, nn: string): Promise<string> {
+  const r = await runPs([
+    "-Command",
+    `$ids = @((Get-Counter -ListSet W3SVC_W3WP).PathsWithInstances | ForEach-Object { if ($_ -match '\\((\\d+)_ah-${flavor}-${nn}-[a-z]+\\)') { [int]$Matches[1] } } | Sort-Object -Unique); ` +
+      `$all = Get-CimInstance Win32_Process; $w = @($all | Where-Object { $ids -contains $_.ProcessId }); $kids = @($all | Where-Object { $ids -contains $_.ParentProcessId }); ` +
+      `$svc = @(Get-CimInstance Win32_Service | Where-Object { $_.Name -eq 'ArasHouseAgent_${flavor}_${nn}' -and $_.ProcessId -gt 0 } | ForEach-Object { $_.ProcessId }); ` +
+      `$agent = @($all | Where-Object { $svc -contains $_.ProcessId }); ` +
+      `$p = $w + $kids + $agent; $names = ($p | Group-Object Name | Sort-Object Name | ForEach-Object { [string]$_.Count + ' ' + $_.Name }) -join ', '; ` +
+      `'{0} processes ({1}): {2:N0} MB working set, {3:N0} MB private' -f $p.Count, $names, (($p | Measure-Object WorkingSetSize -Sum).Sum / 1MB), (($p | Measure-Object PrivatePageCount -Sum).Sum / 1MB)`,
+  ]);
+  return r.code === 0 ? r.stdout.trim() : `not measured: exit ${r.code}: ${r.stderr.trim().slice(0, 200)}`;
+}
 
 /**
  * The deny-list objects the worker can read without elevation: the SHA-256 of each of the captain's install roots'

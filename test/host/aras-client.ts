@@ -1,6 +1,7 @@
-// A small Aras client for the host e2e (ticket 35), from WSL, as a leaseholder's tools reach a slot: an OAuth password
-// grant, AML through `InnovatorServer.aspx`, and a file upload to the slot's vault. The password and the token are
-// Secrets, so `redact` replaces them anywhere they would appear; only the server's own words come back.
+// A small Aras client for the host e2e (tickets 35 and 36), from WSL, as a leaseholder's tools reach a slot: an OAuth
+// password or refresh-token grant, AML through `InnovatorServer.aspx`, and a file upload to the slot's vault. The
+// password and the tokens are Secrets, so `redact` replaces them anywhere they would appear; only the server's own
+// words come back.
 
 import { createHash, randomBytes } from "node:crypto";
 import { redact } from "../../src/core/redact.js";
@@ -8,7 +9,8 @@ import { Secret } from "../../src/core/secret.js";
 
 const TIMEOUT_MS = 180_000;
 
-export type Login = { readonly ok: true; readonly token: Secret } | { readonly ok: false; readonly detail: string };
+/** A login's answer; `refreshToken` only when the grant asked for `offline_access` and the server issued one. */
+export type Login = { readonly ok: true; readonly token: Secret; readonly refreshToken?: Secret } | { readonly ok: false; readonly detail: string };
 
 /** An Aras item id: 32 upper-case hex digits. */
 export function newItemId(): string {
@@ -34,10 +36,22 @@ export class ArasClient {
     readonly database: string,
   ) {}
 
-  /** An OAuth password grant as the Aras clients make it (`IOMApp`, the password as its MD5 hex). */
-  async login(user: string, password: Secret): Promise<Login> {
+  /**
+   * An OAuth password grant as the Aras clients make it (`IOMApp`, the password as its MD5 hex). `scope` adds to
+   * `Innovator`: `offline_access` asks for a refresh token, which 14.x's OAuth server keeps in its SQLite file.
+   */
+  async login(user: string, password: Secret, scope = ""): Promise<Login> {
     const md5 = Secret.of(createHash("md5").update(password.reveal(), "utf8").digest("hex"), "aras-login");
-    const body = new URLSearchParams({ grant_type: "password", scope: "Innovator", client_id: "IOMApp", username: user, password: md5.reveal(), database: this.database });
+    return this.grant({ grant_type: "password", scope: `Innovator${scope ? ` ${scope}` : ""}`, client_id: "IOMApp", username: user, password: md5.reveal(), database: this.database });
+  }
+
+  /** An OAuth refresh-token grant: a new access token for a refresh token an earlier login was issued. */
+  async refresh(refreshToken: Secret): Promise<Login> {
+    return this.grant({ grant_type: "refresh_token", client_id: "IOMApp", refresh_token: refreshToken.reveal() });
+  }
+
+  private async grant(fields: Record<string, string>): Promise<Login> {
+    const body = new URLSearchParams(fields);
     let res: Response;
     try {
       res = await fetch(`${this.url}/OAuthServer/connect/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body, signal: AbortSignal.timeout(TIMEOUT_MS) });
@@ -45,13 +59,16 @@ export class ArasClient {
       return { ok: false, detail: `no answer: ${(err as Error).message}` };
     }
     const text = await res.text();
-    let json: { access_token?: unknown; error?: unknown; error_description?: unknown } = {};
+    let json: { access_token?: unknown; refresh_token?: unknown; error?: unknown; error_description?: unknown } = {};
     try {
       json = JSON.parse(text) as typeof json;
     } catch {
       // Not JSON: reported by status.
     }
-    if (res.ok && typeof json.access_token === "string" && json.access_token.length > 0) return { ok: true, token: Secret.of(json.access_token, "aras-login") };
+    if (res.ok && typeof json.access_token === "string" && json.access_token.length > 0) {
+      const refreshToken = typeof json.refresh_token === "string" && json.refresh_token.length > 0 ? Secret.of(json.refresh_token, "aras-login") : undefined;
+      return { ok: true, token: Secret.of(json.access_token, "aras-login"), ...(refreshToken ? { refreshToken } : {}) };
+    }
     const why = typeof json.error === "string" ? `${json.error}${typeof json.error_description === "string" ? `: ${json.error_description}` : ""}` : `HTTP ${res.status}`;
     return { ok: false, detail: redact(why).slice(0, 300) };
   }

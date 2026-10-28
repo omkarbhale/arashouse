@@ -136,7 +136,8 @@ export async function runExtractCycle(options: ExtractOptions): Promise<StepReco
     const part = await aras.apply(token, `<Item type="Part" action="add"><item_number>${partNumber}</item_number><name>arashouse extract</name></Item>`);
     must("add a Part through the API", part.ok, part.ok ? partNumber : part.fault ?? "");
 
-    const pkgName = `LIBSJS-SCRATCH-EXTRACT-${TAG}`;
+    // Variable names are at most 32 characters: `LIBSJS-SCRATCH-X43-<tag>-Var` is 31.
+    const pkgName = `LIBSJS-SCRATCH-X43-${TAG}`;
     const varName = `${pkgName}-Var`;
     const pkgDir = join(out, "package-in");
     mkdirSync(join(pkgDir, pkgName, "Import", "Variable"), { recursive: true });

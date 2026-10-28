@@ -505,6 +505,16 @@ describe("provision", () => {
     await provisionPool({ ...p.deps, host: failing }, { flavor: "23", count: 1 });
     expect(await p.status("23-01")).toMatchObject({ status: "quarantined", quarantine_reason: "the health check after its provision failed: tree: 3 files differ" });
 
+    // A check that only timed out (a loaded host, ticket 56): reset before use, not quarantined.
+    const slow: OperatorHost = Object.assign(Object.create(p.host) as FakeHost, {
+      healthCheck: async () => ({ ok: false, ms: 1, detail: "slow", timedOut: true, checks: [{ name: "login", ok: false, detail: "no answer in 120 s", timedOut: true }] }),
+    });
+    expect((await provisionPool({ ...p.deps, host: slow }, { flavor: "12sp9", count: 1 })).lines).toEqual([
+      "provisioned 12sp9-01 (provisioned 12sp9-01); dirty: the health check after its provision timed out; a reset makes it free",
+    ]);
+    expect((await p.status("12sp9-01"))?.status).toBe("dirty");
+    p.started.length = 0;
+
     p.host.injectFault({ method: "healthCheck", kind: "fail", error: "Unreachable" });
     const r = await provisionPool(p.deps, { flavor: "35", count: 1 });
     expect(r.lines[0]).toMatch(/^provisioned 35-01 \(provisioned 35-01\); dirty: the health check could not run \(.*\); a reset makes it free$/);

@@ -45,6 +45,16 @@ export function isSlotBusy(value: unknown): boolean {
   return isHostError(value, "Retryable") && value.message.endsWith(SLOT_BUSY);
 }
 
+/** The broker's answer to a verb that ran past its bound (`verbTimeout`, src/broker/protocol.ts): `Retryable`. */
+export function verbTimeoutError(verb: string, timeoutMs: number): HostError {
+  return new HostError("Retryable", `${verb} did not finish within ${timeoutMs} ms`);
+}
+
+/** Whether `value` is the broker's answer that a verb ran past its bound. */
+export function isVerbTimeout(value: unknown): boolean {
+  return isHostError(value, "Retryable") && /^\w+ did not finish within \d+ ms$/.test(value.message);
+}
+
 /** A guard refusal is a `Refused` host error, so a real host and the fake fail the same way. */
 export function refusedFromGuard(err: GuardError): HostError {
   return new HostError("Refused", err.message, { cause: err });

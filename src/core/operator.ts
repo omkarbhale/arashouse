@@ -500,7 +500,10 @@ async function admitProvisioned(deps: OperatorDeps, ref: SlotRef, provisionMs: n
   try {
     const health = await deps.host.healthCheck(ref);
     const golden = health.ok ? (await deps.host.readStamp(ref)).stamp?.goldenHash : undefined;
-    if (!health.ok) {
+    if (!health.ok && health.timedOut === true) {
+      // The slot's server too slow to answer on a loaded host (ticket 56): reset before use, not quarantined.
+      outcome = { to: "dirty", why: "the health check after its provision timed out" };
+    } else if (!health.ok) {
       const failed = health.checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`);
       outcome = { to: "quarantined", why: clip(redact(`the health check after its provision failed: ${failed.join("; ") || health.detail}`)) };
     } else outcome = golden ? { to: "free", golden } : { to: "dirty", why: "its stamp names no golden hash" };

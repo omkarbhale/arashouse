@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +20,7 @@ import { slotRootSecretName, stampFile } from "../core/names.js";
 import { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
 import { BrokerHost } from "./broker-host.js";
-import { interopTransport, type BrokerTransport } from "./broker-transport.js";
+import { INTEROP_RETRY_DELAY_MS, INTEROP_START_ATTEMPTS, interopTransport, isInteropStartFailure, type BrokerTransport } from "./broker-transport.js";
 import { FakeClock } from "./clock.js";
 import { HOST_METHODS, type HostDriver } from "./driver.js";
 import { HostError } from "./errors.js";
@@ -371,6 +374,22 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
     expect((await health({ checks: [], marker: null }).healthCheck(s1)).marker).toBeNull();
   });
 
+  it("a health check is timed out only when it failed and every failed check timed out", async () => {
+    const health = (result: Record<string, unknown>) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { detail: "", ...result } }));
+    const slowLogin = { name: "login", ok: false, detail: "root's login did not answer in time", timedOut: true };
+    const passed = { name: "stamp", ok: true, detail: "fine" };
+    const timedOut = await health({ ok: false, timedOut: true, checks: [passed, slowLogin] }).healthCheck(s1);
+    expect(timedOut).toMatchObject({ ok: false, timedOut: true });
+    expect(timedOut.checks[1]).toMatchObject({ name: "login", timedOut: true });
+    expect("timedOut" in timedOut.checks[0]!).toBe(false);
+    // A wrong check besides, a passing result, or a check that did not time out: not timed out, whatever the broker says.
+    const wrong = { name: "tree", ok: false, detail: "1 extra" };
+    expect((await health({ ok: false, timedOut: true, checks: [wrong, slowLogin] }).healthCheck(s1)).timedOut).toBeUndefined();
+    expect((await health({ ok: true, timedOut: true, checks: [passed] }).healthCheck(s1)).timedOut).toBeUndefined();
+    expect((await health({ ok: false, timedOut: true, checks: [{ ...slowLogin, timedOut: "yes" }] }).healthCheck(s1)).timedOut).toBeUndefined();
+    expect((await health({ ok: false, checks: [slowLogin] }).healthCheck(s1)).timedOut).toBeUndefined();
+  });
+
   it("a listed slot that is not the tool's", async () => {
     for (const slot of [{ flavor: "olm", slot: 1 }, { flavor: "12sp9", slot: 1.5 }, { flavor: "12sp9", slot: 100 }]) {
       const listing = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", slots: [{ slot, stamp: null }] } }));
@@ -400,6 +419,51 @@ describe("interopTransport", () => {
     const silent = await rejection(transportFor().call({ id: "silent-1", verb: "ping" }, 1000));
     expect(silent.message).toMatch(/exited 6 with no response: cannot reach the broker/);
     expect((await rejection(transportFor().call({ id: "garbage-1", verb: "ping" }, 1000))).message).toMatch(/not JSON/);
+  });
+
+  it("starts node.exe again when WSL could not start it (the request never left WSL), a bounded number of times", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "arashouse-interop-"));
+    try {
+      const sleeps: number[] = [];
+      const transport = interopTransport({ node: process.execPath, clientScript: fixture, cwd: repoRoot, sleep: async (ms) => void sleeps.push(ms) });
+      const twice = join(dir, "twice");
+      const answer = await transport.call({ id: "interop-1", verb: "ping", args: { count: twice, fail: 2 } }, 5000);
+      expect(answer).toMatchObject({ id: "interop-1", ok: true });
+      expect(readFileSync(twice, "utf8")).toHaveLength(3);
+      expect(sleeps).toEqual([INTEROP_RETRY_DELAY_MS, 2 * INTEROP_RETRY_DELAY_MS]);
+
+      const always = join(dir, "always");
+      const err = await rejection(transport.call({ id: "interop-2", verb: "ping", args: { count: always } }, 5000));
+      expect(err.kind).toBe("Unreachable");
+      expect(err.message).toMatch(/WSL could not start .* \(exit 1\): <3>WSL \(2925201 - \) ERROR: UtilAcceptVsock:273: accept4 failed 110; .*arashouse doctor/);
+      expect(readFileSync(always, "utf8")).toHaveLength(INTEROP_START_ATTEMPTS);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never starts a client again that ran: it may have handed the request to the broker", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "arashouse-interop-"));
+    try {
+      const once = join(dir, "once");
+      const err = await rejection(transportFor().call({ id: "silent-2", verb: "ping", args: { count: once } }, 1000));
+      expect(err.message).toMatch(/exited 6 with no response: cannot reach the broker/);
+      expect(readFileSync(once, "utf8")).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("tells WSL's interop start failure from a client that ran", () => {
+    const wsl = "<3>WSL (2925201 - ) ERROR: UtilAcceptVsock:273: accept4 failed 110\n";
+    expect(isInteropStartFailure("", wsl)).toBe(true);
+    expect(isInteropStartFailure("", "<3>WSL (12 - ) ERROR: UtilConnectVsock:301: connect failed 110\n")).toBe(true);
+    // The client printed something, or answered: it ran.
+    expect(isInteropStartFailure("", `${wsl}arashouse-broker client: cannot reach the broker at \\\\.\\pipe\\x\n`)).toBe(false);
+    expect(isInteropStartFailure('{"id":"x","ok":true}\n', wsl)).toBe(false);
+    // Another WSL error, or none.
+    expect(isInteropStartFailure("", "<3>WSL (12 - ) ERROR: CreateProcessEntryCommon:505: execvpe failed\n")).toBe(false);
+    expect(isInteropStartFailure("", "")).toBe(false);
   });
 
   it("gives up on a client that does not exit", async () => {

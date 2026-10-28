@@ -120,11 +120,45 @@ describe("healthCheck", () => {
     refused.aras.loginAnswer = { ok: false, refused: true, detail: "invalid_grant: License Key is invalid." };
     const r = await check(refused);
     expect(r.result.ok).toBe(false);
-    expect(r.byName.login?.detail).toBe("root cannot log in (with the golden backup's password: invalid_grant: License Key is invalid.)");
+    expect(r.byName.login?.detail).toBe("root cannot log in (invalid_grant: License Key is invalid. (with the golden backup's password))");
+    expect(r.result.timedOut).toBeUndefined();
+    expect(r.byName.login?.timedOut).toBeUndefined();
 
     const faulty = await provisioned({ licence: true, shipped: true });
     faulty.aras.editAnswer = { ok: false, refused: true, detail: "edit of admin: Access denied" };
     expect((await check(faulty)).byName.login).toMatchObject({ ok: false, detail: "the one-time password could not be set: edit of admin: Access denied" });
+  });
+
+  it("times out a login the server is too slow to answer, unlike one it refuses, and a wrong check besides is not a timeout", async () => {
+    // Ticket 38's quarantines: root's login cut off after 100 to 120 s on a loaded host.
+    const CANCELLED = { ok: false, refused: false, detail: "invalid_grant: The operation was canceled.", timedOut: true } as const;
+    const slow = await provisioned({ licence: true, shipped: true });
+    expect((await check(slow)).result.ok).toBe(true);
+    slow.aras.calls.length = 0;
+    slow.aras.loginAnswer = CANCELLED;
+    const s = await check(slow);
+    expect(s.failed).toEqual(["login"]);
+    expect(s.byName.login).toMatchObject({ ok: false, timedOut: true, detail: "root's login did not answer in time (invalid_grant: The operation was canceled., with the slot's stored password)" });
+    expect(s.result).toMatchObject({ ok: false, timedOut: true });
+    // A slow login says nothing about the password: the next one is not tried.
+    expect(slow.aras.calls).toEqual(["login ah-12sp9-01 root"]);
+
+    // The same slow login on a slot that also has an extra file: the tree answered wrongly, so it is not a timeout.
+    slow.put(inSlot("Innovator/Client/added.js"), "added by a lease");
+    const mixed = await check(slow);
+    expect(mixed.failed).toEqual(["tree", "login"]);
+    expect(mixed.byName.login?.timedOut).toBe(true);
+    expect(mixed.result.timedOut).toBeUndefined();
+
+    // The golden backup's password not refused in time: whether it still logs in is unknown, so not a pass.
+    const unsure = await provisioned({ licence: true, shipped: true });
+    const login = unsure.aras.login.bind(unsure.aras);
+    let logins = 0;
+    unsure.aras.login = async (...args) => (++logins === 4 ? CANCELLED : login(...args));
+    const u = await check(unsure);
+    expect(logins).toBe(4);
+    expect(u.byName.login).toMatchObject({ ok: false, timedOut: true, detail: expect.stringMatching(/^the server did not answer in time whether the golden backup's password is refused/) });
+    expect(u.result.timedOut).toBe(true);
   });
 
   it("fails a slot whose database marker is gone, or names another golden than the stamp", async () => {
@@ -220,12 +254,23 @@ describe("healthCheck", () => {
 
   it("fails a slot whose server does not answer, lists other databases, or is another version; the login is not tried without a server", async () => {
     const down = await provisioned({ licence: true, shipped: true });
-    down.warmAnswer = () => ({ ms: 120_000, error: "timed out after 120000 ms" });
+    down.warmAnswer = () => ({ ms: 120_000, error: "timed out after 120000 ms", timedOut: true });
     const d = await check(down);
     expect(d.failed).toEqual(["client", "dblist", "oauth", "login"]);
     expect(d.byName.client?.detail).toBe("Client/: timed out after 120000 ms");
     expect(d.byName.login?.detail).toBe("not run: the server does not answer");
     expect(down.aras.calls).toEqual([]);
+    // Nothing answered in the bound: a slow server, so the result is timed out, every failed check with it.
+    expect(d.result.timedOut).toBe(true);
+    expect(d.checks.filter((c) => !c.ok).every((c) => c.timedOut === true)).toBe(true);
+
+    // A server that refuses the connection answered wrongly: not timed out.
+    const refusing = await provisioned({ licence: true, shipped: true });
+    refusing.warmAnswer = () => ({ ms: 3, error: "connection failed (ECONNREFUSED)" });
+    const rf = await check(refusing);
+    expect(rf.failed).toEqual(["client", "dblist", "oauth", "login"]);
+    expect(rf.result.timedOut).toBeUndefined();
+    expect(rf.byName.login?.timedOut).toBeUndefined();
 
     const two = await provisioned();
     two.pageBody = () => `<DBList><DB id="arashouse_12sp9_01"/><DB id="OLM_Local"/></DBList>`;

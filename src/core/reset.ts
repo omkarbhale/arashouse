@@ -14,10 +14,11 @@
 // The sequence: golden (resolve the flavor's tree and backup) -> quiesce -> database -> tree -> start
 // -> health (the host's health check, then the stamp against the golden). A step that fails is tried
 // once more (every step is idempotent); a second failure quarantines the slot with the step named. A
-// host that does not answer gives the slot back as `dirty` instead, for a later reset.
+// host that does not answer gives the slot back as `dirty` instead, for a later reset, and so does a
+// health check that only timed out after its backed-off tries (a loaded host; ticket 56).
 
-import type { BackupRef, GoldenRef, HostDriver, HostResult } from "../host/driver.js";
-import { isHostError, isSlotBusy } from "../host/errors.js";
+import type { BackupRef, GoldenRef, HealthResult, HostDriver, HostResult } from "../host/driver.js";
+import { isHostError, isSlotBusy, isVerbTimeout } from "../host/errors.js";
 import { setTimeout as sleepMs } from "node:timers/promises";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { HostUnreachableError, type ResetHooks } from "./lease.js";
@@ -80,14 +81,25 @@ export const MAX_RESET_ATTEMPTS = 3;
 export const SLOT_BUSY_WAIT_MS = 15 * 60_000;
 export const SLOT_BUSY_POLL_MS = 2_000;
 
+/**
+ * The waits before each new try of a health check that only timed out (`HealthResult.timedOut`, or the broker's verb
+ * bound): the slot's server too slow on a loaded host, which ticket 38 saw quarantine three healthy slots. These tries do
+ * not use up the step's two attempts; after the last the slot goes back to `dirty` for a later reset. A wrong answer is
+ * an attempt as before, and a second one still quarantines.
+ */
+export const HEALTH_TIMEOUT_BACKOFF_MS: readonly number[] = [30_000, 90_000];
+
 /** Room for the step and the error in a quarantine reason (state.ts allows 500 characters). */
 const MAX_REASON = 480;
 
 export type ResetOutcome =
   | { readonly kind: "free"; readonly slot: string; readonly ms: number }
   | { readonly kind: "quarantined"; readonly slot: string; readonly step: ResetStep | null; readonly reason: string }
-  /** The host did not answer: the slot is `dirty` again and a later reset tries again. */
-  | { readonly kind: "dirty"; readonly slot: string; readonly reason: string }
+  /**
+   * The host did not answer, or (`timedOut`) the slot's health check kept timing out: the slot is `dirty` again and a
+   * later reset tries again.
+   */
+  | { readonly kind: "dirty"; readonly slot: string; readonly reason: string; readonly timedOut?: boolean }
   /** Another process took the slot over (this worker was judged dead, or an operator moved it); nothing more was done. */
   | { readonly kind: "lost"; readonly slot: string; readonly reason: string }
   /** The reset did not start: the slot was not dirty, or `max_resets` resets were running. */
@@ -145,7 +157,8 @@ export async function resetSlot(deps: ResetDeps, id: string): Promise<ResetOutco
 /**
  * The reset worker (`arashouse reset-worker`): resets `first` if given, then every other dirty slot
  * it can, lowest id first, each at most once. It stops when none is left, when `max_resets` resets
- * are running (those workers carry on with the rest), or when the host does not answer.
+ * are running (those workers carry on with the rest), or when the host does not answer; a slot whose
+ * health check timed out is left dirty and the worker goes on.
  */
 export async function runResetWorker(deps: ResetDeps, first?: string): Promise<ResetOutcome[]> {
   const outcomes: ResetOutcome[] = [];
@@ -163,7 +176,7 @@ export async function runResetWorker(deps: ResetDeps, first?: string): Promise<R
     tried.add(next);
     const outcome = await resetSlot(deps, next);
     outcomes.push(outcome);
-    if (outcome.kind === "dirty") return outcomes;
+    if (outcome.kind === "dirty" && outcome.timedOut !== true) return outcomes;
     // Still dirty after a refusal means the cap is full: the running resets drain the rest.
     if (outcome.kind === "not-started" && (await deps.store.read()).slots[next]?.status === "dirty") return outcomes;
     next = undefined;
@@ -257,6 +270,9 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
   const attemptStep = async (step: ResetStep): Promise<StepResult> => {
     let failure = "";
     let unreachable = false;
+    // The last failure was a health check that timed out; `timeouts` counts those tries.
+    let timedOut = false;
+    let timeouts = 0;
     const busySince = now().getTime();
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
@@ -266,6 +282,7 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
         if (result.ok) return { ok: true };
         failure = result.detail;
         unreachable = false;
+        timedOut = step === "health" && (result as Partial<HealthResult>).timedOut === true;
       } catch (err) {
         // Another verb still runs on the slot (a dead worker's, say): wait for it, without using up an attempt.
         if (isSlotBusy(err) && now().getTime() - busySince < SLOT_BUSY_WAIT_MS) {
@@ -279,8 +296,18 @@ export async function runReset(deps: ResetDeps, slot: Slot): Promise<ResetOutcom
         }
         failure = errorText(err);
         unreachable = isHostError(err, "Unreachable") || (step === "golden" && isHostError(err, "Retryable"));
+        timedOut = step === "health" && isVerbTimeout(err);
         if (unreachable && !isHostError(err, "Unreachable")) break;
       }
+      if (timedOut) {
+        if (timeouts >= HEALTH_TIMEOUT_BACKOFF_MS.length) break;
+        await sleep(HEALTH_TIMEOUT_BACKOFF_MS[timeouts++]!);
+        attempt--;
+      }
+    }
+    if (timedOut) {
+      const reason = clip(redact(`reset step health: the slot's server did not answer in time, ${timeouts + 1} tries: ${failure}`));
+      return { ok: false, outcome: await settle({ to: "dirty" }, reason, { kind: "dirty", slot: slot.id, reason, timedOut: true }) };
     }
     if (unreachable) {
       const reason = clip(redact(`reset step ${step}: ${step === "golden" ? "the golden could not be read" : "the host did not answer"}: ${failure}`));
@@ -327,7 +354,8 @@ export function describeOutcome(outcome: ResetOutcome): string {
 /**
  * The reset policy as the lease operations take it (`LeaseDeps.reset`): `startWorker` is how this
  * process starts a detached worker; a lazy reset runs `resetSlot` here. A host that does not answer
- * fails the `get` with exit 6 rather than leaving it to wait.
+ * fails the `get` with exit 6 rather than leaving it to wait; a slot whose health check timed out is a
+ * failed lazy reset, so the `get` waits for another slot instead.
  */
 export function resetHooks(deps: ResetDeps, startWorker: (slot: string) => void): ResetHooks {
   return {
@@ -335,7 +363,7 @@ export function resetHooks(deps: ResetDeps, startWorker: (slot: string) => void)
     recover: async () => void (await recoverDeadResets(deps.store, deps.isWorkerAlive ?? isResetWorkerAlive)),
     resetNow: async (slot) => {
       const outcome = await resetSlot(deps, slot);
-      if (outcome.kind === "dirty") throw new HostUnreachableError(outcome.reason);
+      if (outcome.kind === "dirty" && outcome.timedOut !== true) throw new HostUnreachableError(outcome.reason);
       return outcome.kind === "free" ? "free" : outcome.kind === "not-started" ? "busy" : "failed";
     },
   };

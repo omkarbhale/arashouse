@@ -87,6 +87,25 @@ describe("login", () => {
     expect(await aras.login("ah-12sp9-01", "arashouse_12sp9_01", "root", secret(CURRENT))).toEqual({ ok: false, refused: false, detail: "connection failed" });
     server.listen(0);
   });
+
+  it("a server too slow to answer is timed out, not refused: no answer in the bound, or the server's own call cancelled", async () => {
+    // 12sp9's token endpoint on a loaded host (ticket 38): .NET cut its call to the Innovator server off at 100 s.
+    respond = (_req, res) => {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid_grant", error_description: "The operation was canceled." }));
+    };
+    expect(await aras.login("ah-12sp9-01", "arashouse_12sp9_01", "root", secret(CURRENT))).toEqual({
+      ok: false,
+      refused: false,
+      detail: "invalid_grant: The operation was canceled.",
+      timedOut: true,
+    });
+    respond = () => undefined;
+    const slow = arasHttp({ base: (alias) => `${base}/${alias}`, timeoutMs: 200 });
+    expect(await slow.login("ah-12sp9-01", "arashouse_12sp9_01", "root", secret(CURRENT))).toEqual({ ok: false, refused: false, detail: "no answer in 0.2 s", timedOut: true });
+    expect(await slow.setPasswords("ah-12sp9-01", "arashouse_12sp9_01", { user: "root", password: secret(CURRENT) }, ["root"], secret(NEXT))).toMatchObject({ ok: false, timedOut: true });
+    server.closeAllConnections();
+  });
 });
 
 describe("setPasswords", () => {

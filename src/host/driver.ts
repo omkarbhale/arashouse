@@ -119,6 +119,8 @@ export interface HealthCheckEntry {
   readonly detail: string;
   /** How long the check took, where the host measures it. */
   readonly ms?: number;
+  /** The check failed because the slot's server did not answer in time, not because it answered wrongly. */
+  readonly timedOut?: boolean;
 }
 
 /** The database marker as the health check read it back (ticket 32): what the last reset or provision wrote. */
@@ -133,6 +135,11 @@ export interface HealthResult extends HostResult {
   readonly checks: readonly HealthCheckEntry[];
   /** The slot database's marker; null when the database could not be read, absent when the host does not report it. */
   readonly marker?: MarkerReading | null;
+  /**
+   * Failed only by timing out: every failed check is one the slot's server did not answer in time (a loaded host,
+   * ticket 56). The reset tries it again later rather than quarantining the slot; a wrong answer is never `timedOut`.
+   */
+  readonly timedOut?: boolean;
 }
 
 export interface BaselineBuildResult extends HostResult {

@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FakeClock } from "../host/clock.js";
-import type { HostMethod } from "../host/driver.js";
-import { HostError, slotBusyError } from "../host/errors.js";
+import type { HealthResult, HostMethod } from "../host/driver.js";
+import { HostError, slotBusyError, verbTimeoutError } from "../host/errors.js";
+import type { SlotRef } from "./names.js";
 import { FakeHost, fakeGoldenHash } from "../host/fake.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
@@ -12,6 +13,7 @@ import type { FlavorKey } from "./flavors.js";
 import { type LeaseDeps, type LeaseGrant, NoSlotAvailableError, checkClean, exitCodeFor, getLease, returnLease } from "./lease.js";
 import { parseSlotId } from "./names.js";
 import {
+  HEALTH_TIMEOUT_BACKOFF_MS,
   MAX_RESET_ATTEMPTS,
   SLOT_BUSY_POLL_MS,
   SLOT_BUSY_WAIT_MS,
@@ -307,6 +309,123 @@ describe("the reset worker", () => {
     const outcome = await resetSlot({ ...p.reset, golden: async () => ({ tree: p.host.golden("12sp9"), backup: p.host.backup("12sp9") }) }, "23-01");
     expect(outcome).toMatchObject({ kind: "quarantined", step: "golden", reason: "reset step golden failed twice: the golden is not the 23 golden" });
     expect(p.host.callLog).not.toContain("quiesce");
+  });
+});
+
+/** How a scripted health check answers: as a server that timed out, as a slot that is wrong, as a verb past its bound, or as the fake host does. */
+type HealthAnswer = "slow" | "wrong" | "overrun" | "real";
+
+/**
+ * The pool's reset with its health check scripted per slot: `script(ref, n)` for the slot's n-th check (from 1). The
+ * waits between tries are recorded and move the fake clock.
+ */
+function scriptedHealth(p: Pool, script: (ref: SlotRef, n: number) => HealthAnswer): { reset: ResetDeps; sleeps: number[]; checks: string[] } {
+  const sleeps: number[] = [];
+  const checks: string[] = [];
+  const counts = new Map<string, number>();
+  const host = p.host;
+  const healthCheck = async (ref: SlotRef): Promise<HealthResult> => {
+    const id = `${ref.flavor}-${String(ref.slot).padStart(2, "0")}`;
+    const n = (counts.get(id) ?? 0) + 1;
+    counts.set(id, n);
+    const answer = script(ref, n);
+    checks.push(`${id} ${answer}`);
+    if (answer === "real") return host.healthCheck(ref);
+    if (answer === "overrun") throw verbTimeoutError("healthCheck", 600_000);
+    if (answer === "slow") {
+      const detail = "root's login did not answer in time (no answer in 120 s, with the golden backup's password)";
+      return { ok: false, ms: 120_000, detail: `${id} failed login (${detail})`, checks: [{ name: "login", ok: false, detail, timedOut: true }], timedOut: true };
+    }
+    return { ok: false, ms: 10, detail: `${id} failed tree (1 extra)`, checks: [{ name: "tree", ok: false, detail: "1 extra" }] };
+  };
+  const reset: ResetDeps = {
+    ...p.reset,
+    host: {
+      quiesce: (r) => host.quiesce(r),
+      resetDatabase: (r, b) => host.resetDatabase(r, b),
+      resetTree: (r, g) => host.resetTree(r, g),
+      startSlot: (r, o) => host.startSlot(r, o),
+      healthCheck,
+      readStamp: (r) => host.readStamp(r),
+    },
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      p.clock.advance(ms);
+    },
+  };
+  return { reset, sleeps, checks };
+}
+
+describe("a loaded host: a health check that times out (ticket 56)", () => {
+  it("tries a timed-out health check again after backing off, without using up an attempt, and the slot ends free", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    const h = scriptedHealth(p, (_ref, n) => (n <= 2 ? "slow" : "real"));
+    expect(await resetSlot(h.reset, "23-01")).toMatchObject({ kind: "free" });
+    expect(h.checks).toEqual(["23-01 slow", "23-01 slow", "23-01 real"]);
+    expect(h.sleeps).toEqual([...HEALTH_TIMEOUT_BACKOFF_MS]);
+  });
+
+  it("leaves the slot dirty, never quarantined, when its health check keeps timing out; a later reset makes it free", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    const h = scriptedHealth(p, () => "slow");
+    for (let i = 0; i < MAX_RESET_ATTEMPTS + 2; i++) {
+      const outcome = await resetSlot(h.reset, "23-01");
+      expect(outcome).toMatchObject({ kind: "dirty", slot: "23-01", timedOut: true });
+      expect((outcome as { reason: string }).reason).toMatch(/^reset step health: the slot's server did not answer in time, 3 tries: 23-01 failed login/);
+      const slot = await p.status("23-01");
+      expect(slot?.status).toBe("dirty");
+      expect(slot?.reset).toBeUndefined();
+    }
+    expect(h.checks).toHaveLength((MAX_RESET_ATTEMPTS + 2) * (HEALTH_TIMEOUT_BACKOFF_MS.length + 1));
+    expect(await resetSlot(p.reset, "23-01")).toMatchObject({ kind: "free" });
+  });
+
+  it("treats a health check the broker cut off at its verb bound as timed out too", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    const h = scriptedHealth(p, () => "overrun");
+    expect(await resetSlot(h.reset, "23-01")).toMatchObject({ kind: "dirty", timedOut: true, reason: expect.stringContaining("healthCheck did not finish within 600000 ms") });
+    expect((await p.status("23-01"))?.status).toBe("dirty");
+  });
+
+  it("still quarantines a health check that answers wrongly twice, timeouts or not", async () => {
+    const p = await pool({ "23": 2 });
+    await p.store.update((tx) => {
+      tx.transition("23-01", { to: "dirty" });
+      tx.transition("23-02", { to: "dirty" });
+    });
+    const h = scriptedHealth(p, (ref, n) => (ref.slot === 1 ? "wrong" : (["slow", "wrong", "slow", "wrong"] as const)[n - 1]!));
+    expect(await resetSlot(h.reset, "23-01")).toMatchObject({ kind: "quarantined", step: "health", reason: "reset step health failed twice: 23-01 failed tree (1 extra)" });
+    expect(await resetSlot(h.reset, "23-02")).toMatchObject({ kind: "quarantined", step: "health", reason: "reset step health failed twice: 23-02 failed tree (1 extra)" });
+    expect(h.checks.filter((c) => c.startsWith("23-01"))).toEqual(["23-01 wrong", "23-01 wrong"]);
+    expect(h.checks.filter((c) => c.startsWith("23-02"))).toEqual(["23-02 slow", "23-02 wrong", "23-02 slow", "23-02 wrong"]);
+  });
+
+  it("the worker leaves a timed-out slot dirty and goes on to the next", async () => {
+    const p = await pool({ "23": 2 });
+    await p.store.update((tx) => {
+      tx.transition("23-01", { to: "dirty" });
+      tx.transition("23-02", { to: "dirty" });
+    });
+    const h = scriptedHealth(p, (ref) => (ref.slot === 1 ? "slow" : "real"));
+    const outcomes = await runResetWorker(h.reset, "23-01");
+    expect(outcomes.map((o) => [o.slot, o.kind])).toEqual([
+      ["23-01", "dirty"],
+      ["23-02", "free"],
+    ]);
+  });
+
+  it("a lazy reset that times out does not fail the get with exit 6: it waits for a slot, and exits 3 when none comes", async () => {
+    const p = await pool({ "23": 1 });
+    await p.store.update((tx) => void tx.transition("23-01", { to: "dirty" }));
+    const h = scriptedHealth(p, () => "slow");
+    const deps: LeaseDeps = { ...p.deps, reset: resetHooks(h.reset, () => undefined) };
+    const err = await getLease(deps, { flavor: "23", holder: "b", waitSeconds: 10 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NoSlotAvailableError);
+    expect(exitCodeFor(err)).toBe(EXIT_CODES.noSlot);
+    expect((await p.status("23-01"))?.status).toBe("dirty");
   });
 });
 

@@ -18,6 +18,8 @@ export interface HttpAnswer {
   readonly body?: string;
   /** Why nothing answered: a timeout or a connection error code. Never a response body. */
   readonly error?: string;
+  /** Nothing answered within `timeoutMs` (as against a refused or reset connection). */
+  readonly timedOut?: boolean;
 }
 
 export interface GetOptions {
@@ -25,10 +27,12 @@ export interface GetOptions {
   readonly readBody?: boolean;
 }
 
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
 function errorText(err: unknown, timeoutMs: number): string {
-  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-    return `timed out after ${timeoutMs} ms`;
-  }
+  if (isTimeout(err)) return `timed out after ${timeoutMs} ms`;
   const cause = err instanceof Error ? err.cause : undefined;
   const code = (cause as { code?: unknown } | undefined)?.code ?? (err as { code?: unknown } | undefined)?.code;
   return typeof code === "string" ? `connection failed (${code})` : "connection failed";
@@ -68,6 +72,6 @@ export async function anonymousGet(url: string, options: GetOptions): Promise<Ht
     await res.body?.cancel().catch(() => undefined);
     return { status: res.status, ms: elapsed() };
   } catch (err) {
-    return { ms: elapsed(), error: errorText(err, options.timeoutMs) };
+    return { ms: elapsed(), error: errorText(err, options.timeoutMs), ...(isTimeout(err) ? { timedOut: true } : {}) };
   }
 }

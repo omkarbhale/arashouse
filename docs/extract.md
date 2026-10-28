@@ -111,3 +111,27 @@ Returning slot 23-02. Its state will be discarded; anything you want to keep mus
 
 No prompt and no delay; `--quiet` leaves it out. A repeated `return` (`already returned`) prints nothing. The worker
 guide (ticket 48) says the same.
+
+## On the host (2026-10-28)
+
+`test/host/extract-cycle.ts`, run by `test/host/extract-12sp9.test.ts` (`ARASHOUSE_TEST_EXTRACT=1`, the variables are in
+its header) from WSL as the worker, non-elevated, against the broker of this ticket (installed through firstmate's
+elevated gate with `setup-host.ps1 -Apply -UpdateBroker`, exit 0). It passed in 314 s on lease `12sp9-01`:
+
+| step | result |
+|---|---|
+| the lease, changed as a leaseholder can | a Part through the API, a `LIBSJS-SCRATCH` package imported with libs-js, a file written into `Innovator\Client` by a server Method of the leaseholder's (the dirt of `docs/e2e-12sp9.md`) |
+| `extract code` of the changed Client file | copied in 0.1 s; the same bytes |
+| `extract code InnovatorServerConfig.xml`, `extract code ../02` | refused, exit 7 |
+| `extract db` | 86.1 MB `COPY_ONLY` backup in 3.3 s (the broker's backup 1.1 s, with the copy 1.8 s); an MTF `TAPE` file holding the lease's Part number; `staging\<lease_id>\` gone after |
+| `run --lease ... aras-pkg export --package` of the scratch package | exit 0 in 25.6 s; `imports.mf` and the Variable written |
+| `status --json` | `extracted` false before, true after |
+| the broker, sent past `BrokerHost`'s guards | refused the backup of `12sp9-02` (free: "not leased"), a path in another lease's staging folder, a path under `golden\`, and the slot records `OLM_Local`, `olm` and `prod`; `BrokerHost` refused those three before sending |
+| `return` | the reminder line on stderr, not stdout; the slot free again 62.4 s later |
+| after the reset | the Client file gone; the health check passed (9 checks); the next lease of `12sp9-01` had neither the Part nor the package; `return --quiet` printed no reminder |
+| the extracted copies | the code file, the backup and the export the same by SHA-256 after the return and the reset |
+| the host as found | the deny-list fingerprints unchanged; no lease password in any command's output or the record |
+
+Three earlier runs failed, none in the tool: twice WSL's interop to Windows timed out (`UtilAcceptVsock ... accept4
+failed 110`) while other lanes loaded the host, before a lease was taken; once the scratch Variable's name was longer
+than the column's 32 characters, and the proof returned its lease.

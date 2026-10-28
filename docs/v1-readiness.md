@@ -89,7 +89,7 @@ a search of every tracked file outside `docs/`:
 | bootstrap, restore + code + import + git | `12sp9` 217 s, `23` 294 s, `35` 311 s; without `git`, 67 to 75 s of steps (restore 16 to 28 s, code 14 to 19 s, import 28 to 37 s) | [`bootstrap.md`](bootstrap.md) |
 | a broker killed mid-lease and mid-reset | restarted by its service recovery in 6 and 11.5 s; `doctor --fix` restored the pool; no lease lost | [`capacity.md`](capacity.md) |
 
-`arashouse status` as read for this record (2026-10-29), with one slot held by another task:
+`arashouse status` as read for this record at about 2026-10-28T20:08Z (2026-10-29 local time), with one slot held by another task:
 
 ```
 SLOT      FLAVOR  STATUS  HOLDER              LEASE     AGE    LAST RESET  BOOTSTRAP
@@ -102,6 +102,38 @@ SLOT      FLAVOR  STATUS  HOLDER              LEASE     AGE    LAST RESET  BOOTS
 35-02     35      free    -                   -         -      61.2s       -
 max_active: 1 of 3 in use
 max_resets: 0 of 2 running
+```
+
+`arashouse doctor` as run for this record from WSL as the worker, non-elevated and without `--fix`, from 2026-10-28T20:12:48Z to 20:15:07Z (2026-10-29 local time), exit 0. The only warning is that `aras-pkg` is not on that shell's PATH, which only `get --import` and `import` need, and the advice line is the operator's choice (docs/host-tuning.md).
+
+```
+ok state: 7 slots, revision 1373
+ok setup: applied 2026-10-28T15:39:45Z, arashouse 0.0.0: root present, 9 folders with their ACLs, broker Running and answering
+ok prerequisites: every prerequisite of the flavors in media/ is installed
+ok setup acl: the worker reads slots\, staging\, broker\ and is kept out of the rest
+warn aras-pkg: not on PATH and ARASHOUSE_APKG is not set; needed only for get --import and import
+ok broker: answers (arashouse-broker 0.0.0)
+ok sql: the broker's SQL login connects
+ok sql login: NT SERVICE\ArasHouseBroker is neither sysadmin nor dbcreator, and executes the 7 arashouse_admin procedures
+ok disk: 188.1 GB free at the install root
+ok ram: 8972 MB free
+advice sql max server memory: seen 2147483647 MB (SQL Server's default: uncapped); recommended 4096 MB; why: uncapped, SQL Server's buffer pool grows into the RAM active slots need; the setting covers the whole instance, the operator's own databases too
+ok media 12sp9: present
+ok baseline 12sp9: the 12sp9 baseline verifies (fast): fast verify passed: 23815 files checked
+ok media 23: present
+ok baseline 23: the 23 baseline verifies (fast): fast verify passed: 26386 files checked
+ok media 35: present
+ok baseline 35: the 35 baseline verifies (fast): fast verify passed: 23648 files checked
+ok licence line 12: present
+ok licence line 14: present
+ok slot 12sp9-01: leased to powerplay-redesign for 8h40m
+ok slot 12sp9-02: free and clean
+ok slot 12sp9-03: free and clean
+ok slot 23-01: free and clean
+ok slot 23-02: free and clean
+ok slot 35-01: free and clean
+ok slot 35-02: free and clean
+doctor: 0 problems, 1 warning; 1 host setting advised, the operator's choice (docs/host-tuning.md)
 ```
 
 ## The licence outcome

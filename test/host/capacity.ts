@@ -131,7 +131,9 @@ const SAMPLER = [
 
 function startSampler(file: string, phase: () => string): { stop: () => MemorySample[] } {
   const samples: MemorySample[] = [];
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "-"], { cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined, stdio: ["pipe", "pipe", "ignore"] });
+  // As -EncodedCommand: a loop read from stdin (`-Command -`) is never run, as PowerShell waits for a blank line.
+  const encoded = Buffer.from(SAMPLER, "utf16le").toString("base64");
+  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined, stdio: ["ignore", "pipe", "ignore"] });
   let buffer = "";
   child.stdout.on("data", (d: Buffer) => {
     buffer += d.toString("utf8");
@@ -145,8 +147,6 @@ function startSampler(file: string, phase: () => string): { stop: () => MemorySa
       appendFileSync(file, `${JSON.stringify(sample)}\n`);
     }
   });
-  child.stdin.on("error", () => undefined);
-  child.stdin.end(SAMPLER);
   return {
     stop: () => {
       child.kill("SIGKILL");
@@ -452,7 +452,7 @@ export async function runCapacity(options: CapacityOptions): Promise<StepRecord[
     const samples = sampler.stop();
     for (const p of ["idle", "race-mixed", "busy", "held", "burst-mixed", "race-same", "burst-same", "kill", "after"]) record(`memory.${p}`, true, 0, memorySummary(samples, [p]));
     const minFree = samples.length ? Math.min(...samples.map((s) => s.freeMb)) : NaN;
-    record("memory.whole run", true, 0, `${memorySummary(samples)}; min_free_ram_mb ${DEFAULT_CONFIG.min_free_ram_mb}, lowest free ${minFree} MB`);
+    record("memory.whole run", samples.length > 0, 0, `${memorySummary(samples)}; min_free_ram_mb ${DEFAULT_CONFIG.min_free_ram_mb}, lowest free ${minFree} MB`);
     const leaked = outputs.some((o) => seenPasswords.some((p) => o.includes(p.reveal())));
     record("secrets.no lease password in any output but get --json's", !leaked, 0, `${outputs.length} outputs checked against ${seenPasswords.length} passwords`);
     writeFileSync(join(out, "capacity.json"), `${JSON.stringify(records, null, 2)}\n`);

@@ -11,7 +11,8 @@ So `get` never trusts the state alone: a free slot is handed out only when what 
 The reset's last two steps (`docs/reset.md`): `start` starts the slot's pools (the quiesce left them stopped; the agent only
 for `get --agent`, ticket 33) and warms `Client/`, `Server/DBList.aspx` and the OAuth discovery document with a 2-minute
 bound (a cold start took up to 41 s); then `health` runs `healthCheck` and reads the stamp. A failed check is tried once
-more, then quarantines the slot with the failed checks named.
+more, then quarantines the slot with the failed checks named. A check that only timed out is tried again with backoff and
+then leaves the slot `dirty` instead (below, and `docs/reset.md`).
 
 ## `healthCheck(slot)` on the broker
 
@@ -33,6 +34,17 @@ record. Each check is named in the result, with its milliseconds; `ok` only when
 The HTTP, file and database checks run together, so a cold start overlaps the verify; the login runs after them, and not
 at all when the server does not answer. The result also carries the marker as read (`{ goldenHash, resetAt }`, or null
 when the database is missing), which `get` compares with the state.
+
+**Timed out, not wrong (ticket 56).** A check the slot's server did not answer in time carries `timedOut: true`: an HTTP
+check with no answer in its 2 minutes (a refused connection is not one), a login check whose request got no answer in
+2 minutes, or whose answer is the server's own call cut off by .NET's timeout (`The operation was canceled.`, which
+`12sp9`'s token endpoint answered after 100 s on ticket 38's loaded host), and the login not run because every HTTP
+check timed out. A timed-out login ends the check there, without trying the next password: a slow login says nothing
+about the password. The result carries `timedOut: true` when it failed and every failed check timed out; one wrong
+check besides makes it a failure like any other. `BrokerHost` believes the flag only as the checks bear it out. The
+reset tries such a check again with backoff and then leaves the slot `dirty` rather than quarantining it, and a
+provision whose check timed out admits the slot `dirty` for a reset. The same server cancellation in
+`setLeaseCredentials` is now `Retryable` rather than a refusal (`Quarantine`).
 
 A provision writes the marker too (the `database` step, after its restore), so a freshly provisioned slot passes, and
 `arashouse provision` admits it `free`.

@@ -166,8 +166,8 @@ Nothing here needs ticket 44's WSL cap now; it stays the captain's option if the
 - **WSL interop refusals.** After the runs, while other lanes ran builds through Windows interop, a few `get`s exited 6
   ("cannot reach the broker: the client exited 1 with no response: `UtilAcceptVsock: accept4 failed 110`"): WSL could
   not start the Windows `node.exe` that carries the request, so the broker never saw it. A retry a little later worked.
-  `get` does no harm (nothing was leased) and says the host did not answer; a retry of an interop start that never
-  reached the broker would be a separate change to the transport (`src/host/broker-transport.ts`), not made here.
+  `get` does no harm (nothing was leased) and says the host did not answer. Ticket 56 made the transport start
+  `node.exe` again when WSL failed this way (`docs/broker.md`).
 - **Three slots quarantined by slow logins on a loaded host.** After the runs, the browser check above leased and
   returned one slot of each flavor six times (06:00Z to 06:15Z) while other lanes' builds ran on Windows and this lane
   read the slots' client bundles over `/mnt/c`. Three of those resets (`12sp9-01`, `12sp9-02`, `35-01`, 06:18Z to 06:24Z)
@@ -176,4 +176,5 @@ Nothing here needs ticket 44's WSL cap now; it stays the captain's option if the
   health check as a failed step, so the slots were quarantined, as designed, and never handed out. `arashouse repair`
   reset each in 82 to 97 s (06:38Z to 06:43Z) and every slot was `free` again. So a busy host can cost slots their
   place in the pool until an operator repairs them; whether a health check that only timed out should leave the slot
-  `dirty` for a later try instead of counting toward quarantine is a question for a later ticket, not changed here.
+  `dirty` for a later try instead of counting toward quarantine was left to ticket 56, which made it so: a health check
+  that only timed out is tried again with backoff and then leaves the slot `dirty` (`docs/reset.md`, `docs/health.md`).

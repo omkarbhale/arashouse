@@ -117,7 +117,8 @@ function parseChecks(value: unknown): HealthCheckEntry[] {
       throw new ProtocolError("a check has the wrong fields");
     }
     const ms = typeof entry.ms === "number" && Number.isFinite(entry.ms) && entry.ms >= 0 ? entry.ms : undefined;
-    return { name: entry.name, ok: entry.ok, detail: redact(entry.detail), ...(ms === undefined ? {} : { ms }) };
+    const timedOut = entry.timedOut === true && !entry.ok;
+    return { name: entry.name, ok: entry.ok, detail: redact(entry.detail), ...(ms === undefined ? {} : { ms }), ...(timedOut ? { timedOut } : {}) };
   });
 }
 
@@ -306,7 +307,11 @@ export class BrokerHost implements HostDriver {
     assertSlotOwned(slot, this.owned);
     const { result, ms } = await this.call("healthCheck", { slot: { flavor: slot.flavor, slot: slot.slot } });
     try {
-      return { ok: result.ok, ms, detail: result.detail, checks: parseChecks(result.checks), marker: parseMarker(result.marker) };
+      const checks = parseChecks(result.checks);
+      // Believed only as the checks bear it out: a failed result whose failed checks all timed out.
+      const failed = checks.filter((c) => !c.ok);
+      const timedOut = result.timedOut === true && !result.ok && failed.length > 0 && failed.every((c) => c.timedOut === true);
+      return { ok: result.ok, ms, detail: result.detail, checks, marker: parseMarker(result.marker), ...(timedOut ? { timedOut } : {}) };
     } catch (err) {
       throw malformed("healthCheck", (err as Error).message);
     }

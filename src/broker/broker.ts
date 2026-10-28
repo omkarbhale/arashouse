@@ -11,7 +11,7 @@ import { GuardError } from "../core/guards.js";
 import { DEFAULT_INSTALL_ROOT, type SlotNames, type SlotRef } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { systemClock, type Clock } from "../host/clock.js";
-import { HostError } from "../host/errors.js";
+import { HostError, verbTimeoutError } from "../host/errors.js";
 import { assertFlavorOwned, assertSlotOwned, type OwnedContext } from "../host/owned.js";
 import type { AuditEntry, AuditOutcome, AuditSink } from "./audit.js";
 import {
@@ -153,7 +153,7 @@ export class Broker {
     const timeoutMs = spec.timeoutMs ?? verbTimeout(request.verb);
     let timer: NodeJS.Timeout | undefined;
     const overrun = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new HostError("Retryable", `${request.verb} did not finish within ${timeoutMs} ms`)), timeoutMs);
+      timer = setTimeout(() => reject(verbTimeoutError(request.verb, timeoutMs)), timeoutMs);
     });
     try {
       const result = await Promise.race([work, overrun]);

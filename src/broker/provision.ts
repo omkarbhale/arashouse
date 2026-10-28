@@ -83,6 +83,8 @@ export interface WarmAnswer {
   readonly status?: number;
   readonly ms: number;
   readonly error?: string;
+  /** Nothing answered within the bound. */
+  readonly timedOut?: boolean;
   /** The body, only when asked for (capped at 64 KiB). */
   readonly body?: string;
 }

@@ -78,6 +78,13 @@ The client (`src/broker/client.ts`) exits 0 when the broker answered (even with 
 not reach it (it still prints an `Unreachable` response, and the hint on stderr), and 2 when the request on
 its stdin was unusable.
 
+On a loaded host WSL sometimes cannot set up the interop channels for `node.exe` and prints its own error instead
+(`<3>WSL (<pid> - ) ERROR: UtilAcceptVsock:273: accept4 failed 110`, exit 1; ticket 38). `node.exe` never ran, so the
+request never left WSL. The transport (`src/host/broker-transport.ts`, `isInteropStartFailure`) starts it again, up to
+3 starts in all, 1 s and then 2 s apart, before answering `Unreachable` (ticket 56). It does so only when stdout is
+empty, stderr carries WSL's vsock error line and no line of the client's own: a client that ran may have handed the
+request to the broker, and a verb must not run twice. A retried start carries the same request id.
+
 ## Transport, and why
 
 Measured from WSL to the Windows Node v24.13.0, 20 runs each, wall time including process start.

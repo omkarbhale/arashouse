@@ -45,7 +45,8 @@ export function newArasPassword(): Secret {
   return Secret.of(randomBytes(16).toString("hex"), "aras-login");
 }
 
-type Outcome = { readonly ok: boolean; readonly detail: string };
+/** `timedOut`: the slot's server did not answer in time, which a loaded host causes and a later try may not meet (ticket 56). */
+type Outcome = { readonly ok: boolean; readonly detail: string; readonly timedOut?: boolean };
 type Entry = HealthCheckEntry & { readonly name: HealthCheckName; readonly ms: number };
 
 function pass(detail: string): Outcome {
@@ -54,6 +55,10 @@ function pass(detail: string): Outcome {
 
 function fail(detail: string): Outcome {
   return { ok: false, detail };
+}
+
+function slow(detail: string): Outcome {
+  return { ok: false, detail, timedOut: true };
 }
 
 function short(hash: string | null | undefined): string {
@@ -69,7 +74,7 @@ export function withoutStamp(diff: ManifestDiff): ManifestDiff {
 }
 
 function answered(path: string, answer: WarmAnswer, accept: (status: number) => boolean): Outcome {
-  if (answer.status === undefined) return fail(`${path}: ${answer.error ?? "no answer"}`);
+  if (answer.status === undefined) return (answer.timedOut ? slow : fail)(`${path}: ${answer.error ?? "no answer"}`);
   return accept(answer.status) ? pass(`${path} HTTP ${answer.status}`) : fail(`${path} answered HTTP ${answer.status}`);
 }
 
@@ -94,7 +99,8 @@ function stampCheck(stamp: SlotStamp | null, problem: string | undefined, manife
 /**
  * The login check: `root` logs in with the free slot's stored password or the golden backup's, both users get a new
  * random password (stored first, so a password the server took is never lost), `root` logs in with it, and the backup's
- * password no longer does.
+ * password no longer does. A request the server did not answer in time ends the check as timed out, whatever step it was:
+ * a slow login says nothing about the password.
  */
 async function loginCheck(system: SlotSystem, slot: SlotRef, names: SlotNames, stamp: SlotStamp | null): Promise<Outcome> {
   const id = slotId(slot);
@@ -116,6 +122,7 @@ async function loginCheck(system: SlotSystem, slot: SlotRef, names: SlotNames, s
   let current: Secret | undefined;
   let used = "";
   const refusals: string[] = [];
+  // The server's answer comes first: `redact` hides whatever follows "password:".
   for (const [what, password] of candidates) {
     const answer = await system.aras.login(alias, database, LEASE_LOGIN, password);
     if (answer.ok) {
@@ -123,26 +130,30 @@ async function loginCheck(system: SlotSystem, slot: SlotRef, names: SlotNames, s
       used = what;
       break;
     }
-    refusals.push(`with ${what}: ${answer.detail}`);
+    if (answer.timedOut) return slow(`root's login did not answer in time (${answer.detail}, with ${what})`);
+    refusals.push(`${answer.detail} (with ${what})`);
   }
   if (current === undefined) return fail(`root cannot log in (${refusals.join("; ")})`);
 
   const next = newArasPassword();
   await system.secrets.put(slotRootSecretName(slot), next);
   const edited = await system.aras.setPasswords(alias, database, { user: LEASE_LOGIN, password: current }, LEASE_USERS, next);
-  if (!edited.ok) return fail(`the one-time password could not be set: ${edited.detail}`);
+  if (!edited.ok) return (edited.timedOut ? slow : fail)(`the one-time password could not be set: ${edited.detail}`);
   const again = await system.aras.login(alias, database, LEASE_LOGIN, next);
-  if (!again.ok) return fail(`root cannot log in with its one-time password: ${again.detail}`);
+  if (!again.ok) return (again.timedOut ? slow : fail)(`root cannot log in with its one-time password: ${again.detail}`);
   if (shipped) {
     const old = await system.aras.login(alias, database, LEASE_LOGIN, shipped);
     if (old.ok) return fail("the golden backup's password still logs in as root");
+    if (old.timedOut) return slow(`the server did not answer in time whether the golden backup's password is refused: ${old.detail}`);
   }
   return pass(`root logged in with a one-time password (set with ${used}); root and admin have it, the golden backup's password is refused`);
 }
 
 /**
  * `healthCheck`: every check of the slot, each with its time; `ok` only when all pass. `Refused` for a slot that is not
- * provisioned; `Retryable` while the flavor's golden is moved into place (nothing to check against).
+ * provisioned; `Retryable` while the flavor's golden is moved into place (nothing to check against). A failed result
+ * carries `timedOut: true` when every failed check is one the slot's server did not answer in time (ticket 56): a
+ * loaded host, not a wrong slot, so the reset tries again later instead of quarantining the slot.
  */
 export async function healthCheckOnHost(system: SlotSystem, slot: SlotRef, names: SlotNames, root: string): Promise<WireResult> {
   const id = slotId(slot);
@@ -157,7 +168,7 @@ export async function healthCheckOnHost(system: SlotSystem, slot: SlotRef, names
     } catch (err) {
       outcome = fail(errorText(err));
     }
-    return { name, ok: outcome.ok, detail: outcome.detail, ms: Math.max(0, system.now() - t) };
+    return { name, ok: outcome.ok, detail: outcome.detail, ms: Math.max(0, system.now() - t), ...(outcome.timedOut ? { timedOut: true } : {}) };
   };
 
   const read = await readStamp(system, slot, root);
@@ -234,7 +245,11 @@ export async function healthCheckOnHost(system: SlotSystem, slot: SlotRef, names
   ]);
   // The login needs the server up; it is not attempted when the server does not answer.
   const serving = http.every((c) => c.ok);
-  const login = serving ? await timed("login", () => loginCheck(system, slot, names, read.stamp)) : { name: "login" as const, ok: false, detail: "not run: the server does not answer", ms: 0 };
+  // A login not run because the server timed out is as much a timeout as the check that did.
+  const unanswered = http.filter((c) => !c.ok);
+  const login: Entry = serving
+    ? await timed("login", () => loginCheck(system, slot, names, read.stamp))
+    : { name: "login", ok: false, detail: "not run: the server does not answer", ms: 0, ...(unanswered.every((c) => c.timedOut) ? { timedOut: true } : {}) };
 
   const checks: Entry[] = [stamp, ...http, ...files, ...database, login];
   const failed = checks.filter((c) => !c.ok);
@@ -244,7 +259,8 @@ export async function healthCheckOnHost(system: SlotSystem, slot: SlotRef, names
     failed.length === 0
       ? `${id} is healthy (${checks.length} checks in ${total} s: ${times})`
       : `${id} failed ${failed.map((c) => `${c.name} (${c.detail})`).join("; ")} (${total} s: ${times})`;
-  return { ok: failed.length === 0, detail, checks, marker: db.marker };
+  const timedOut = failed.length > 0 && failed.every((c) => c.timedOut === true);
+  return { ok: failed.length === 0, detail, checks, marker: db.marker, ...(timedOut ? { timedOut: true } : {}) };
 }
 
 /** Registers `healthCheck` on `broker`, under the same per-slot `locks` as the slot verbs: its login check sets a password. */

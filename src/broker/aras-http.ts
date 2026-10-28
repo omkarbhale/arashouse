@@ -15,8 +15,13 @@ import { Secret } from "../core/secret.js";
 /** A first request to a cold slot takes up to 41 s (design 8.3); a login and an edit are a few requests. */
 export const ARAS_HTTP_TIMEOUT_MS = 120_000;
 
-/** What a login or an edit answers: `ok`, or why not. `refused` is the server saying no, not a server that did not answer. */
-export type ArasAnswer = { readonly ok: true; readonly detail: string } | { readonly ok: false; readonly refused: boolean; readonly detail: string };
+/**
+ * What a login or an edit answers: `ok`, or why not. `refused` is the server saying no, not a server that did not answer.
+ * `timedOut` is a server too slow to answer: no answer within the bound, or the server's own call cancelled on its timeout.
+ */
+export type ArasAnswer =
+  | { readonly ok: true; readonly detail: string }
+  | { readonly ok: false; readonly refused: boolean; readonly detail: string; readonly timedOut?: boolean };
 
 export interface ArasHttpOptions {
   /** The base URL of an application alias; the default is `http://localhost/<alias>`. Tests point it at a local server. */
@@ -34,8 +39,15 @@ function md5Hex(password: Secret): string {
 
 function failure(err: unknown, timeoutMs: number): ArasAnswer {
   const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
-  return { ok: false, refused: false, detail: timedOut ? `no answer in ${timeoutMs / 1000} s` : "connection failed" };
+  return timedOut ? { ok: false, refused: false, detail: `no answer in ${timeoutMs / 1000} s`, timedOut } : { ok: false, refused: false, detail: "connection failed" };
 }
+
+/**
+ * The OAuth server's answer when its own call to the Innovator server was cut off by .NET's timeout (100 s by default):
+ * on a loaded host, `12sp9`'s token endpoint answered `The operation was canceled.` after 100 s (ticket 38). The server
+ * did not refuse the password; it did not get to it.
+ */
+const CANCELLED = /^(?:The operation was canceled|A task was canceled)\.?$/;
 
 const capped = (text: string): string => redact(text).slice(0, 300);
 
@@ -74,6 +86,9 @@ export function arasHttp(options: ArasHttpOptions = {}): ArasHttp {
       if (res.ok && typeof json.access_token === "string" && json.access_token.length > 0) return { token: Secret.of(json.access_token, "aras-login") };
       // The server's refusal names the cause (a missing licence, a wrong password), never the password.
       const why = typeof json.error === "string" ? `${json.error}${typeof json.error_description === "string" ? `: ${json.error_description}` : ""}` : `HTTP ${res.status}`;
+      if (typeof json.error_description === "string" && CANCELLED.test(json.error_description.trim())) {
+        return { ok: false, refused: false, detail: capped(why), timedOut: true };
+      }
       // A 4xx is the server saying no; a 5xx or a page that is not the token endpoint's is a server not ready.
       return { ok: false, refused: res.status >= 400 && res.status < 500, detail: capped(why) };
     } catch (err) {

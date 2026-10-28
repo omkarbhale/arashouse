@@ -11,8 +11,11 @@
 // after a restore `root` and `admin` have the golden backup's password, so the broker logs in with it (or with the
 // free slot's stored random one), sets both to a new random password through the slot's server (an AML edit through ticket 34's
 // `ArasHttp`; SQL cannot), keeps that one in the host's store (`slot-<key>-<NN>-root`, for the lease credentials of ticket 34), and
-// logs in with it. No licence key stored for the line means no rendered config carries one and the server refuses
-// every login, so the check reports that instead of logging in.
+// logs in with it. Every other User that may log in (`vadmin`, `authadmin`, and on 35 `clientadmin` and `JobAgentUser`)
+// keeps the golden's shipped password too, the same on every slot (ticket 50's check 7), so each gets a random password of its
+// own that nobody keeps (ticket 57): the vault, the OAuth server and the agent reach theirs by the OAuth `impersonate`
+// grant with a client certificate, never with a password. No licence key stored for the line means no rendered config
+// carries one and the server refuses every login, so the check reports that instead of logging in.
 
 import { randomBytes } from "node:crypto";
 import { win32 } from "node:path";
@@ -25,6 +28,7 @@ import { Secret } from "../core/secret.js";
 import type { HealthCheckEntry, MarkerReading, SlotStamp } from "../host/driver.js";
 import { HostError } from "../host/errors.js";
 import { parseDbList } from "../host/probe.js";
+import { shown } from "./aras-http.js";
 import { LEASE_LOGIN, LEASE_USERS } from "./lease-credentials.js";
 import type { Broker, VerbContext } from "./broker.js";
 import { parseSlotStamp, type WireResult } from "./protocol.js";
@@ -59,6 +63,11 @@ function fail(detail: string): Outcome {
 
 function slow(detail: string): Outcome {
   return { ok: false, detail, timedOut: true };
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listed(items: readonly string[]): string {
+  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
 function short(hash: string | null | undefined): string {
@@ -98,9 +107,10 @@ function stampCheck(stamp: SlotStamp | null, problem: string | undefined, manife
 
 /**
  * The login check: `root` logs in with the free slot's stored password or the golden backup's, both users get a new
- * random password (stored first, so a password the server took is never lost), `root` logs in with it, and the backup's
- * password no longer does. A request the server did not answer in time ends the check as timed out, whatever step it was:
- * a slow login says nothing about the password.
+ * random password (stored first, so a password the server took is never lost), `root` logs in with it, every other User
+ * that may log in gets a random password of its own that is not kept, and the backup's password logs in as none of them.
+ * A request the server did not answer in time ends the check as timed out, whatever step it was: a slow login says
+ * nothing about the password.
  */
 async function loginCheck(system: SlotSystem, slot: SlotRef, names: SlotNames, stamp: SlotStamp | null): Promise<Outcome> {
   const id = slotId(slot);
@@ -141,12 +151,20 @@ async function loginCheck(system: SlotSystem, slot: SlotRef, names: SlotNames, s
   if (!edited.ok) return (edited.timedOut ? slow : fail)(`the one-time password could not be set: ${edited.detail}`);
   const again = await system.aras.login(alias, database, LEASE_LOGIN, next);
   if (!again.ok) return (again.timedOut ? slow : fail)(`root cannot log in with its one-time password: ${again.detail}`);
+  // The shipped users: a password each, made here and forgotten once set (ticket 57).
+  const rekeyed = await system.aras.rekeyUsers(alias, database, { user: LEASE_LOGIN, password: next }, LEASE_USERS, newArasPassword);
+  if (!rekeyed.ok) return (rekeyed.timedOut ? slow : fail)(`the other Users that may log in could not be re-keyed (${rekeyed.detail})`);
+  const n = rekeyed.logins.length;
+  const others = n === 0 ? "no other User may log in" : `${listed(rekeyed.logins.map(shown))} ${n === 1 ? "has" : "each have"} a random password nobody keeps`;
   if (shipped) {
-    const old = await system.aras.login(alias, database, LEASE_LOGIN, shipped);
-    if (old.ok) return fail("the golden backup's password still logs in as root");
-    if (old.timedOut) return slow(`the server did not answer in time whether the golden backup's password is refused: ${old.detail}`);
+    for (const user of [LEASE_LOGIN, ...rekeyed.logins]) {
+      const old = await system.aras.login(alias, database, user, shipped);
+      if (old.ok) return fail(`the golden backup's password still logs in as ${shown(user)}`);
+      if (old.timedOut) return slow(`the server did not answer in time whether the golden backup's password is refused for ${shown(user)}: ${old.detail}`);
+    }
   }
-  return pass(`root logged in with a one-time password (set with ${used}); root and admin have it, the golden backup's password is refused`);
+  const refused = shipped ? ", and the golden backup's password logs in as none of them" : "";
+  return pass(`root logged in with a one-time password (set with ${used}); root and admin have it, ${others}${refused}`);
 }
 
 /**

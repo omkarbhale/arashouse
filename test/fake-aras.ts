@@ -1,8 +1,9 @@
-// A fake of the slots' Aras servers for the per-lease credential tests (ticket 34): each slot's `root` and `admin`
-// have a password, a login with the right one answers ok, and an edit as a logged-in user changes them. It keeps
+// A fake of the slots' Aras servers for the per-lease credential tests (ticket 34): each slot's users have a password,
+// a login with the right one answers ok, and an edit as a logged-in user changes them. Its Users that may log in are
+// the golden's (`vadmin` and `authadmin` besides `root` and `admin`, ticket 57) unless a test says otherwise. It keeps
 // the passwords as text, which only test code may do (test/reveal-allowlist.test.ts scans `src/` only).
 
-import type { ArasAnswer, ArasHttp } from "../src/broker/aras-http.js";
+import type { ArasAnswer, ArasHttp, RekeyAnswer } from "../src/broker/aras-http.js";
 import type { Secret } from "../src/core/secret.js";
 
 /** The password every slot's users have before anything sets one, standing for the golden's shipped password. */
@@ -11,8 +12,10 @@ export const SHIPPED = "shipped-golden-password";
 export class FakeAras implements ArasHttp {
   /** Passwords by `<alias> <login>`. */
   readonly passwords = new Map<string, string>();
-  /** Every call, as `login <alias> <user>` or `edit <alias> <login>`. */
+  /** Every call, as `login <alias> <user>`, `edit <alias> <login>` or `list <alias>`. */
   readonly calls: string[] = [];
+  /** The Users that may log in, on every slot. */
+  logonUsers: string[] = ["root", "admin", "vadmin", "authadmin"];
   /** Makes the next edit answer this instead. */
   editAnswer: ArasAnswer | undefined;
   /** Makes every login answer this instead (a server that does not answer). */
@@ -50,5 +53,24 @@ export class FakeAras implements ArasHttp {
       this.set(alias, name, next.reveal());
     }
     return { ok: true, detail: `edited ${logins.join(" and ")}` };
+  }
+
+  async rekeyUsers(alias: string, database: string, as: { readonly user: string; readonly password: Secret }, keep: readonly string[], fresh: () => Secret): Promise<RekeyAnswer> {
+    const login = await this.login(alias, database, as.user, as.password);
+    if (!login.ok) return login;
+    this.calls.push(`list ${alias}`);
+    const kept = new Set(keep.map((k) => k.toLowerCase()));
+    const logins: string[] = [];
+    for (const name of this.logonUsers.filter((u) => !kept.has(u.toLowerCase()))) {
+      this.calls.push(`edit ${alias} ${name}`);
+      if (this.editAnswer) {
+        const answer = this.editAnswer;
+        this.editAnswer = undefined;
+        if (!answer.ok) return answer;
+      }
+      this.set(alias, name, fresh().reveal());
+      logins.push(name);
+    }
+    return { ok: true, detail: `edited ${logins.join(", ")}`, logins };
   }
 }

@@ -12,7 +12,7 @@
 // 4. `return --wait`: the reset's `fast` verify passes (the slot is free again) and every deployed file is gone or
 //    golden's again; the broker's health check of the free slot passes its tree check.
 // 5. `get --atomic --code` of a broken `Client\web.config`: the warm-up fails, the lease is returned and reset, and get
-//    exits 9; the slot is free again with golden's web.config.
+//    exits 10; the slot is free again with golden's web.config.
 // The deny-list objects the worker can read are fingerprinted before and after.
 
 import { spawn } from "node:child_process";
@@ -101,8 +101,10 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
   const scratch = join(winTemp, `arashouse-40-${tag}`);
   mkdirSync(scratch, { recursive: true });
   const compile = async (version: string): Promise<Buffer> => {
-    const cs = join(scratch, `probe-${version}.cs`);
-    const dll = join(scratch, `probe-${version}.dll`);
+    // The file name must be the assembly's (ASP.NET loads every bin assembly by its file name), so each version gets its own folder.
+    mkdirSync(join(scratch, version), { recursive: true });
+    const cs = join(scratch, version, "ArasHouseProbe.cs");
+    const dll = join(scratch, version, "ArasHouseProbe.dll");
     writeFileSync(cs, `namespace ArasHouseProbe { public static class Marker { public const string Tag = "${version}-${tag}"; } }\n`);
     const win = async (p: string) => (await runProcess("wslpath", ["-w", p])).stdout.trim();
     const r = await runProcess(CSC, ["/nologo", "/target:library", `/out:${await win(dll)}`, await win(cs)]);
@@ -142,6 +144,8 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
   const got = await cli(["get", "12sp9", "--holder", `deploy-40-${tag}`, "--json", "--code", overlay, "--code", `${zip}:Innovator/Server/bin`]);
   if (got.code !== 0) {
     record("get --code", false, oneLine(got), got.ms);
+    // Exit 10 keeps the lease (the holder is mid-development): give it back, so a failed proof leaves no lease behind.
+    if (got.code === 10) await cli(["return", (JSON.parse(got.stdout) as { lease_id: string }).lease_id, "--quiet"]);
     return records;
   }
   const grant = JSON.parse(got.stdout) as { slot: string; url: string; database: string; lease_id: string; password: string; bootstrap: { code: { ok: boolean; files: number; detail: string }[] } };
@@ -158,7 +162,8 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
     record("the golden DLL is replaced", hashOf(slotFile(grant.slot, GOLDEN_DLL)) === sha256(patched), `${GOLDEN_DLL} is the deployed bytes (${patched.length}, golden ${goldenDll.length})`);
     const login = await new ArasClient(grant.url, grant.database).login("root", password);
     record("root logs in with the lease's password after the deploys", login.ok, login.ok ? "token issued" : login.detail);
-    const lease = (JSON.parse(readFileSync(join(process.env.ARASHOUSE_HOME as string, "state.json"), "utf8")) as { slots: Record<string, { lease?: { bootstrap?: Record<string, unknown> } }> }).slots[grant.slot]?.lease;
+    const state = JSON.parse(readFileSync(join(process.env.ARASHOUSE_HOME as string, "state.json"), "utf8")) as { slots: { id: string; lease?: { bootstrap?: Record<string, unknown> } }[] };
+    const lease = state.slots.find((s) => s.id === grant.slot)?.lease;
     record("the lease records files and a manifest hash", typeof lease?.bootstrap?.code === "string" && lease.bootstrap.code_deploys === 2, JSON.stringify(lease?.bootstrap ?? null));
 
     // ---- 2. deploy-code: the replaced DLL is served ------------------------------------------------------
@@ -259,7 +264,7 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
   mkdirSync(broken);
   writeFileSync(join(broken, "web.config"), "<configuration><not-closed>");
   const atomic = await cli(["get", "12sp9", "--holder", `deploy-40-atomic-${tag}`, "--json", "--atomic", "--code", `${broken}:Innovator/Client`]);
-  record("get --atomic with a deploy that breaks the client: exit 9, no lease printed", atomic.code === 9 && atomic.stdout === "", oneLine(atomic), atomic.ms);
+  record("get --atomic with a deploy that breaks the client: exit 10, no lease printed", atomic.code === 10 && atomic.stdout === "", oneLine(atomic), atomic.ms);
   const returnedSlot = /code deploy into (12sp9-\d\d) failed/.exec(atomic.stderr)?.[1];
   if (returnedSlot) {
     const deadline = Date.now() + 15 * 60_000;

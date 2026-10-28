@@ -121,3 +121,37 @@ Nothing about a deploy survives the lease. `return` marks the slot dirty; the re
 the slot (`/MIR` removes the added files and restores the replaced ones), empties `Server\dll`, `Server\temp` and the
 other runtime folders, clears ASP.NET's temporary files of the alias, renders the configs again and verifies the tree
 at `fast` (`docs/reset.md`). Anything the holder wants to keep, it takes out before returning (ticket 43).
+
+## Measured on the host (2026-10-28)
+
+Firstmate's elevated gate ran `setup-host.ps1 -Apply -UpdateBroker`, which installed a broker built from this branch on
+main `64616bf` (exit 0, hash matched, no errors). Then `test/host/code-deploy.test.ts` (`ARASHOUSE_TEST_DEPLOY=1`,
+procedure in `test/host/code-deploy-proof.ts`) ran from WSL as the worker, non-elevated, on the `12sp9` pool.
+
+| step | result |
+|---|---|
+| `get 12sp9 --code <folder> --code <zip>:Innovator/Server/bin` | `12sp9-02` in 59.6 s. The folder: a client file, a probe page in `Server\` and a probe DLL in `Server\bin`, 3 files in 21.7 s (quiesce 10.5, copy 0.1, ASP.NET temporary files 1.4 (2 folders), start and warm 9.6). The zip: a golden DLL of `Server\bin` (`VeracodeAttributes.dll`) with bytes appended, in 27.1 s |
+| served, read from WSL through the slot's URL | `Client/arashouse-40-<tag>.txt` 200 with its text; the probe page 200 `v1-<tag>` (the DLL is loaded); the slot's `VeracodeAttributes.dll` is the deployed bytes |
+| `root` with the lease's password | logs in |
+| the lease record | `code: "<n> files, manifest <hash>"`, `code_deploys: 2`, and a `bootstrap` event per deploy in `events.log` |
+| `deploy-code` of the probe DLL v2 into `Server\bin` | 24.5 s; the page then answers `v2-<tag>`: the replaced DLL is served |
+| refused by the CLI, exit 7, nothing staged | a zip entry `../InnovatorServerConfig.xml`; a source holding a junction (`mklink /J`) to `golden\`; `InnovatorServerConfig.xml` at `.` without `--allow-config` |
+| refused by the broker, asked directly with trees staged by hand | a junction to `secrets\` (at `staged`, before any change); a hard link (at `copy`, by the handle check, after the quiesce, so the slot was started again); `InnovatorServerConfig.xml` without `allowConfig` and a `..` in `deploy.json` (at `plan`); another lease's folder (at `lease`). Each staged folder removed, the junction to `secrets\` removed itself and `secrets\` untouched |
+| after the refusals | the slot still serves the probe page |
+| `return --wait` | 61.3 s: the reset, with its `fast` verify, passed and the slot is free |
+| after the reset | the client file, the probe page and DLL are gone (the client file 404); `VeracodeAttributes.dll` is golden's again; the broker's health check passes, its tree check "23815 files match golden d30c857941e3" |
+| `get --atomic --code <broken web.config>:Innovator/Client` | exit 10 in 18.6 s, no lease printed: the deploy ran (11.4 s), `Client/` answered 500 on the warm-up, and the lease was returned; `12sp9-01` was reset, is free, and its `Client\web.config` is golden's |
+| the deny-list objects the worker can read | unchanged (5) |
+| the lease's password | in no output but `get`'s JSON, and not in the record |
+
+An earlier run left the lease held with exit 10 and the failure shown, as it should when there is no `--atomic`. The
+cause was the proof's own probe DLL: `csc` named its assembly after the output file (`probe-v1`), and the file was
+deployed as `ArasHouseProbe.dll`. ASP.NET loads every bin assembly by its file name, so the `Server` application did
+not start (`Server/DBList.aspx` 500; event 1310, "the located assembly's manifest definition does not match"). The
+lease was returned, its reset removed the DLL, and the proof now builds each version under its own file name.
+
+One case was not refused the way it should be: a symbolic link made from WSL in a staged folder. Windows shows it as a
+reparse point the broker's `lstat` answers `EACCES` for, so the installed broker answered `Retryable` at `staged`
+(nothing was copied, and the slot was not touched) and left the staged folder. The broker now refuses an entry it
+cannot look at, as it refuses a link, and removes it as a link (`src/broker/staged-fs.ts`, tested offline). That fix
+came after this run and has not been run on the host.

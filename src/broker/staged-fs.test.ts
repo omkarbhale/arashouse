@@ -1,6 +1,6 @@
 // The staged-folder reads on a real filesystem (Linux in CI; Node reports a Windows junction as a symbolic link too).
 
-import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -42,6 +42,19 @@ describe("listStaged", () => {
     const listing = await listStaged(staged);
     expect(listing.files).toEqual([{ path: "Client/a.js", size: 1 }]);
     expect([...listing.refused].sort()).toEqual(["Client/linked", "x.bin"]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("refuses what it cannot look at, rather than failing", async () => {
+    await mkdir(join(staged, "locked"));
+    await writeFile(join(staged, "locked", "x.js"), "x");
+    await chmod(join(staged, "locked"), 0o000);
+    try {
+      const listing = await listStaged(staged);
+      expect(listing.refused).toEqual(["locked"]);
+      expect(listing.files).toEqual([{ path: "Client/a.js", size: 1 }]);
+    } finally {
+      await chmod(join(staged, "locked"), 0o700);
+    }
   });
 
   it("refuses a staged folder that is a link or missing", async () => {

@@ -40,13 +40,21 @@ export async function listStaged(dir: string): Promise<StagedListing> {
   const files: { path: string; size: number }[] = [];
   const refused: string[] = [];
   let seen = 0;
+  // An entry the broker cannot even look at (a symbolic link WSL made is a reparse point Windows answers EACCES for) is
+  // refused like a link, not an error: the deploy is refused and nothing is copied.
+  const lookAt = (full: string) => lstat(full).catch(() => undefined);
   const walk = async (folder: string, rel: string): Promise<void> => {
-    for (const entry of await readdir(folder, { withFileTypes: true })) {
+    const entries = await readdir(folder, { withFileTypes: true }).catch(() => undefined);
+    if (entries === undefined) {
+      refused.push(rel === "" ? "." : rel);
+      return;
+    }
+    for (const entry of entries) {
       if (++seen > MAX_ENTRIES) throw new HostError("Refused", `the staged folder has more than ${MAX_ENTRIES} entries`);
       const path = rel === "" ? entry.name : `${rel}/${entry.name}`;
       const full = join(folder, entry.name);
-      const info = await lstat(full);
-      if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) refused.push(path);
+      const info = await lookAt(full);
+      if (info === undefined || info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) refused.push(path);
       else if (info.isDirectory()) await walk(full, path);
       else files.push({ path, size: info.size });
     }
@@ -137,7 +145,7 @@ async function removeLink(path: string): Promise<void> {
     await unlink(path);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "EPERM" && code !== "EISDIR") throw err;
+    if (code !== "EPERM" && code !== "EISDIR" && code !== "EACCES") throw err;
     await rmdir(path);
   }
 }
@@ -155,8 +163,9 @@ export async function removeStaged(path: string): Promise<void> {
   }
   for (const entry of await readdir(path)) {
     const full = join(path, entry);
-    const info = await lstat(full);
-    if (info.isSymbolicLink()) await removeLink(full);
+    const info = await lstat(full).catch(() => undefined);
+    // One that cannot be looked at (a WSL symbolic link) is removed as a link is: the entry itself, never followed.
+    if (info === undefined || info.isSymbolicLink()) await removeLink(full);
     else if (info.isDirectory()) await removeStaged(full);
     else await unlink(full);
   }

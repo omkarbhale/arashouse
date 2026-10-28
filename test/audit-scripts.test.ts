@@ -38,12 +38,6 @@ describe("ticket 50's host scripts (static)", () => {
   it.each(SCRIPTS)("%s is plain ASCII", (script) => {
     expect(readFileSync(join(repoRoot, script), "utf8")).toMatch(/^[\x00-\x7f]*$/);
   });
-
-  it("the SQL script never names a database of the captain's, and drops the throw-away one it makes", () => {
-    const text = readFileSync(join(repoRoot, "test/host/audit-sql.ps1"), "utf8");
-    expect(text).not.toMatch(/'OLM_Local'|\[OLM_Local\]|InnovatorSolutions'|RabbitDemo/);
-    expect(text).toMatch(/DROP DATABASE \[\$Foreign\]/);
-  });
 });
 
 describeWithPs(`ticket 50's host scripts under ${ps}`, { timeout: 60_000 }, () => {

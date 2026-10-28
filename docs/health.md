@@ -24,8 +24,8 @@ record. Each check is named in the result, with its milliseconds; `ok` only when
 | `client` | `http://localhost/<alias>/Client/` answers 200 to 399 |
 | `dblist` | `Server/DBList.aspx` answers 200 and lists exactly the slot's one database |
 | `oauth` | `OAuthServer/.well-known/openid-configuration` answers 200 |
-| `tree` | the `fast` manifest verify of the slot tree against golden (`docs/manifest.md`), the eight rendered files required present, the stamp left out |
-| `configs` | each edit of the edit list holds in the slot's files (`verifyFile`, `docs/edits.md`), with the slot's names, its stored SQL login passwords and the stored licence |
+| `tree` | the `fast` manifest verify of the slot tree against golden (`docs/manifest.md`), the rendered config files and the OAuth signing certificate's files required present, the stamp left out |
+| `configs` | each edit of the edit list holds in the slot's files (`verifyFile`, `docs/edits.md`), with the slot's names, its stored SQL login passwords, the stored licence and its signing certificate's stored password (`slot-<key>-<NN>-oauth`); and the signing certificate is the slot's own: its pfx is there, every copy of `OAuthServer.cer` is one certificate, and not golden's (`docs/reset.md`). A slot provisioned before ticket 54 has no stored password and fails, so `get` sends it to a reset, which makes one |
 | `marker` | the database carries `arashouse.golden_hash` equal to the stamp's golden hash, and an `arashouse.reset_at` time (one `slot-steps.ps1 -Step read-database` process, read only) |
 | `version` | the `innovator.VARIABLE` rows `VersionMajor` and `VersionBuild` are the flavor's server build (`12.0.0.24090`: 12 and 24090) |
 | `login` | `root` logs in with a one-time password (below) |

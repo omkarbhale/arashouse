@@ -86,8 +86,8 @@ used: it frees the files but not the SQL sessions (spike 06). No per-file lock c
 |---|---|---|
 | `golden` | reads `golden\<key>\manifest.json`; its hash must be the `golden.hash` the reset began with | promoting, missing, unusable or another hash: `Retryable`; no slot folder: `Refused`; the slot's stored SQL login passwords gone: `Quarantine` (a reset never makes new ones; `repair --rebuild`) |
 | `mirror` | refuses a slot that still runs anything (`Refused`: not quiesced); then `robocopy <golden>\tree <slot> /MIR /XJ /R:2 /W:1 /MT:16`. No `/XF`: robocopy matches it on the source side, so it cannot protect the slot's configs (spike 06), and the mirror takes the old stamp away with everything else golden lacks. Then the runtime state the mirror leaves: the whole runtime folders (`Innovator\Server\temp`, `dll`, `logs`) emptied, the vault folder `vaults\<key>-<NN>` emptied, and ASP.NET's temporary files of the alias removed. A link or junction is removed itself, never followed; a runtime folder or slot folder that is one fails the step. The runtime files golden itself holds (`jsBundles\data.json`, OAuth's SQLite file and keys, the 14.x server's data-protection key in `Innovator\Server\App_Data`) are golden's again after the mirror, and one golden lacks (the 14.x client's key, written at its first request) goes with it | robocopy 8 or more, a junction, no vault folder: `Retryable` |
-| `configs` | the edit list rendered from golden's bytes with the slot's names, its stored login passwords and the line's stored `<License>` element (`docs/edits.md`), as a provision does | `Retryable` |
-| `verify` | the `fast` verify of the slot tree against the golden manifest (`docs/manifest.md`), with the eight rendered files required present and each read back and compared with its rendering, byte for byte | any difference: `Quarantine`, with the counts and the first paths |
+| `configs` | the edit list rendered from golden's bytes with the slot's names, its stored login passwords and the line's stored `<License>` element (`docs/edits.md`), and a new OAuth signing certificate (below), as a provision does | `Retryable` |
+| `verify` | the `fast` verify of the slot tree against the golden manifest (`docs/manifest.md`), with the rendered config files and the signing certificate's files required present and each read back and compared with what was written, byte for byte | any difference: `Quarantine`, with the counts and the first paths |
 | `stamp` | `.arashouse-slot.json`: the slot id, flavor, golden manifest hash, the reset time, no lease. Only after the four parts before it succeed | `Retryable` |
 
 Every part is idempotent, so the policy's retry runs the whole step again. A reset that fails before the stamp
@@ -97,6 +97,30 @@ gives the robocopy and clearing seconds, the counts cleared, the configs and eac
 
 The broker runs one provision, destroy, quiesce, tree reset or stamp write per slot at a time (`SlotLocks`); a second
 is `Retryable`.
+
+### The OAuth signing certificate (ticket 54)
+
+An Aras access token is a self-contained JWT (`accessTokenLifetime` 3600 s) that the OAuth server signs with
+`OAuthServer\App_Data\Certificates\OAuthServer.pfx` and that the server, the vault, the agent and the other applications
+check against their copy of `OAuthServer.cer` (`App_Data\Certificates\`). Nothing the reset restores holds a token, so
+with golden's certificate in every slot of a flavor, the previous leaseholder could act as root on the next lease of the
+same slot until the token expired (tickets 35 and 36). So every render of a slot's configs, at a provision and at every
+reset, gives the slot a certificate of its own (`src/broker/signing-cert.ts`):
+
+1. a new password, 128 random bits as 32 hex characters (the install's own is 32 characters), stored as
+   `slot-<key>-<NN>-oauth` (`oauth-cert`) before any file is written;
+2. `slot-steps.ps1 -Step signing-cert`, with the password on its stdin only: a self-signed RSA 2048, SHA-256 certificate,
+   `CN=Aras Innovator`, valid from a day ago for ten years, with its key in the provider the install's pfx names
+   (Microsoft Enhanced Cryptographic Provider, key exchange: the OAuth server loads it as it loads golden's), exported as
+   a pfx encrypted with the password, the key container deleted; it answers the pfx and the public .cer only;
+3. the password rendered into `OAuthServer\OAuth.config` (`<tokenSigning>` and the OAuth server's own client assertion,
+   the edit list's `oauth_signing_password`; a golden's `edits.json` from before ticket 54 gets the two edits at render,
+   `withSigningCertificate`), the pfx over golden's, and the .cer over every `App_Data/Certificates/OAuthServer.cer` the
+   golden manifest lists (the server's, the vault's and the OAuth server's own in every flavor, with the reporting
+   server's, the agent's or the client's where the release has one).
+
+The `verify` part reads every one back, and the health check holds the slot to it (`docs/health.md`). A token issued
+before the reset is refused by the next lease of the slot; the e2e checks it (`docs/e2e-12sp9.md`, `docs/e2e-23.md`).
 
 ### Measured on the host (2026-10-27, `12sp9`)
 

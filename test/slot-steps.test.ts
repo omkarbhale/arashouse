@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { X509Certificate, randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { renderBuildStepsScript } from "../src/broker/baseline-steps.js";
+import { RESULT_MARKER, renderBuildStepsScript } from "../src/broker/baseline-steps.js";
 import { PS_DENY_LIST_PRINTS } from "../src/broker/ps-common.js";
 import { RESERVED_AGENT_PORTS, SECRET_STEPS, SLOT_STEPS, renderSlotStepsScript } from "../src/broker/slot-steps.js";
 import { FLAVORS, FLAVOR_KEYS } from "../src/core/flavors.js";
@@ -20,9 +21,9 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain(`if (@(${SECRET_STEPS.map((s) => `'${s}'`).join(", ")}) -ccontains $Step)`);
   });
 
-  it("takes nothing from the request but the flavor, the slot number, the agent switch, the two login passwords, the reset's marker and a secret's name and value", () => {
+  it("takes nothing from the request but the flavor, the slot number, the agent switch, the two login passwords, the reset's marker, a secret's name and value and a certificate's password", () => {
     const used = [...steps.matchAll(/\$request\.([A-Za-z.]+)/g)].map((m) => m[1]);
-    expect([...new Set(used)].sort()).toEqual(["agent", "flavor", "marker.goldenHash", "marker.resetAt", "name", "secrets.dbo", "secrets.reg", "slot", "value"]);
+    expect([...new Set(used)].sort()).toEqual(["agent", "flavor", "marker.goldenHash", "marker.resetAt", "name", "secrets.dbo", "secrets.password", "secrets.reg", "slot", "value"]);
     expect(steps).toContain("if ($request.agent -eq $true) {");
     expect(steps).toContain("if ($hash -cnotmatch '^[0-9a-f]{64}$') { Stop-Step 'the request names no golden hash' }");
     expect(steps).toContain("if ($at -cnotmatch '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d{1,3})?Z$') { Stop-Step 'the request names no reset time' }");
@@ -142,6 +143,13 @@ describe("slot-steps.ps1 (static)", () => {
     expect(steps).toContain('if ($left.Count -gt 0) { Stop-Step "the slot still runs after the wait: $($left -join \', \')" }');
   });
 
+  it("makes a signing certificate with the password from stdin only, and deletes its key container", () => {
+    expect(steps).toContain("$password = [string]$request.secrets.password");
+    expect(steps).toContain("$cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password)");
+    expect(steps).toContain("$rsa.PersistKeyInCsp = $false");
+    expect(steps).toContain("Write-Result @{ pfx = [Convert]::ToBase64String($pfx); cer = [Convert]::ToBase64String($cer) }");
+  });
+
   it("keeps a secret out of everything but the DPAPI blob and the one result line that answers a get", () => {
     expect(steps).toContain("[Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($value), $null, [Security.Cryptography.DataProtectionScope]::LocalMachine)");
     expect(steps).toContain("Write-Result @{ found = $true; value = [Text.Encoding]::UTF8.GetString($plain) }");
@@ -182,6 +190,47 @@ describeWithPs("slot-steps.ps1 under Windows PowerShell", () => {
         cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
       });
       expect(r.stdout.trim()).toBe("errors=0");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("makes a signing certificate the OAuth server loads as golden's: RSA 2048, SHA-256, the install's key provider, opened by its password only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "arashouse-slot-steps-"));
+    try {
+      writeFileSync(join(dir, "slot-steps.ps1"), steps.replace(/\n/g, "\r\n"), "ascii");
+      const win = (p: string) => execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim();
+      const cwd = existsSync("/mnt/c") ? "/mnt/c" : undefined;
+      const password = randomBytes(16).toString("hex");
+      const made = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", win(join(dir, "slot-steps.ps1")), "-Step", "signing-cert"], {
+        encoding: "utf8",
+        cwd,
+        input: JSON.stringify({ flavor: "23", slot: 1, secrets: { password } }),
+      });
+      expect(made.status).toBe(0);
+      expect(made.stdout + made.stderr).not.toContain(password);
+      const line = made.stdout.split(/\r?\n/).find((l) => l.startsWith(RESULT_MARKER))!;
+      const result = JSON.parse(line.slice(RESULT_MARKER.length)) as { pfx: string; cer: string };
+
+      const cer = new X509Certificate(Buffer.from(result.cer, "base64"));
+      expect(cer.subject).toBe("CN=Aras Innovator");
+      expect(cer.verify(cer.publicKey)).toBe(true);
+      expect(cer.publicKey.asymmetricKeyDetails?.modulusLength).toBe(2048);
+      expect(Date.parse(cer.validTo) - Date.now()).toBeGreaterThan(9 * 365 * 86_400_000);
+
+      // As the OAuth server opens it: by path and password, under .NET Framework; then the key container is deleted.
+      writeFileSync(join(dir, "OAuthServer.pfx"), Buffer.from(result.pfx, "base64"));
+      const open = [
+        "$pw = [Console]::In.ReadLine()",
+        `try { [void](New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList '${win(join(dir, "OAuthServer.pfx"))}', 'wrong'); 'wrong=opened' } catch { 'wrong=refused' }`,
+        `$c = New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList '${win(join(dir, "OAuthServer.pfx"))}', $pw`,
+        "$k = $c.PrivateKey",
+        "'{0}|{1}|{2}|{3}' -f $c.Thumbprint, $k.GetType().Name, $k.CspKeyContainerInfo.ProviderName, $k.CspKeyContainerInfo.KeyNumber",
+        "$k.PersistKeyInCsp = $false; $k.Clear()",
+      ].join("; ");
+      const opened = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-Command", open], { encoding: "utf8", cwd, input: `${password}\n` });
+      const lines = opened.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      expect(lines).toEqual(["wrong=refused", `${cer.fingerprint.replace(/:/g, "")}|RSACryptoServiceProvider|Microsoft Enhanced Cryptographic Provider v1.0|Exchange`]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

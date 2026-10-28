@@ -10,12 +10,23 @@
 
 import { win32 } from "node:path";
 import { OOTB_OWNER, compareDenyList, goldenJson, type DenyListDiff, type DenyListSnapshot } from "../core/baseline.js";
-import { withLicenceElement } from "../core/edit-lists.js";
+import { withLicenceElement, withSigningCertificate } from "../core/edit-lists.js";
 import { editListFiles, editVars, parseEditList, renderFile, secretsNeeded, type EditList, type EditSecrets, type SecretHandle } from "../core/edits.js";
 import { FLAVORS, type FlavorKey } from "../core/flavors.js";
 import { decodeLicence, licenceSecretName } from "../core/licence.js";
-import type { Manifest, ManifestDiff } from "../core/manifest.js";
-import { goldenLayout, slotId, slotLoginSecretName, slotRootSecretName, stampFile, type LoginRole, type SlotNames, type SlotRef } from "../core/names.js";
+import { ManifestError, parseManifest, type Manifest, type ManifestDiff } from "../core/manifest.js";
+import {
+  buildScratch,
+  goldenLayout,
+  slotId,
+  slotLoginSecretName,
+  slotOAuthSecretName,
+  slotRootSecretName,
+  stampFile,
+  type LoginRole,
+  type SlotNames,
+  type SlotRef,
+} from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { Secret } from "../core/secret.js";
 import type { SecretStore } from "../core/secret-store.js";
@@ -29,6 +40,7 @@ import type { Broker, VerbContext } from "./broker.js";
 import type { WireResult } from "./protocol.js";
 import { resetDatabaseArgs, resetDatabaseOnHost, type DatabaseMarker, type DatabaseReset, type ResetDatabaseArgs } from "./reset-database.js";
 import { backupDatabaseArgs, backupDatabaseOnHost, type BackupDatabaseArgs, type DatabaseBackup } from "./backup-database.js";
+import { newSlotSigningCertificate, type SigningCertificate } from "./signing-cert.js";
 
 /** The provision's steps, in order; `destroySlot` undoes them in reverse. */
 export const PROVISION_STEPS = ["golden", "snapshot", "folders", "tree", "iis", "agent", "database", "configs", "stamp", "deny-list"] as const;
@@ -139,6 +151,8 @@ export interface SlotSystem {
   readDatabase(slot: SlotRef): Promise<DatabaseReading>;
   /** The same stop, failing when anything of the slot still runs after the wait; false when the slot has no folder. */
   quiesce(slot: SlotRef): Promise<boolean>;
+  /** A new OAuth signing certificate for the slot, its pfx encrypted with `password` (ticket 54, signing-cert.ts). */
+  newSigningCertificate(slot: SlotRef, password: Secret): Promise<SigningCertificate>;
   /** On a quiesced slot: the mirror from golden, then the runtime folders, the vault folder and ASP.NET's temporary files cleared. */
   resetTree(slot: SlotRef): Promise<TreeReset>;
   /** The slot's tree against the golden manifest at the `fast` level, the rendered config files left to the caller. */
@@ -223,6 +237,25 @@ export class Timings {
   }
 }
 
+/** The flavor's golden manifest as it is now: `Retryable` while a new golden is moved into place or when there is none. */
+export async function currentGoldenManifest(system: SlotSystem, slot: SlotRef, root: string): Promise<Manifest> {
+  if ((await system.readFile(buildScratch(slot.flavor, root).promotingMarker)) !== null) {
+    throw new HostError("Retryable", `a new ${slot.flavor} golden is being moved into place`);
+  }
+  const file = goldenLayout(slot.flavor, root).manifest;
+  const bytes = await system.readFile(file);
+  if (bytes === null) throw new HostError("Retryable", `${file} does not exist (is the ${slot.flavor} baseline built?)`);
+  let manifest: Manifest;
+  try {
+    manifest = parseManifest(new TextDecoder().decode(bytes));
+  } catch (err) {
+    if (!(err instanceof ManifestError)) throw err;
+    throw new HostError("Retryable", `the ${slot.flavor} golden manifest is unusable: ${err.message}`);
+  }
+  if (manifest.flavor !== slot.flavor) throw new HostError("Refused", `${file} is the manifest of flavor ${manifest.flavor}`);
+  return manifest;
+}
+
 /** The slot's stored login passwords, or undefined when either is missing or unusable (a reset never makes new ones). */
 export async function storedLogins(store: SecretStore, slot: SlotRef): Promise<SlotLogins | undefined> {
   const out: Partial<Record<LoginRole, Secret>> = {};
@@ -249,7 +282,7 @@ async function loginPasswords(store: SecretStore, slot: SlotRef): Promise<SlotLo
   return out as SlotLogins;
 }
 
-/** The config files a render wrote: each one's tree-relative path (`/`-separated, as the edit list names it) and bytes. */
+/** The files a render wrote: each one's tree-relative path (`/`-separated, as the edit list names it) and bytes. */
 export interface RenderedConfigs {
   readonly detail: string;
   readonly files: readonly { readonly file: string; readonly bytes: Uint8Array }[];
@@ -259,23 +292,32 @@ const LICENCE_HANDLES = ["licence", "licence_act_key", "licence_type", "licence_
 
 /**
  * The golden's edit list (`golden\<key>\edits.json`), which must be the slot's flavor's, with the whole `<License>` element
- * also when the golden's list predates it (`withLicenceElement`).
+ * and the OAuth signing certificate's password also when the golden's list predates them (`withLicenceElement`,
+ * `withSigningCertificate`).
  */
 export async function goldenEditList(system: SlotSystem, slot: SlotRef, root: string): Promise<EditList> {
   const layout = goldenLayout(slot.flavor, root);
   const listBytes = await system.readFile(layout.edits);
   if (listBytes === null) throw new Error(`${layout.edits} does not exist`);
-  const list = withLicenceElement(parseEditList(JSON.parse(new TextDecoder().decode(listBytes))));
+  const list = withSigningCertificate(withLicenceElement(parseEditList(JSON.parse(new TextDecoder().decode(listBytes)))));
   if (list.flavor !== slot.flavor) throw new Error(`${layout.edits} is the edit list of flavor ${list.flavor}`);
   return list;
 }
 
 /**
- * The secrets the edit list names, as a render uses them: the slot's login passwords, and the whole `<License>` element
- * from the host's store (`licence-<line>`; blank without one). `licensed` says whether a licence was stored.
+ * The secrets the edit list names, as a render uses them: the slot's login passwords, the whole `<License>` element from
+ * the host's store (`licence-<line>`; blank without one), and the signing certificate's password, which is a render's
+ * new one (`signing`) or else the slot's stored one (blank without one). `licensed` and `signed` say whether each was there.
  */
-export async function configSecrets(system: SlotSystem, slot: SlotRef, list: EditList, logins: SlotLogins): Promise<{ secrets: EditSecrets; licensed: boolean }> {
+export async function configSecrets(
+  system: SlotSystem,
+  slot: SlotRef,
+  list: EditList,
+  logins: SlotLogins,
+  signing?: Secret,
+): Promise<{ secrets: EditSecrets; licensed: boolean; signed: boolean }> {
   const needed = secretsNeeded(list);
+  const signingPassword = signing ?? (needed.includes("oauth_signing_password") ? await system.secrets.get(slotOAuthSecretName(slot)) : undefined);
   const stored = needed.some((h) => (LICENCE_HANDLES as readonly SecretHandle[]).includes(h))
     ? await system.secrets.get(licenceSecretName(FLAVORS[slot.flavor].licence.line))
     : undefined;
@@ -288,19 +330,23 @@ export async function configSecrets(system: SlotSystem, slot: SlotRef, list: Edi
     licence_act_key: licence?.act_key ?? blank,
     licence_type: licence?.lic_type ?? blank,
     licence_company: licence?.company ?? blank,
+    oauth_signing_password: signingPassword ?? Secret.of("", "oauth-cert"),
   };
-  return { secrets: Object.fromEntries(needed.map((h) => [h, available[h]])), licensed: licence !== undefined };
+  return { secrets: Object.fromEntries(needed.map((h) => [h, available[h]])), licensed: licence !== undefined, signed: signingPassword !== undefined };
 }
 
 /**
- * Renders the golden's edit list into the slot's config files, from the golden's bytes. The whole `<License>` element
- * comes from the host's store (`licence-<line>`); without one it renders blank and the detail says so.
+ * Renders the golden's edit list into the slot's config files, from the golden's bytes, with a new OAuth signing
+ * certificate (signing-cert.ts): its password into `OAuth.config` and its files over golden's, which `manifest` names.
+ * The whole `<License>` element comes from the host's store (`licence-<line>`); without one it renders blank and the
+ * detail says so.
  */
-export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, logins: SlotLogins): Promise<RenderedConfigs> {
+export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: string, logins: SlotLogins, manifest: Manifest): Promise<RenderedConfigs> {
   const layout = goldenLayout(slot.flavor, root);
   const list = await goldenEditList(system, slot, root);
   const needed = secretsNeeded(list);
-  const { secrets, licensed } = await configSecrets(system, slot, list, logins);
+  const signing = await newSlotSigningCertificate(system, slot, manifest);
+  const { secrets, licensed } = await configSecrets(system, slot, list, logins, signing.password);
   const slotDir = win32.dirname(stampFile(slot, root));
   let applied = 0;
   const files = editListFiles(list);
@@ -314,8 +360,12 @@ export async function renderConfigs(system: SlotSystem, slot: SlotRef, root: str
     await system.writeFile(win32.join(slotDir, ...parts), rendered.bytes);
     written.push({ file, bytes: rendered.bytes });
   }
+  for (const { file, bytes } of signing.files) {
+    await system.writeFile(win32.join(slotDir, ...file.split("/")), bytes);
+    written.push({ file, bytes });
+  }
   const note = needed.includes("licence") && !licensed ? `; no licence key is stored for line ${FLAVORS[slot.flavor].licence.line}, so the slot cannot log in yet` : "";
-  return { detail: `${files.length} files, ${applied} edits${note}`, files: written };
+  return { detail: `${files.length} files, ${applied} edits, a new OAuth signing certificate (${signing.files.length} files)${note}`, files: written };
 }
 
 /**
@@ -367,6 +417,7 @@ async function removeSlot(system: SlotSystem, slot: SlotRef, names: SlotNames, t
   await attempt("secrets", async () => {
     for (const role of LOGIN_ROLES) await system.secrets.delete(slotLoginSecretName(slot, role));
     await system.secrets.delete(slotRootSecretName(slot));
+    await system.secrets.delete(slotOAuthSecretName(slot));
   });
   let left: readonly string[];
   try {
@@ -409,7 +460,9 @@ export async function provisionSlotOnHost(system: SlotSystem, slot: SlotRef, nam
       return l;
     });
     step = "configs";
-    const configs = await timings.run(step, () => renderConfigs(system, slot, root, logins));
+    const configs = await timings.run(step, async () => {
+      return renderConfigs(system, slot, root, logins, await currentGoldenManifest(system, slot, root));
+    });
     step = "stamp";
     await timings.run(step, () => system.writeFile(stampFile(slot, root), goldenJson(provisionStamp(slot, golden.hash, system.now()))));
     step = "deny-list";

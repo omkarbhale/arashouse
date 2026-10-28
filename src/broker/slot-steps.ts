@@ -7,7 +7,8 @@
 //   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File slot-steps.ps1 -Step <step>
 //
 // with a JSON request on stdin (`{ "flavor": "12sp9", "slot": 1 }`; the slot's SQL login passwords
-// travel only there, only to the `database` step, and a stored secret only to `secret-put`) and one
+// travel only there, only to the `database` step, a new signing certificate's password only to
+// `signing-cert`, and a stored secret only to `secret-put`) and one
 // `@@arashouse@@ <json>` line on stdout. Like baseline-steps.ps1 it takes no name or path from the
 // request: it derives every one from the flavor and the slot number, with the rules of
 // src/core/names.ts, and refuses a flavor that is not registered or a number outside 1 to 99.
@@ -31,6 +32,7 @@ import {
   goldenDir,
   slotDir,
   slotLoginSecretName,
+  slotOAuthSecretName,
   slotRootSecretName,
   vaultDir,
   webAlias,
@@ -56,6 +58,7 @@ export const SLOT_STEPS = [
   "quiesce",
   "reset-tree",
   "clear-aspnet",
+  "signing-cert",
   "remove-agent",
   "remove-database",
   "remove-iis",
@@ -86,6 +89,7 @@ function checkNameRules(root: string): void {
     [extractBackupScratch(ref, root), `${root}\\sqldata\\arashouse_${ref.flavor}_07-extract.bak`],
     [slotLoginSecretName(ref, "dbo"), `slot-${ref.flavor}-07-dbo`],
     [slotRootSecretName(ref), `slot-${ref.flavor}-07-root`],
+    [slotOAuthSecretName(ref), `slot-${ref.flavor}-07-oauth`],
   ];
   for (const [derived, scripted] of checks) {
     if (derived !== scripted) throw new Error(`a name rule changed (${derived}); update slot-steps.ts with names.ts`);
@@ -166,7 +170,7 @@ if (${list(SECRET_STEPS)} -ccontains $Step) {
     $DataFile = Join-Path $SqlData "$Database.mdf"
     $LogFile = Join-Path $SqlData "$($Database)_log.ldf"
     $ExtractBackup = Join-Path $SqlData "$($Database)-extract.bak"
-    $SlotSecrets = @("slot-$Flavor-$NN-dbo", "slot-$Flavor-$NN-reg", "slot-$Flavor-$NN-root")
+    $SlotSecrets = @("slot-$Flavor-$NN-dbo", "slot-$Flavor-$NN-reg", "slot-$Flavor-$NN-root", "slot-$Flavor-$NN-oauth")
 }
 
 ${PS_PATHS_AND_PRINTS}
@@ -633,6 +637,42 @@ switch ($Step) {
         $serving = @(Get-Serving)
         if ($serving.Count -gt 0) { Stop-Step "the slot still runs: $($serving -join ', ')" }
         Write-Result @{ aspnetFolders = (Clear-AspNetTemp) }
+    }
+    'signing-cert' {
+        # A new OAuth signing certificate for the slot (ticket 54, src/broker/signing-cert.ts): RSA 2048, SHA-256, self-signed,
+        # as the install makes it, with the key in the provider the install's pfx names (the Enhanced Cryptographic Provider,
+        # key exchange), so the OAuth server loads it as it loads golden's. The pfx is encrypted with the request's password;
+        # the key container is deleted before the step ends; only the pfx and the public .cer go back.
+        $password = [string]$request.secrets.password
+        $request = $null
+        if ($password.Length -lt 16) { Stop-Step 'the request carries no usable certificate password' }
+        $container = 'arashouse-' + [guid]::NewGuid().ToString('N')
+        $base = New-Object Security.Cryptography.CspParameters -ArgumentList 1, 'Microsoft Enhanced Cryptographic Provider v1.0', $container
+        $base.KeyNumber = 1
+        $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider -ArgumentList 2048, $base
+        $signer = $null
+        try {
+            # The same key through the AES provider, which can sign with SHA-256 (the base provider cannot).
+            $aes = New-Object Security.Cryptography.CspParameters -ArgumentList 24, 'Microsoft Enhanced RSA and AES Cryptographic Provider', $container
+            $aes.KeyNumber = 1
+            $aes.Flags = [Security.Cryptography.CspProviderFlags]::UseExistingKey
+            $signer = New-Object Security.Cryptography.RSACryptoServiceProvider -ArgumentList $aes
+            $req = New-Object Security.Cryptography.X509Certificates.CertificateRequest -ArgumentList 'CN=Aras Innovator', $signer, ([Security.Cryptography.HashAlgorithmName]::SHA256), ([Security.Cryptography.RSASignaturePadding]::Pkcs1)
+            $now = [DateTimeOffset]::UtcNow
+            $signed = $req.CreateSelfSigned($now.AddDays(-1), $now.AddYears(10))
+            $public = New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList (,$signed.RawData)
+            # The certificate with the key as the base provider holds it, which is what the pfx then names.
+            $cert = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::CopyWithPrivateKey($public, $rsa)
+            $pfx = $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $password)
+            $cer = $cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+            $cert.Reset(); $public.Reset(); $signed.Reset()
+        } finally {
+            if ($signer) { $signer.Dispose() }
+            $rsa.PersistKeyInCsp = $false
+            $rsa.Clear()
+            $password = $null
+        }
+        Write-Result @{ pfx = [Convert]::ToBase64String($pfx); cer = [Convert]::ToBase64String($cer) }
     }
     'remove-agent' {
         $svc = Get-SlotService

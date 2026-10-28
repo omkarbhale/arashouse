@@ -398,6 +398,14 @@ export function slotRootSecretName(ref: SlotRef): string {
   return `slot-${dashTag(ref)}-root`;
 }
 
+/**
+ * `slot-<key>-<NN>-oauth`: the password of the slot's OAuth signing certificate (`OAuthServer.pfx`), which every render of
+ * the slot's configs makes new with the certificate and the health check verifies `OAuth.config` with (ticket 54).
+ */
+export function slotOAuthSecretName(ref: SlotRef): string {
+  return `slot-${dashTag(ref)}-oauth`;
+}
+
 /** `ootb-root-<key>`: the password `root` has in the flavor's golden backup, which a restore brings back. */
 export function ootbRootSecretName(flavor: FlavorKey): string {
   if (!isFlavorKey(flavor)) throw new Error(`unknown flavor "${String(flavor)}"`);

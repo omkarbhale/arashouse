@@ -1,7 +1,7 @@
 import { win32 } from "node:path";
 import { describe, expect, it } from "vitest";
 import { licenceSecretName } from "../core/licence.js";
-import { DEFAULT_INSTALL_ROOT, buildScratch, ootbRootSecretName, slotNames, slotRootSecretName, stampFile, type SlotRef } from "../core/names.js";
+import { DEFAULT_INSTALL_ROOT, buildScratch, ootbRootSecretName, slotNames, slotOAuthSecretName, slotRootSecretName, stampFile, type SlotRef } from "../core/names.js";
 import { Secret } from "../core/secret.js";
 import type { HealthCheckEntry } from "../host/driver.js";
 import { HostError } from "../host/errors.js";
@@ -181,6 +181,41 @@ describe("healthCheck", () => {
     const config = await check(clean);
     expect(config.failed).toEqual(["configs"]);
     expect(config.byName.configs?.detail).toMatch(/^\d+ edits do not hold: InnovatorServerConfig\.xml /);
+  });
+
+  it("fails a slot that signs with golden's certificate, whose copies differ, or whose signing password is not stored", async () => {
+    const goldenCer = (rel: string) => win32.join(ROOT, "golden", "12sp9", "tree", ...rel.split("/"));
+    const cers = ["OAuthServer/App_Data/Certificates/OAuthServer.cer", "Innovator/Server/App_Data/Certificates/OAuthServer.cer", "VaultServer/App_Data/Certificates/OAuthServer.cer"];
+
+    const own = await provisioned();
+    const ok = await check(own);
+    expect(ok.failed).toEqual([]);
+    expect(ok.byName.configs?.detail).toBe("9 files hold their rendering; the OAuth signing certificate is the slot's own");
+
+    const golden = await provisioned();
+    for (const rel of cers) golden.put(inSlot(rel), golden.text(goldenCer(rel))!);
+    const g = await check(golden);
+    expect(g.failed).toEqual(["configs"]);
+    expect(g.byName.configs?.detail).toBe("the slot signs with golden's certificate, not its own (a reset makes it one)");
+
+    const mixed = await provisioned();
+    mixed.put(inSlot(cers[2]!), "another certificate");
+    const m = await check(mixed);
+    expect(m.failed).toEqual(["configs"]);
+    expect(m.byName.configs?.detail).toMatch(/^vaultserver\/app_data\/certificates\/oauthserver\.cer is not the certificate of /);
+
+    const unstored = await provisioned();
+    await unstored.secrets.delete(slotOAuthSecretName(s1));
+    const u = await check(unstored);
+    expect(u.failed).toEqual(["configs"]);
+    expect(u.byName.configs?.detail).toBe("the password of 12sp9-01's OAuth signing certificate is not stored (a slot provisioned before ticket 54; a reset makes it one)");
+
+    const password = await provisioned();
+    password.put(inSlot("OAuthServer/OAuth.config"), password.text(goldenCer("OAuthServer/OAuth.config"))!.replace(/ah-build-12sp9/g, ALIAS));
+    const p = await check(password);
+    expect(p.failed).toEqual(["configs"]);
+    expect(p.byName.configs?.detail).toMatch(/^2 edits do not hold: OAuthServer\/OAuth\.config \/oauth\/server\/tokenSigning\/certificate\/@password: /);
+    expect(JSON.stringify(p.result)).not.toContain((await password.secrets.get(slotOAuthSecretName(s1)))!.reveal());
   });
 
   it("fails a slot whose server does not answer, lists other databases, or is another version; the login is not tried without a server", async () => {

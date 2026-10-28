@@ -20,7 +20,21 @@ import {
   type ManifestDiff,
   type ObservedFile,
 } from "../core/manifest.js";
-import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, extractBackupScratch, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, slotRootSecretName, type SlotRef } from "../core/names.js";
+import {
+  DATABASE_MARKER,
+  DEFAULT_INSTALL_ROOT,
+  agentPort,
+  databaseName,
+  extractBackupScratch,
+  goldenLayout,
+  loginName,
+  slotId,
+  slotLoginSecretName,
+  slotNames,
+  slotOAuthSecretName,
+  slotRootSecretName,
+  type SlotRef,
+} from "../core/names.js";
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
 import type { ArasHttp } from "./aras-http.js";
@@ -28,18 +42,28 @@ import { HostError } from "../host/errors.js";
 import type { DatabaseReading, EntryKind, GoldenCheck, SlotLogins, SlotSystem, StagedListing, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
 import type { DatabaseBackup } from "./backup-database.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
+import type { SigningCertificate } from "./signing-cert.js";
 
 export const FAKE_GOLDEN_HASH = "9".repeat(64);
 
 /** Every file of the fake has this last-write time. */
 const MTIME = "2026-10-28T10:00:00.0000000Z";
 
-/** Golden files beyond the configs: a client script, the server's main DLL, and runtime files the build left. */
+/** The golden's OAuth signing certificate and the copies of its public part (ticket 54): measured on 12sp9, 23 and 35. */
+export const GOLDEN_SIGNING_FILES: Readonly<Record<string, string>> = {
+  "OAuthServer/App_Data/Certificates/OAuthServer.pfx": "golden pfx",
+  "OAuthServer/App_Data/Certificates/OAuthServer.cer": "golden cer",
+  "Innovator/Server/App_Data/Certificates/OAuthServer.cer": "golden cer",
+  "VaultServer/App_Data/Certificates/OAuthServer.cer": "golden cer",
+};
+
+/** Golden files beyond the configs: a client script, the server's main DLL, runtime files the build left, and the signing certificate. */
 export const GOLDEN_EXTRA_FILES: Readonly<Record<string, string>> = {
   "Innovator/Client/scripts/main.js": "main",
   "Innovator/Server/bin/Aras.Server.Core.dll": "dll",
   "Innovator/Server/temp/build.log": "log",
   "Innovator/Client/jsBundles/data.json": "{}",
+  ...GOLDEN_SIGNING_FILES,
 };
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -59,6 +83,8 @@ export class FakeSlotSystem implements SlotSystem {
   readonly objects = new Set<string>();
   /** The login passwords the database step was given, by login name. */
   readonly loginSecrets = new Map<string, Secret>();
+  /** The signing certificates made, in order: the slot, and the password each pfx was encrypted with. */
+  readonly signingCertificates: { readonly slot: string; readonly password: Secret }[] = [];
   /** Whether the golden has an agent service (ticket 33b), so a provision makes the slot's and a start can start it. */
   agentInstalled = false;
   /** The slots whose pools run, and whose agent runs, by slot id. */
@@ -142,6 +168,7 @@ export class FakeSlotSystem implements SlotSystem {
     left.push(...this.filesUnder(n.slotDir).map((f) => `file ${f}`));
     for (const role of ["dbo", "reg"] as const) if (await this.secrets.has(slotLoginSecretName(slot, role))) left.push(`secret ${role}`);
     if (await this.secrets.has(slotRootSecretName(slot))) left.push("secret root");
+    if (await this.secrets.has(slotOAuthSecretName(slot))) left.push("secret oauth");
     return left;
   }
 
@@ -269,6 +296,16 @@ export class FakeSlotSystem implements SlotSystem {
     if (!this.objects.has(slotNames(slot, this.root).slotDir)) return false;
     for (const set of [this.serving, this.running, this.agentRunning]) set.delete(slotId(slot));
     return true;
+  }
+
+  /** A made-up certificate, new each time: a DER-like .cer (a SEQUENCE tag) and a pfx naming it, neither holding the password. */
+  async newSigningCertificate(slot: SlotRef, password: Secret): Promise<SigningCertificate> {
+    this.record("newSigningCertificate", slot);
+    this.signingCertificates.push({ slot: slotId(slot), password });
+    const n = this.signingCertificates.length;
+    const cer = new Uint8Array(128).fill(n % 256);
+    cer[0] = 0x30;
+    return { pfx: new TextEncoder().encode(`fake pfx ${n} of ${slotId(slot)}`), cer };
   }
 
   async resetTree(slot: SlotRef): Promise<TreeReset> {

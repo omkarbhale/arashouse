@@ -1,9 +1,10 @@
-// The Secret value type. Six kinds exist: the SQL `sa` password (ticket 22), licence keys
+// The Secret value type. Seven kinds exist: the SQL `sa` password (ticket 22), licence keys
 // (ticket 23), per-lease Aras passwords (ticket 34), a slot's SQL login passwords, which the
 // config edit list writes into the slot's `InnovatorServerConfig.xml` (tickets 19 and 25), the
 // broker's client token (ticket 20), and an Aras login that is not a lease's: the shipped backup's
 // administrator password, which the baseline build logs in with (ticket 24), and a free slot's random
-// `root` password (ticket 34). A Secret prints, serialises and inspects as
+// `root` password (ticket 34), and the password of a slot's OAuth signing certificate, made new by every render of
+// its configs (ticket 54). A Secret prints, serialises and inspects as
 // `[redacted]`; the only way to read it is `reveal()`, which only the files in the allowlist of
 // test/reveal-allowlist.test.ts may call. Secrets come from a hidden prompt or from the environment
 // of a process started for that purpose, never from a flag.
@@ -11,7 +12,7 @@
 import { inspect } from "node:util";
 import { REDACTED, registerSecretValue } from "./redact.js";
 
-export const SECRET_KINDS = ["sql-sa", "licence", "lease-password", "sql-login", "broker-token", "aras-login"] as const;
+export const SECRET_KINDS = ["sql-sa", "licence", "lease-password", "sql-login", "broker-token", "aras-login", "oauth-cert"] as const;
 export type SecretKind = (typeof SECRET_KINDS)[number];
 
 export class Secret {

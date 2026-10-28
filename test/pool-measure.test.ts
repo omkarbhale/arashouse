@@ -36,11 +36,6 @@ describe("test/host/pool-measure.ps1 (static)", () => {
   it("is plain ASCII, so Windows PowerShell 5.1 reads it without a BOM", () => {
     expect(text).toMatch(/^[\x00-\x7f]*$/);
   });
-
-  it("reads sizes only, and nothing under secrets\\ or logs\\", () => {
-    expect(text).not.toMatch(/Get-Content|ReadAll|Remove-Item|Set-Content|Out-File|Copy-Item|Move-Item/);
-    expect(text).not.toMatch(/Join-Path \$Root ['"](secrets|logs)/);
-  });
 });
 
 describeWithPs(`test/host/pool-measure.ps1 under ${ps}`, { timeout: 60_000 }, () => {

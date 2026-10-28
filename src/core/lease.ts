@@ -194,6 +194,17 @@ export interface GetRequest {
   readonly agent?: boolean;
   /** Bring the lease up from a backup (`get --restore`, ticket 39): it is restored over the slot's database before the lease is handed back. */
   readonly restore?: RestoreRequest;
+  /** Told how the restore went, once it has run (a bootstrap recipe's `restore` step, ticket 42); not called without one. */
+  readonly onRestore?: (outcome: RestoreOutcome) => void;
+}
+
+/** What the restore of `get --restore` did, for a bootstrap recipe's step report. The detail is redacted. */
+export interface RestoreOutcome {
+  readonly slot: string;
+  readonly leaseId: string;
+  readonly ok: boolean;
+  readonly ms: number;
+  readonly detail: string;
 }
 
 /** A backup to restore into the lease. */
@@ -358,7 +369,7 @@ export async function getLease(deps: LeaseDeps, request: GetRequest): Promise<Le
   let granted = false;
   try {
     for (;;) {
-      const attempt = await attemptGet(deps, flavor, holder, { agent: request.agent === true, restore: request.restore }, ticket, skipped, lazyFailed);
+      const attempt = await attemptGet(deps, flavor, holder, { agent: request.agent === true, restore: request.restore, onRestore: request.onRestore }, ticket, skipped, lazyFailed);
       if (attempt.kind === "granted") {
         granted = true;
         return attempt.grant;
@@ -402,7 +413,7 @@ async function attemptGet(
   deps: LeaseDeps,
   flavor: FlavorKey,
   holder: string,
-  options: { readonly agent: boolean; readonly restore?: RestoreRequest },
+  options: { readonly agent: boolean; readonly restore?: RestoreRequest; readonly onRestore?: (outcome: RestoreOutcome) => void },
   ticket: number | null,
   skipped: Set<string>,
   lazyFailed: Set<string>,
@@ -493,7 +504,15 @@ async function attemptGet(
     // which setLeaseCredentials then logs in with, as on any free slot.
     if (options.restore) {
       restoring = true;
-      await restoreInto(deps, ref, lease.lease_id, options.restore);
+      const started = clock(deps)();
+      const tell = (ok: boolean, detail: string) =>
+        options.onRestore?.({ slot: candidate.id, leaseId: lease.lease_id, ok, ms: Math.max(0, clock(deps)() - started), detail: redact(detail) });
+      try {
+        tell(true, await restoreInto(deps, ref, lease.lease_id, options.restore));
+      } catch (err) {
+        tell(false, errorText(err));
+        throw err;
+      }
     }
     const credentials = await host.setLeaseCredentials(ref, { secretRef: secretName });
     if (!credentials.ok) throw new HostError("Retryable", `the lease's password could not be set: ${credentials.detail}`);
@@ -532,16 +551,39 @@ async function attemptGet(
   }
 }
 
-/** Stages the backup and restores it over the leased slot's database (ticket 39); the staging folder goes either way. */
-async function restoreInto(deps: LeaseDeps, ref: { readonly flavor: FlavorKey; readonly slot: number }, leaseId: string, restore: RestoreRequest): Promise<void> {
+/** Stages the backup and restores it over the leased slot's database (ticket 39); the staging folder goes either way. Resolves with the host's detail. */
+async function restoreInto(deps: Pick<LeaseDeps, "host" | "staging">, ref: { readonly flavor: FlavorKey; readonly slot: number }, leaseId: string, restore: RestoreRequest): Promise<string> {
   if (!deps.staging) throw new UsageError("get --restore needs a staging folder, which this host has not");
   try {
     const staged = await deps.staging.stageBackup(leaseId, restore.source);
     const restored = await deps.host.restoreDatabase(ref, staged, { allowForeignOrigin: restore.allowForeignOrigin, skipVersionCheck: restore.skipVersionCheck });
     if (!restored.ok) throw new HostError("Retryable", `the backup was not restored: ${restored.detail}`);
+    return restored.detail;
   } finally {
     await deps.staging.clear(leaseId).catch(() => undefined);
   }
+}
+
+/**
+ * Restores a backup over the database of a lease already held (`arashouse bootstrap --lease`, ticket 42), and records it on
+ * the lease as `get --restore` does. The lease keeps its password: the broker carries the `root` and `admin` password
+ * hashes the database has now (the lease's) into the restored one, as it carries a free slot's at `get`. The slot is
+ * started again, with its agent when the lease has it. Throws when the lease is not held or the restore fails; the lease
+ * is kept either way (its holder returns it).
+ */
+export async function restoreLease(deps: Pick<LeaseDeps, "store" | "host" | "staging">, leaseId: string, restore: RestoreRequest): Promise<string> {
+  const slot = Object.values((await deps.store.read()).slots).find((s) => s.status === "leased" && s.lease?.lease_id === leaseId);
+  if (!slot?.lease) throw new LeaseError(EXIT_CODES.leaseMismatch, "that lease is not held (it was returned, or never existed); nothing was restored");
+  const ref = { flavor: slot.flavor, slot: slot.number };
+  const detail = await restoreInto(deps, ref, leaseId, restore);
+  // The imports made onto the lease went with the database it replaced.
+  const info: BootstrapInfo = slot.lease.bootstrap?.imports !== undefined ? { restore: restore.label, imports: 0 } : { restore: restore.label };
+  await deps.store.update((tx) => void tx.recordBootstrap(slot.id, leaseId, info));
+  if (slot.lease.bootstrap?.agent === true) {
+    const started = await deps.host.startSlot(ref, { agent: true });
+    if (!started.ok) throw new HostError("Retryable", `the slot did not start with its agent after the restore: ${started.detail}`);
+  }
+  return detail;
 }
 
 /**

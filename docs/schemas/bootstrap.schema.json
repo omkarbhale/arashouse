@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/omkarbhale/arashouse/docs/schemas/bootstrap.schema.json",
+  "title": "arashouse bootstrap --json",
+  "description": "What `arashouse bootstrap --lease <id> <recipe> --json` prints: the recipe's steps on a lease already held (docs/bootstrap.md). No password.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "slot",
+    "lease_id",
+    "bootstrap"
+  ],
+  "properties": {
+    "slot": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+-[0-9]{2}$"
+    },
+    "lease_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recipe",
+        "steps"
+      ],
+      "properties": {
+        "recipe": {
+          "type": "string",
+          "minLength": 1,
+          "description": "With `--bootstrap`: the recipe file's absolute path (docs/bootstrap.md)."
+        },
+        "steps": {
+          "type": "array",
+          "description": "With `--bootstrap`: the five steps in the order they run (restore, code, import, git, health), each once.",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "status",
+              "ok",
+              "ms",
+              "log",
+              "detail"
+            ],
+            "properties": {
+              "name": {
+                "enum": [
+                  "restore",
+                  "code",
+                  "import",
+                  "git",
+                  "health"
+                ]
+              },
+              "status": {
+                "enum": [
+                  "ok",
+                  "failed",
+                  "skipped"
+                ],
+                "description": "skipped: not in the recipe, or not reached because a step before it failed (the detail says which)."
+              },
+              "ok": {
+                "type": "boolean",
+                "description": "True only when the step ran and passed."
+              },
+              "ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "log": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The step's log: for import, the last aras-pkg log; for the others, $ARASHOUSE_HOME/logs/<lease_id>-bootstrap.log. Null for a skipped step."
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "code": {
+          "type": "array",
+          "description": "One entry per `--code`, in order, as docs/schemas/deploy-code.schema.json describes them. Deploys stop at the first that fails; get then exits 10 with the lease still held, and no import runs.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "subpath",
+              "ok",
+              "files",
+              "deleted",
+              "detail"
+            ],
+            "properties": {
+              "source": {
+                "type": "string"
+              },
+              "subpath": {
+                "type": "string"
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "files": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deleted": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "git": {
+          "type": "object",
+          "description": "The git baseline (`--git`), made last, as docs/schemas/git-baseline.schema.json describes it. A failed one exits 10 with the lease still held.",
+          "additionalProperties": false,
+          "required": [
+            "ok",
+            "commit",
+            "files",
+            "path",
+            "detail"
+          ],
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "files": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "path": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "imports": {
+      "type": "array",
+      "description": "Present with `--import`: each import that ran, in order (docs/import.md). With `--keep-on-fail` the last may have failed.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "manifest",
+          "exit_code",
+          "log"
+        ],
+        "properties": {
+          "manifest": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The manifest's absolute path (imports.mf)."
+          },
+          "exit_code": {
+            "type": "integer",
+            "description": "aras-pkg's exit code: 0 done, 1 failed, 2 done with errors the engine reported, 64 usage."
+          },
+          "log": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The libs-js log: $ARASHOUSE_HOME/logs/<lease_id>-import-<n>.log."
+          }
+        }
+      }
+    }
+  }
+}

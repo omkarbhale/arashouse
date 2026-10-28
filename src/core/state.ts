@@ -230,7 +230,8 @@ export function transitionSlot(slot: Slot, request: TransitionRequest, context: 
 
 // ---- no secrets ----------------------------------------------------------------------------------
 
-const SECRET_KEY = /pass|secret|token|credential|licen[cs]e|api.?key|private|hash|salt|\bkey\b|_key\b/i;
+/** A key that names a secret; the state's bootstrap record and a bootstrap recipe (ticket 42) refuse one. */
+export const SECRET_KEY = /pass|secret|token|credential|licen[cs]e|api.?key|private|hash|salt|\bkey\b|_key\b/i;
 
 /** `info` checked: scalar values, short strings, and no key that looks like a secret. Throws otherwise. */
 export function checkBootstrap(info: BootstrapInfo): BootstrapInfo {

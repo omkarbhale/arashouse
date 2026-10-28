@@ -637,6 +637,256 @@ describe("extract (ticket 43)", () => {
   });
 });
 
+describe("get --bootstrap and bootstrap --lease (ticket 42)", () => {
+  const FAKE_APKG = join(repoRoot, "test", "fixtures", "fake-aras-pkg.mjs");
+
+  interface Step {
+    name: string;
+    status: string;
+    ok: boolean;
+    ms: number;
+    log: string | null;
+    detail: string;
+  }
+  type Booted = Grant & { bootstrap: { recipe: string; steps: Step[]; code?: { ok: boolean }[]; git?: { ok: boolean; commit: string } }; imports?: { exit_code: number }[] };
+
+  /**
+   * A recipe folder with what a recipe names: a backup, a one-file client overlay, a package manifest (`exit` is what the
+   * fake aras-pkg exits with), and the slots' `Innovator\` trees under the install root the CLI stages into.
+   */
+  async function workspace(flavor: FlavorKey, slots = 1, exit = 0): Promise<{ dir: string; env: NodeJS.ProcessEnv }> {
+    const dir = join(home, "work");
+    await mkdir(join(dir, "overlay", "scripts"), { recursive: true });
+    await writeFile(join(dir, "overlay", "scripts", "fix.js"), "// fixed");
+    await mkdir(join(dir, "profiles"), { recursive: true });
+    await writeFile(join(dir, "profiles", "demo.bak"), "not really a backup");
+    await mkdir(join(dir, "pkgs"), { recursive: true });
+    await writeFile(join(dir, "pkgs", "imports.mf"), `exit=${exit}\n<imports><package name="LIBSJS-SCRATCH-r" path="r\\Import" /></imports>\n`);
+    const root = join(home, "root");
+    for (let n = 1; n <= slots; n++) {
+      const tree = join(root, "slots", flavor, `0${n}`, "Innovator");
+      await mkdir(join(tree, "Client", "scripts"), { recursive: true });
+      await writeFile(join(tree, "Client", "scripts", "app.js"), "// app");
+    }
+    await mkdir(join(root, "staging"), { recursive: true });
+    return { dir, env: { ARASHOUSE_LOCAL_ROOT: root, ARASHOUSE_APKG: FAKE_APKG, FAKE_APKG_RECORD: join(home, "apkg-runs.jsonl") } };
+  }
+
+  /** Everything the ticket names: a restore, code, an import, and the git baseline. */
+  function fullRecipe(flavor: FlavorKey, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      flavor,
+      restore: "profiles/demo.bak",
+      code: [{ from: "./overlay", to: "Innovator/Client" }],
+      import: [{ manifest: "./pkgs/imports.mf", merge: true, release: "R1" }],
+      git: true,
+      ...extra,
+    };
+  }
+
+  async function writeRecipe(dir: string, recipe: unknown, name = "recipe.json"): Promise<string> {
+    const path = join(dir, name);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(recipe));
+    return path;
+  }
+
+  async function slotOf(id: string) {
+    return (await new StateStore({ home }).read()).slots[id];
+  }
+
+  async function apkgRuns(): Promise<number> {
+    const file = join(home, "apkg-runs.jsonl");
+    return existsSync(file) ? (await readFile(file, "utf8")).trim().split("\n").length : 0;
+  }
+
+  const statuses = (steps: readonly Step[]) => steps.map((s) => `${s.name}:${s.status}`);
+
+  for (const flavor of ["12sp9", "23", "35"] as const) {
+    it(`brings a ${flavor} lease up with all three sections and git, in order, and reports each step`, async () => {
+      await seed({ [flavor]: 1 });
+      const { dir, env } = await workspace(flavor);
+      const recipe = await writeRecipe(dir, fullRecipe(flavor));
+      // The flavor comes from the recipe.
+      const r = await cli(["get", "--bootstrap", recipe, "--holder", "boot", "--json"], env);
+      expect(r.code, r.stderr).toBe(0);
+      const grant = JSON.parse(r.stdout) as Booted;
+      const validate = await validator("get.schema.json");
+      expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+      expect(grant.bootstrap.recipe).toBe(recipe);
+      expect(statuses(grant.bootstrap.steps)).toEqual(["restore:ok", "code:ok", "import:ok", "git:ok", "health:ok"]);
+      expect(grant.bootstrap.code).toEqual([expect.objectContaining({ source: "./overlay", subpath: "Innovator/Client", ok: true })]);
+      expect(grant.imports?.map((i) => i.exit_code)).toEqual([0]);
+      const logs = join(home, "logs");
+      expect(grant.bootstrap.steps.find((s) => s.name === "import")?.log).toBe(join(logs, `${grant.lease_id}-import-1.log`));
+      expect(grant.bootstrap.steps.find((s) => s.name === "health")?.log).toBe(join(logs, `${grant.lease_id}-bootstrap.log`));
+      expect((await slotOf(`${flavor}-01`))?.lease?.bootstrap).toMatchObject({ restore: "custom", code_deploys: 1, imports: 1, git: grant.bootstrap.git?.commit });
+      // The bootstrap log has one line per step that ran, and no log, the state or stderr holds the password.
+      const log = await readFile(join(logs, `${grant.lease_id}-bootstrap.log`), "utf8");
+      expect(log).toMatch(/ restore ok in \d+ ms: /);
+      expect(log).toMatch(/ health ok in \d+ ms: /);
+      for (const name of await readdir(logs)) expect(await readFile(join(logs, name), "utf8")).not.toContain(grant.password);
+      expect(statSync(join(logs, `${grant.lease_id}-bootstrap.log`)).mode & 0o777).toBe(0o600);
+      expect(await readFile(join(home, "state.json"), "utf8")).not.toContain(grant.password);
+      expect(r.stderr).not.toContain(grant.password);
+    });
+  }
+
+  it("skips the steps a recipe leaves out, reads @name from the recipes folder, and prints the steps without --json", async () => {
+    await seed({ "23": 1 });
+    await writeRecipe(join(home, "recipes"), { flavor: "23" }, "plain.json");
+    const r = await cli(["get", "23", "--bootstrap", "@plain", "--holder", "boot"]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`recipe:    ${join(home, "recipes", "plain.json")}`);
+    expect(r.stdout).toMatch(/^restore: +skipped \(not in the recipe\)$/m);
+    expect(r.stdout).toMatch(/^health: +ok in \d+\.\d s \(/m);
+    expect(r.stdout).toContain("password:  not shown");
+    expect((await cli(["get", "--bootstrap", "@nope", "--holder", "boot"])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["get", "--bootstrap", "@../x", "--holder", "boot"])).code).toBe(EXIT_CODES.usage);
+  });
+
+  it("fails a bad recipe before any slot is reserved: a bad path, a password key, a flavor mismatch, an option beside it", async () => {
+    await seed({ "12sp9": 1 });
+    const { dir, env } = await workspace("12sp9");
+    const planted = "hunter2-in-a-recipe";
+    const cases: [unknown, number, RegExp][] = [
+      [fullRecipe("12sp9", { restore: "profiles/absent.bak" }), EXIT_CODES.usage, /is not a file/],
+      [fullRecipe("12sp9", { code: [{ from: "./nowhere" }] }), EXIT_CODES.refused, /does not exist/],
+      [fullRecipe("12sp9", { code: [{ from: "./overlay", to: "../x" }] }), EXIT_CODES.refused, /\.\./],
+      [fullRecipe("12sp9", { import: [{ manifest: "./pkgs/absent.mf" }] }), EXIT_CODES.usage, /does not exist/],
+      [fullRecipe("12sp9", { import: [{ manifest: "./pkgs/imports.mf", languages: "*" }] }), EXIT_CODES.usage, /engine 14\.35 only/],
+      [{ ...fullRecipe("12sp9"), password: planted }, EXIT_CODES.usage, /password looks like a secret/],
+      [fullRecipe("23"), EXIT_CODES.usage, /is for flavor 23, not 12sp9/],
+    ];
+    for (const [recipe, code, message] of cases) {
+      const path = await writeRecipe(dir, recipe);
+      const r = await cli(["get", "12sp9", "--bootstrap", path, "--holder", "boot", "--json"], env);
+      expect(r.code, JSON.stringify(recipe)).toBe(code);
+      expect(r.stderr, JSON.stringify(recipe)).toMatch(message);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).not.toContain(planted);
+    }
+    await writeFile(join(dir, "broken.json"), "{ not json");
+    expect((await cli(["get", "12sp9", "--bootstrap", join(dir, "broken.json"), "--holder", "boot"], env)).stderr).toMatch(/not JSON/);
+    const recipe = await writeRecipe(dir, { flavor: "12sp9" });
+    for (const extra of [["--code", join(dir, "overlay")], ["--git"], ["--agent"], ["--atomic"], ["--restore", "demo"], ["--import", join(dir, "pkgs", "imports.mf")]]) {
+      const r = await cli(["get", "12sp9", "--bootstrap", recipe, "--holder", "boot", ...extra], env);
+      expect(r.code, extra[0]).toBe(EXIT_CODES.usage);
+      expect(r.stderr, extra[0]).toMatch(/goes in the recipe, not beside --bootstrap/);
+    }
+    expect((await cli(["get", "--bootstrap", await writeRecipe(dir, {}), "--holder", "boot"], env)).stderr).toMatch(/names no flavor/);
+    expect((await slotOf("12sp9-01"))?.status).toBe("free");
+    expect(await apkgRuns()).toBe(0);
+  });
+
+  it("returns the lease when a step fails (exit 9), names the step and its log, and runs nothing after it", async () => {
+    await seed({ "12sp9": 1 });
+    const { dir, env } = await workspace("12sp9");
+    const recipe = await writeRecipe(dir, fullRecipe("12sp9"));
+    const faults = { ARASHOUSE_FAKE_FAULTS: JSON.stringify([{ method: "deployCode", kind: "fail", error: "Retryable", message: "robocopy failed (16)" }]) };
+    const r = await cli(["get", "12sp9", "--bootstrap", recipe, "--holder", "boot", "--json"], { ...env, ...faults });
+    expect(r.code).toBe(EXIT_CODES.bootstrapFailed);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(/the bootstrap's code step failed \(the deploy of \.\/overlay failed: robocopy failed \(16\)\); its log: .*-bootstrap\.log; the lease of 12sp9-01 was returned, and the slot is reset \(--keep-on-fail keeps it\)/);
+    expect(r.stderr).toMatch(/^arashouse: restore: +ok in /m);
+    expect(r.stderr).toMatch(/^arashouse: import: +skipped \(not reached: the code step failed\)$/m);
+    expect(r.stderr).toMatch(/^arashouse: health: +skipped \(not reached: the code step failed\)$/m);
+    expect(r.stderr).toContain("hint: read the log named above");
+    expect(await apkgRuns()).toBe(0);
+    expect((await slotOf("12sp9-01"))?.status).toBe("dirty");
+    expect(await readdir(join(home, "leases"))).toEqual([]);
+  });
+
+  it("--keep-on-fail and \"atomic\": false keep the lease and print it with the failed step, still exit 9", async () => {
+    await seed({ "23": 2 });
+    const { dir, env } = await workspace("23", 2, 2);
+    const recipe = await writeRecipe(dir, fullRecipe("23"));
+    const kept = await cli(["get", "--bootstrap", recipe, "--holder", "boot", "--json", "--keep-on-fail"], env);
+    expect(kept.code).toBe(EXIT_CODES.bootstrapFailed);
+    const grant = JSON.parse(kept.stdout) as Booted;
+    const validate = await validator("get.schema.json");
+    expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+    expect(statuses(grant.bootstrap.steps)).toEqual(["restore:ok", "code:ok", "import:failed", "git:skipped", "health:skipped"]);
+    expect(grant.bootstrap.steps[2]).toMatchObject({ ok: false, log: join(home, "logs", `${grant.lease_id}-import-1.log`), detail: expect.stringMatching(/aras-pkg exit 2/) });
+    expect(kept.stderr).toContain(`is kept (--keep-on-fail): return it with: arashouse return ${grant.lease_id}`);
+    // The import's log is named once: its detail already carries it.
+    expect(kept.stderr.split(`${grant.lease_id}-import-1.log); its log`)).toHaveLength(1);
+    expect((await slotOf(grant.slot))?.status).toBe("leased");
+
+    // The health check, kept by the recipe itself.
+    const healthy = await writeRecipe(dir, { flavor: "23", atomic: false });
+    const down = await cli(["get", "--bootstrap", healthy, "--holder", "boot", "--json"], { ...env, ARASHOUSE_FAKE_PROBE: "down" });
+    expect(down.code).toBe(EXIT_CODES.bootstrapFailed);
+    const second = JSON.parse(down.stdout) as Booted;
+    expect(statuses(second.bootstrap.steps)).toEqual(["restore:skipped", "code:skipped", "import:skipped", "git:skipped", "health:failed"]);
+    // The steps before the one that failed were not in the recipe; none was "not reached".
+    expect(second.bootstrap.steps.slice(0, 4).map((s) => s.detail)).toEqual(Array(4).fill("not in the recipe"));
+    expect((await slotOf(second.slot))?.status).toBe("leased");
+  });
+
+  it("a failed health check returns the lease by default", async () => {
+    await seed({ "35": 1 });
+    const { dir, env } = await workspace("35");
+    const recipe = await writeRecipe(dir, { flavor: "35" });
+    const r = await cli(["get", "--bootstrap", recipe, "--holder", "boot"], { ...env, ARASHOUSE_FAKE_PROBE: "down" });
+    expect(r.code).toBe(EXIT_CODES.bootstrapFailed);
+    expect(r.stderr).toMatch(/the bootstrap's health step failed \(Client\/: connection failed \(ECONNREFUSED\)\)/);
+    expect((await slotOf("35-01"))?.status).toBe("dirty");
+  });
+
+  it("a failed restore returns the lease even with --keep-on-fail", async () => {
+    await seed({ "12sp9": 1 });
+    const { dir, env } = await workspace("12sp9");
+    const recipe = await writeRecipe(dir, fullRecipe("12sp9"));
+    const faults = { ARASHOUSE_FAKE_FAULTS: JSON.stringify([{ method: "restoreDatabase", kind: "fail", error: "Retryable", message: "RESTORE DATABASE failed" }]) };
+    const r = await cli(["get", "--bootstrap", recipe, "--holder", "boot", "--json", "--keep-on-fail"], { ...env, ...faults });
+    expect(r.code).toBe(EXIT_CODES.bootstrapFailed);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(/the bootstrap's restore step failed \(.*RESTORE DATABASE failed.*\); its log: .*-bootstrap\.log; the lease of 12sp9-01 was returned/);
+    expect(r.stderr).toMatch(/^arashouse: code: +skipped \(not reached: the restore step failed\)$/m);
+    expect((await slotOf("12sp9-01"))?.status).toBe("dirty");
+    // The staged backup is gone.
+    expect(existsSync(join(home, "fake-staging")) ? await readdir(join(home, "fake-staging")) : []).toEqual([]);
+  });
+
+  it("bootstrap --lease applies a recipe to a held lease, and a restore over its imports needs --yes", async () => {
+    await seed({ "23": 1 });
+    const { dir, env } = await workspace("23");
+    const grant = await lease("23");
+    const first = await writeRecipe(dir, { code: [{ from: "./overlay", to: "Innovator/Client" }], import: [{ manifest: "./pkgs" }], git: true });
+    const r = await cli(["bootstrap", "--lease", grant.lease_id, first, "--json"], env);
+    expect(r.code, r.stderr).toBe(0);
+    const report = JSON.parse(r.stdout) as { slot: string; bootstrap: { steps: Step[] } };
+    const validate = await validator("bootstrap.schema.json");
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+    expect(report.slot).toBe("23-01");
+    expect(statuses(report.bootstrap.steps)).toEqual(["restore:skipped", "code:ok", "import:ok", "git:ok", "health:ok"]);
+    expect((await slotOf("23-01"))?.lease?.bootstrap).toMatchObject({ imports: 1, code_deploys: 1 });
+
+    // Again: the baseline is there, so git is skipped; the restore discards the import, so it needs --yes.
+    const again = await writeRecipe(dir, { flavor: "23", restore: "profiles/demo.bak", git: true });
+    const refused = await cli(["bootstrap", "--lease", grant.lease_id, again], env);
+    expect(refused.code).toBe(EXIT_CODES.usage);
+    expect(refused.stderr).toMatch(/discards the 1 import made onto this lease; give --yes/);
+    const yes = await cli(["bootstrap", "--lease", grant.lease_id, again, "--yes"], env);
+    expect(yes.code, yes.stderr).toBe(0);
+    expect(yes.stderr).toMatch(/the recipe's restore replaces the database of 23-01/);
+    expect(yes.stdout).toMatch(/^restore: +ok in /m);
+    expect(yes.stdout).toMatch(/^git: +skipped \(the lease already has a git baseline/m);
+    expect((await slotOf("23-01"))?.lease?.bootstrap).toMatchObject({ restore: "custom", imports: 0 });
+    expect((await slotOf("23-01"))?.status).toBe("leased");
+
+    // A lease that is not held, a recipe for another flavor, and a failed step (the lease is kept).
+    expect((await cli(["bootstrap", "--lease", "f".repeat(32), again], env)).code).toBe(EXIT_CODES.leaseMismatch);
+    expect((await cli(["bootstrap", "--lease", grant.lease_id, await writeRecipe(dir, { flavor: "35" })], env)).code).toBe(EXIT_CODES.usage);
+    const failed = await cli(["bootstrap", "--lease", grant.lease_id, await writeRecipe(dir, {})], { ...env, ARASHOUSE_FAKE_PROBE: "down" });
+    expect(failed.code).toBe(EXIT_CODES.bootstrapFailed);
+    expect(failed.stderr).toMatch(/the bootstrap's health step failed .*; the lease is kept/);
+    expect((await slotOf("23-01"))?.status).toBe("leased");
+    expect((await cli(["bootstrap", "--lease", grant.lease_id], env)).code).toBe(EXIT_CODES.usage);
+  });
+});
+
 describe("get --import and import (ticket 41)", () => {
   const FAKE_APKG = join(repoRoot, "test", "fixtures", "fake-aras-pkg.mjs");
 
@@ -713,7 +963,7 @@ describe("get --import and import (ticket 41)", () => {
     expect(r.code).toBe(EXIT_CODES.importFailed);
     expect(r.stdout).toBe("");
     expect(r.stderr).toMatch(/import 1 of 2 \(.*bad.*, engine 12\.0\) failed: aras-pkg exit 2; its log: .*-import-1\.log; the lease of 12sp9-01 was returned/);
-    expect(r.stderr).toContain("hint: read the import's log");
+    expect(r.stderr).toContain("hint: read the log named above");
     expect((await apkgRuns()).length).toBe(1);
     expect(await slotStatus("12sp9-01")).toBe("dirty");
     expect(await readdir(join(home, "leases"))).toEqual([]);

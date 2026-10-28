@@ -34,8 +34,28 @@
     "bootstrap": {
       "type": "object",
       "additionalProperties": false,
-      "description": "What `get` did to the lease after taking it; present only when it was asked to (`--code`, `--git`).",
+      "description": "What `get` did to the lease after taking it; present only when it was asked to (`--code`, `--git`, `--bootstrap`).",
       "properties": {
+        "recipe": { "type": "string", "minLength": 1, "description": "With `--bootstrap`: the recipe file's absolute path (docs/bootstrap.md)." },
+        "steps": {
+          "type": "array",
+          "description": "With `--bootstrap`: the five steps in the order they run (restore, code, import, git, health), each once.",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "status", "ok", "ms", "log", "detail"],
+            "properties": {
+              "name": { "enum": ["restore", "code", "import", "git", "health"] },
+              "status": { "enum": ["ok", "failed", "skipped"], "description": "skipped: not in the recipe, or not reached because a step before it failed (the detail says which)." },
+              "ok": { "type": "boolean", "description": "True only when the step ran and passed." },
+              "ms": { "type": "integer", "minimum": 0 },
+              "log": { "type": ["string", "null"], "description": "The step's log: for import, the last aras-pkg log; for the others, $ARASHOUSE_HOME/logs/<lease_id>-bootstrap.log. Null for a skipped step." },
+              "detail": { "type": "string" }
+            }
+          }
+        },
         "code": {
           "type": "array",
           "description": "One entry per `--code`, in order, as docs/schemas/deploy-code.schema.json describes them. Deploys stop at the first that fails; get then exits 10 with the lease still held, and no import runs.",

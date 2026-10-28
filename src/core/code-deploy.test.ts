@@ -68,6 +68,13 @@ describe("isProtectedFile", () => {
     }
     for (const p of ["Innovator/Client/a.js", "Innovator/Server/bin/x.dll", "Innovator/web.config", "a/keys.xml"]) expect(isProtectedFile(p), p).toBe(false);
   });
+
+  it("matches every file the edit lists render, by its path in the slot's tree (ticket 50)", () => {
+    for (const p of ["Innovator/Server/Innovator.xml", "innovator/client/INNOVATOR.xml", "OAuthServer/OAuth.config", "OAuthServer/OAuthServer.config"]) {
+      expect(isProtectedFile(p), p).toBe(true);
+    }
+    for (const p of ["Innovator/Client/Scripts/Innovator.xml", "Innovator/Innovator.xml"]) expect(isProtectedFile(p), p).toBe(false);
+  });
 });
 
 describe("deploy.json", () => {
@@ -122,6 +129,10 @@ describe("planDeploy", () => {
     expect(planDeploy(["InnovatorServerConfig.xml"], { subpath: ".", allowConfig: true }).copies[0]?.target).toBe("InnovatorServerConfig.xml");
     expect(() => planDeploy(["App_Data/key-1.xml"], { subpath: "OAuthServer", allowServers: true })).toThrow(/--allow-config/);
     expect(() => planDeploy(["a.js"], rules, { delete: ["Server/x.pfx"] })).toThrow(/--allow-config/);
+    // Innovator.xml's ConfigFilePath names the slot's InnovatorServerConfig.xml: replaced, it could name another install's.
+    expect(() => planDeploy(["Server/Innovator.xml"], rules)).toThrow(/--allow-config/);
+    expect(() => planDeploy(["OAuth.config"], { subpath: "OAuthServer", allowServers: true })).toThrow(/--allow-config/);
+    expect(planDeploy(["Server/Innovator.xml"], { ...rules, allowConfig: true }).copies[0]?.target).toBe("Innovator/Server/Innovator.xml");
     // The top-level config is the only file allowConfig adds outside the roots.
     expect(() => planDeploy(["SelfServiceReportConfig.xml"], { subpath: ".", allowConfig: true })).toThrow(/outside Innovator/);
   });

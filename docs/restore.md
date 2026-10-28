@@ -39,7 +39,7 @@ makes no backup of any existing database: the caller brings one (ticket 10's rul
      - written by a SQL Server no newer than the host's. The partner demo's troubleshooting guide says "The backup can not
        be restored on an older version of SQL Server"; an older one is upgraded as it is restored;
      - one data file and one log file, whose sizes fit in the free space of the drive of `sqldata\`;
-     - **not taken of a deny-listed database** (`OLM_Local`, `InnovatorSolutions`, any name with `olm` or `prod`, ...).
+     - **not taken of a deny-listed database** (`OLM_Local`, any name starting `InnovatorSolutions` or `InnovatorServer`, any name with `olm` or `prod`, ...).
        arashouse cannot know where the data came from, so the name the backup records is all it checks (map question Q6).
        `--allow-foreign-origin` lets such a backup through.
 

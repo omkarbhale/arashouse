@@ -67,7 +67,11 @@ staged copy:
   checked before the slot is quiesced, and again after (when nothing of the slot runs any more).
 - **Secrets and identity files** need `--allow-config`, wherever they are: `InnovatorServerConfig.xml`, `*.pfx`,
   `*.cer`, `key-*.xml`, `vault.config`. These are what the edit list renders from the host's store (licence, SQL
-  logins; ticket 19, `docs/edits.md`). With `--allow-config`, `InnovatorServerConfig.xml` may be written at the top
+  logins; ticket 19, `docs/edits.md`). So does every other file the edit lists render, at its path in the slot's tree
+  (`Innovator/Client/Innovator.xml`, `Innovator/Server/Innovator.xml`, `OAuthServer/OAuth.config`,
+  `OAuthServer/OAuthServer.config`): `Innovator.xml`'s `ConfigFilePath` decides which `InnovatorServerConfig.xml`,
+  and so which database and logins, the slot's server uses, and one copied from another install would point the slot
+  at that install's (ticket 50, `docs/audit.md`). With `--allow-config`, `InnovatorServerConfig.xml` may be written at the top
   of the tree (subpath `.`); the slot then carries the caller's file, and the next reset renders the slot's own
   again.
 - The deny-list's substring rule (`olm`, `prod`) is for the names of the things the tool owns, not the files inside

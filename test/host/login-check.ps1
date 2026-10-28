@@ -1,5 +1,5 @@
 # login-check.ps1 (ticket 35's e2e, test/host/e2e-cycle.ts): does root log in to a slot with the golden backup's shipped
-# password? One OAuth password grant as root, as the Aras clients make it (client_id IOMApp, the password as its MD5 hex),
+# password? (-User asks the same of another shipped user, for ticket 50's audit.) One OAuth password grant as the user, as the Aras clients make it (client_id IOMApp, the password as its MD5 hex),
 # against http://localhost/ah-<flavor>-<NN> and the database arashouse_<flavor>_<NN>. The password is read from -PasswordFile,
 # ConvertFrom-SecureString output that only this Windows user can decrypt (the spike's handoff aras.dpapi), and decrypted
 # inside this process only. It prints only "login: ok" or the server's refusal (its error code and description, which name
@@ -8,7 +8,8 @@
 param(
     [Parameter(Mandatory = $true)][ValidateSet('12sp9', '23', '35')][string]$Flavor,
     [Parameter(Mandatory = $true)][ValidatePattern('^\d{2}$')][string]$Slot,
-    [Parameter(Mandatory = $true)][string]$PasswordFile
+    [Parameter(Mandatory = $true)][string]$PasswordFile,
+    [ValidateSet('root', 'admin', 'vadmin', 'authadmin', 'clientadmin', 'JobAgentUser')][string]$User = 'root'
 )
 $ErrorActionPreference = 'Stop'
 $alias = "ah-$Flavor-$Slot"
@@ -28,7 +29,7 @@ try {
 }
 $md5 = -join ([Security.Cryptography.MD5]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
 [Array]::Clear($bytes, 0, $bytes.Length)
-$body = "grant_type=password&scope=Innovator&client_id=IOMApp&username=root&password=$md5&database=$database"
+$body = "grant_type=password&scope=Innovator&client_id=IOMApp&username=$User&password=$md5&database=$database"
 $md5 = $null
 try {
     $response = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "http://localhost/$alias/OAuthServer/connect/token" -ContentType 'application/x-www-form-urlencoded' -Body $body -TimeoutSec 180

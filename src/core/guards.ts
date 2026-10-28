@@ -58,16 +58,24 @@ export const DENIED_SERVICE_PREFIXES: readonly string[] = ["ArasInnovatorAgent_"
 /** Anything containing one of these, in any case, in any name or path. */
 export const DENIED_SUBSTRINGS: readonly string[] = ["olm", "prod"];
 
+/** Name prefixes: the map's `InnovatorSolutions*` databases and `InnovatorServer*` aliases (ticket 50, docs/audit.md). */
+export const DENIED_NAME_PREFIXES: readonly string[] = ["InnovatorSolutions", "InnovatorServer"];
+
 /** `C:\Aras`, `C:\Aras12`, `C:\Aras28`: the top-level folders of the captain's existing installs. */
 const DENIED_TOP_FOLDER = /^aras\d*$/i;
 
+/** `text` folded for a deny-list comparison: compatibility forms (`ＯＬＭ` is `OLM`) and case. */
+function fold(text: string): string {
+  return text.normalize("NFKC").toLowerCase();
+}
+
 function sameName(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
+  return fold(a) === fold(b);
 }
 
 /** Why `text` (a name or a whole path) is on the deny-list by substring, or undefined. */
 function substringDenial(text: string): string | undefined {
-  const lower = text.toLowerCase();
+  const lower = fold(text);
   const hit = DENIED_SUBSTRINGS.find((s) => lower.includes(s));
   return hit ? `contains "${hit}"` : undefined;
 }
@@ -78,7 +86,8 @@ export function nameDenial(name: string): string | undefined {
   if (sub) return `deny-listed (${sub})`;
   if (DENIED_DATABASES.some((d) => sameName(d, name))) return "deny-listed database name";
   if (DENIED_ALIASES.some((a) => sameName(a, name))) return "deny-listed web alias";
-  if (DENIED_SERVICE_PREFIXES.some((p) => name.toLowerCase().startsWith(p.toLowerCase()))) {
+  if (DENIED_NAME_PREFIXES.some((p) => fold(name).startsWith(fold(p)))) return "deny-listed name prefix";
+  if (DENIED_SERVICE_PREFIXES.some((p) => fold(name).startsWith(fold(p)))) {
     return "deny-listed service name";
   }
   return undefined;

@@ -52,6 +52,7 @@
         "lease",
         "leased_at",
         "lease_age_seconds",
+        "extracted",
         "last_reset_at",
         "last_reset_ms",
         "quarantine_reason"
@@ -64,6 +65,7 @@
         "lease": { "type": ["string", "null"], "pattern": "^[0-9a-f]{8}$", "description": "The first 8 characters of the lease id, to tell leases apart." },
         "leased_at": { "type": ["string", "null"] },
         "lease_age_seconds": { "type": ["integer", "null"], "minimum": 0 },
+        "extracted": { "type": ["boolean", "null"], "description": "Whether an arashouse extract ran against the lease; null with no lease. Information only: the reset happens either way." },
         "last_reset_at": { "type": ["string", "null"] },
         "last_reset_ms": { "type": ["integer", "null"], "minimum": 0 },
         "quarantine_reason": { "type": ["string", "null"] }

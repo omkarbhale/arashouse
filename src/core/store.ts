@@ -42,7 +42,7 @@ export function resolveStorePaths(env: NodeJS.ProcessEnv = process.env): StorePa
 export interface StoreEvent {
   readonly ts: string;
   readonly pid: number;
-  readonly event: "transition" | "slot-removed" | "queue-join" | "queue-leave" | "state-replaced" | LockEvent["event"];
+  readonly event: "transition" | "slot-removed" | "lease-extracted" | "queue-join" | "queue-leave" | "state-replaced" | LockEvent["event"];
   readonly slot?: string;
   /** The queue ticket of a `queue-join` or `queue-leave`. */
   readonly ticket?: number;
@@ -183,6 +183,26 @@ export class Transaction {
       reason: note,
     });
     return slot;
+  }
+
+  /**
+   * Marks the slot's lease as extracted from (`arashouse extract`, ticket 43): information only, not a status move.
+   * False, and nothing logged, when the slot no longer holds that lease.
+   */
+  markExtracted(id: string, leaseId: string, what: string): boolean {
+    const slot = this.slots[id];
+    if (slot?.status !== "leased" || slot.lease?.lease_id !== leaseId) return false;
+    if (slot.lease.extracted !== true) this.slots[id] = { ...slot, lease: { ...slot.lease, extracted: true } };
+    this.pending.push({
+      ts: this.env.now().toISOString(),
+      pid: this.env.pid,
+      event: "lease-extracted",
+      slot: id,
+      lease: leaseId.slice(0, 8),
+      holder: slot.lease.holder,
+      reason: what,
+    });
+    return true;
   }
 
   /** The `get --wait` callers, in ticket order, as this transaction sees them. */

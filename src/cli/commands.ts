@@ -1,4 +1,4 @@
-// The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `help`, `version`
+// The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `extract` (ticket 43), `help`, `version`
 // (and `media check`, ticket 18, `baseline verify`, ticket 28, and `reset-worker`, ticket 14), thin
 // over the lease core, and the operator commands (`doctor`, `repair`, `destroy`, `prune`,
 // `force-return`, `disable`, `enable`, ticket 16; `baseline build`, ticket 24; `teardown`, ticket 49), thin over
@@ -50,6 +50,7 @@ import { selectHost, type SelectedHost } from "./host.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { parsePasswordFd, writePasswordFd } from "./password-fd.js";
 import { runWithLease } from "./run.js";
+import { EXTRACT_HELP, runExtract } from "./extract.js";
 import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
 import { checkMedia } from "../core/media-check.js";
 import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
@@ -80,13 +81,14 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "command, for example `3>file`) instead, and --json then leaves it out.",
   ],
   return: [
-    "usage: arashouse return <lease_id> [--wait[=<seconds>]]",
-    "       arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]]",
+    "usage: arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]",
+    "       arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]] [--quiet]",
     "",
-    "Gives the lease back. Everything in the slot is discarded: take out what you need first.",
-    "It returns at once; the slot is reset before it is handed out again. Returning twice is a",
-    "no-op. --wait blocks until the slot is free again (exit 5 if its reset fails), with no limit",
-    "or up to <seconds>.",
+    "Gives the lease back. Everything in the slot is discarded: take out what you need first",
+    "(`arashouse extract`). It returns at once; the slot is reset before it is handed out again.",
+    "Returning twice is a no-op. --wait blocks until the slot is free again (exit 5 if its reset",
+    "fails), with no limit or up to <seconds>. It reminds you on stderr that the slot's state is",
+    "discarded; --quiet leaves that line out.",
   ],
   status: ["usage: arashouse status [--json]", "", "One row per slot (status, holder, lease age, last reset), then totals per flavor."],
   flavors: [
@@ -102,6 +104,7 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "ARASHOUSE_FLAVOR, ARAS_PKG_ENGINE) in its environment only. Its exit code is passed through.",
     "Example: arashouse run --lease <lease_id> -- aras-pkg export ./out Item:<id>",
   ],
+  extract: EXTRACT_HELP,
   media: [MEDIA_USAGE, "", "Are a flavor's installers there, intact and the right version? (docs/media-check.md)"],
   baseline: [
     "usage: arashouse baseline build <flavor> [--replace] [--engine-check <libs-js checkout>]",
@@ -212,10 +215,12 @@ const OVERVIEW: readonly string[] = [
   "",
   "  get <flavor> --holder <task> [--wait <seconds>] [--json]  lease a clean slot",
   "      [--agent]                                             ... with its agent service started",
-  "  return <lease_id> [--wait[=<seconds>]]                     give a lease back (its slot is discarded)",
+  "  return <lease_id> [--wait[=<seconds>]] [--quiet]           give a lease back (its slot is discarded)",
   "  status [--json]                                            every slot and its holder",
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
   "  run --lease <lease_id> -- <command ...>                    run a command with the lease's ARAS_* environment",
+  "  extract code --lease <lease_id> <path> --to <dir>          copy code out of a lease before returning it",
+  "  extract db --lease <lease_id> --to <file.bak>              ... or a COPY_ONLY backup of its database",
   "  media check [<flavor>...] [--json] [--write-sums]          check the installers",
   "  baseline verify <flavor> [--full] [--json]                 check a flavor's golden against its manifest",
   "  reset-worker [--slot <slot>]                               reset returned slots (return starts it)",
@@ -398,8 +403,13 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   return EXIT_CODES.ok;
 }
 
+/** What `return` prints on stderr, unless `--quiet`, when it gives a lease back (ticket 43; the worker guide says the same). */
+export function returnReminder(slot: string): string {
+  return `Returning slot ${slot}. Its state will be discarded; anything you want to keep must already be out.`;
+}
+
 async function cmdReturn(ctx: Context, args: readonly string[]): Promise<number> {
-  const parsed = parseArgs(args, { "if-lease-id": "value", wait: "optional" });
+  const parsed = parseArgs(args, { "if-lease-id": "value", wait: "optional", quiet: "flag" });
   const [target, extra] = parsed.positionals;
   if (target === undefined) throw new UsageError("return needs a lease id, or a slot and --if-lease-id");
   if (extra !== undefined) throw new UsageError(`return takes one lease or slot, not "${extra}" too`);
@@ -409,6 +419,7 @@ async function cmdReturn(ctx: Context, args: readonly string[]): Promise<number>
     ifLeaseId: stringOption(parsed, "if-lease-id"),
     waitSeconds: wait === undefined ? undefined : wait === true ? Number.POSITIVE_INFINITY : parseSeconds(wait, "--wait"),
   });
+  if (result.outcome === "returned" && result.slot !== null && parsed.options.quiet !== true) ctx.io.err(returnReminder(result.slot));
   ctx.io.out(result.message);
   if (wait !== undefined && result.slot !== null) ctx.io.out(`${result.slot} is free again`);
   return EXIT_CODES.ok;
@@ -442,6 +453,14 @@ async function cmdRun(ctx: Context, args: readonly string[]): Promise<number> {
   return runWithLease(
     { store: ctx.store, secrets: new LeaseFileStore(ctx.store.paths.home), resolveUrl: selected.resolveUrl, env: ctx.env, err: ctx.io.err },
     { leaseId: stringOption(parsed, "lease"), command: parsed.rest },
+  );
+}
+
+async function cmdExtract(ctx: Context, args: readonly string[]): Promise<number> {
+  const selected = await host(ctx);
+  return runExtract(
+    { store: ctx.store, host: selected.host, root: selected.root, toLocal: selected.toLocal, out: ctx.io.out, err: ctx.io.err, verbose: ctx.verbose },
+    args,
   );
 }
 
@@ -672,6 +691,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   status: cmdStatus,
   flavors: cmdFlavors,
   run: cmdRun,
+  extract: cmdExtract,
   media: cmdMedia,
   baseline: cmdBaseline,
   "reset-worker": cmdResetWorker,

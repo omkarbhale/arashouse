@@ -55,6 +55,8 @@ export const VERB_TIMEOUT_MS: Readonly<Partial<Record<BrokerVerb, number>>> = {
   // A reset's restore took 0.5 to 1.7 s for a 77 MB 12sp9 backup (spike 06, ticket 31); the golden check and a second
   // restore after kill_connections add seconds. The bound leaves room for a larger backup on a busy disk.
   resetDatabase: 10 * 60_000,
+  // A leaseholder's COPY_ONLY backup (ticket 43) and its copy to staging: seconds for a 12sp9 database, more for one the lease grew.
+  backupDatabase: 10 * 60_000,
   // A login, two edits and a login again through the slot's server: seconds when warm, up to 2 minutes each when cold.
   setLeaseCredentials: 10 * 60_000,
   // The health check waits for a cold start (up to 2 minutes), verifies the tree (about a second; minutes on a cold

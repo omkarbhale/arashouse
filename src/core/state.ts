@@ -37,6 +37,8 @@ export interface Lease {
   readonly holder: string;
   readonly leased_at: string;
   readonly bootstrap?: BootstrapInfo;
+  /** An `arashouse extract` command took code or data out of the lease (ticket 43). Information only: it gates nothing. */
+  readonly extracted?: true;
 }
 
 export interface ResetInfo {
@@ -271,6 +273,7 @@ export function serialiseState(state: State): string {
               holder: s.lease.holder,
               leased_at: s.lease.leased_at,
               ...(s.lease.bootstrap ? { bootstrap: checkBootstrap(s.lease.bootstrap) } : {}),
+              ...(s.lease.extracted === true ? { extracted: true } : {}),
             },
           }
         : {}),
@@ -334,11 +337,13 @@ function parseLease(path: string, where: string, raw: unknown): Lease {
       fail(path, `${where}.bootstrap: ${(err as Error).message}`);
     }
   }
+  if (raw.extracted !== undefined && raw.extracted !== true) fail(path, `${where}.extracted is not true`);
   return {
     lease_id,
     holder: str(path, `${where}.holder`, raw.holder),
     leased_at: str(path, `${where}.leased_at`, raw.leased_at),
     ...(bootstrap ? { bootstrap } : {}),
+    ...(raw.extracted === true ? { extracted: true } : {}),
   };
 }
 

@@ -3,9 +3,9 @@
 
 import { execFile, spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -261,6 +261,132 @@ describe("run --lease", () => {
     expect((await cli(["run", "--lease", "f".repeat(32)])).code).toBe(EXIT_CODES.usage);
     expect((await cli(["run", "--lease", "f".repeat(32), "--"])).code).toBe(EXIT_CODES.usage);
     expect((await cli(["run", "--lease", "nope", "--", "true"])).code).toBe(EXIT_CODES.usage);
+  });
+});
+
+describe("extract (ticket 43)", () => {
+  /** The fake host's slot folder, where a test puts the files a leaseholder would have changed. */
+  const slotFolder = (flavor: string, nn: string) => join(home, "fake-host", "slots", flavor, nn);
+  const put = async (path: string, text: string) => {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, text);
+  };
+  const rowOf = async (slot: string) => {
+    const r = await cli(["status", "--json"]);
+    const report = JSON.parse(r.stdout) as { slots: { slot: string; extracted: boolean | null }[] };
+    const validate = await validator("status.schema.json");
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+    return report.slots.find((row) => row.slot === slot);
+  };
+
+  it("code copies a changed file and a folder out of the leased slot, and status shows the lease extracted", async () => {
+    await seed({ "12sp9": 2 });
+    const grant = await lease("12sp9");
+    const client = join(slotFolder("12sp9", "01"), "Innovator", "Client", "javascript");
+    await put(join(client, "changed.js"), "// the leaseholder's change\n");
+    await put(join(client, "sub", "b.js"), "b\n");
+    expect(await rowOf("12sp9-01")).toMatchObject({ extracted: false });
+    expect(await rowOf("12sp9-02")).toMatchObject({ extracted: null });
+
+    const out = join(home, "out");
+    const file = await cli(["extract", "code", "--lease", grant.lease_id, "Innovator/Client/javascript/changed.js", "--to", out]);
+    expect(file.code, file.stderr).toBe(0);
+    expect(file.stdout).toContain(`extracted 1 file (0.0 MB) from 12sp9-01:Innovator/Client/javascript/changed.js to ${join(out, "changed.js")}`);
+    expect(await readFile(join(out, "changed.js"), "utf8")).toBe("// the leaseholder's change\n");
+    const folder = await cli(["extract", "code", "--lease", grant.lease_id, "Innovator\\Client\\javascript", "--to", out]);
+    expect(folder.code, folder.stderr).toBe(0);
+    expect(await readFile(join(out, "javascript", "sub", "b.js"), "utf8")).toBe("b\n");
+    expect(await readFile(join(out, "javascript", "changed.js"), "utf8")).toBe("// the leaseholder's change\n");
+    expect(await rowOf("12sp9-01")).toMatchObject({ extracted: true });
+    expect(await readFile(join(home, "events.log"), "utf8")).toContain('"event":"lease-extracted"');
+
+    // It never replaces what is there.
+    const again = await cli(["extract", "code", "--lease", grant.lease_id, "Innovator/Client/javascript/changed.js", "--to", out]);
+    expect(again.code).toBe(EXIT_CODES.refused);
+    expect(again.stderr).toContain("extract never replaces a file");
+
+    // The flag goes with the lease: after the return and the next lease, it is false again.
+    const back = await cli(["return", grant.lease_id]);
+    expect(back.code).toBe(0);
+    expect((await rowOf("12sp9-01"))?.extracted).toBeNull();
+  });
+
+  it("code refuses a path outside the slot, a link, and the slot's config and key files without --allow-config", async () => {
+    await seed({ "12sp9": 1 });
+    const grant = await lease("12sp9");
+    const slot = slotFolder("12sp9", "01");
+    await put(join(slot, "InnovatorServerConfig.xml"), "<Innovator/>");
+    await put(join(slot, "OAuthServer", "App_Data", "key-1.xml"), "<key/>");
+    await put(join(slot, "OAuthServer", "App_Data", "readme.txt"), "x");
+    await put(join(slot, "Innovator", "Client", "x.js"), "x");
+    await symlink(join(slot, "OAuthServer"), join(slot, "Innovator", "Client", "link"));
+    const out = join(home, "out");
+    const code = (path: string, ...extra: string[]) => cli(["extract", "code", "--lease", grant.lease_id, path, "--to", out, ...extra]);
+
+    for (const path of ["../../23/01", "Innovator/../..", "/etc/passwd", "C:\\Windows", "Innovator/Client"]) {
+      const r = await code(path);
+      expect(r.code, `${path}: ${r.stderr}`).toBe(EXIT_CODES.refused);
+    }
+    expect((await code("Innovator/Client/link")).stderr).toContain("is a link or junction");
+    const config = await code("InnovatorServerConfig.xml");
+    expect(config.code).toBe(EXIT_CODES.refused);
+    expect(config.stderr).toContain("--allow-config");
+    const keys = await code("OAuthServer");
+    expect(keys.code).toBe(EXIT_CODES.refused);
+    expect(keys.stderr).toContain("OAuthServer/App_Data/key-1.xml");
+    expect(existsSync(out)).toBe(false);
+    expect((await code("OAuthServer/App_Data/readme.txt")).code).toBe(0);
+    const allowed = await code("OAuthServer", "--allow-config");
+    expect(allowed.code, allowed.stderr).toBe(0);
+    expect(await readFile(join(out, "OAuthServer", "App_Data", "key-1.xml"), "utf8")).toBe("<key/>");
+    expect(allowed.stderr).toContain("hold the slot's secrets");
+
+    expect((await code("Innovator/Client/missing.js")).code).toBe(1);
+    expect((await cli(["extract", "code", "--lease", "f".repeat(32), "Innovator", "--to", out])).code).toBe(EXIT_CODES.leaseMismatch);
+    expect((await cli(["extract", "code", "--lease", grant.lease_id, "--to", out])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["extract", "code", "--lease", grant.lease_id, "Innovator"])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["extract", "code", "Innovator", "--to", out])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["extract", "logs", "--lease", grant.lease_id])).code).toBe(EXIT_CODES.usage);
+  });
+
+  it("db stages a backup of the leased slot's database in its staging folder, copies it out and deletes the staged copy", async () => {
+    await seed({ "12sp9": 1 });
+    const grant = await lease("12sp9");
+    const dest = join(home, "kept", "db.bak");
+    await mkdir(dirname(dest));
+    const r = await cli(["extract", "db", "--lease", grant.lease_id, "--to", dest]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`extracted the database of 12sp9-01 (COPY_ONLY backup, 0.0 MB) to ${dest}`);
+    expect(await readFile(dest, "utf8")).toBe("fake COPY_ONLY backup of arashouse_12sp9_01\n");
+    expect(existsSync(join(home, "fake-host", "staging", grant.lease_id))).toBe(false);
+    expect(await readdir(join(home, "kept"))).toEqual(["db.bak"]);
+    expect(await rowOf("12sp9-01")).toMatchObject({ extracted: true });
+
+    expect((await cli(["extract", "db", "--lease", grant.lease_id, "--to", dest])).code).toBe(EXIT_CODES.refused);
+    expect((await cli(["extract", "db", "--lease", grant.lease_id, "--to", join(home, "no-such-folder", "db.bak")])).code).toBe(EXIT_CODES.usage);
+    const unreachable = await cli(["extract", "db", "--lease", grant.lease_id, "--to", join(home, "kept", "two.bak")], {
+      ARASHOUSE_FAKE_FAULTS: JSON.stringify([{ method: "backupDatabase", kind: "fail", error: "Unreachable" }]),
+    });
+    expect(unreachable.code).toBe(EXIT_CODES.hostUnreachable);
+    expect(existsSync(join(home, "fake-host", "staging", grant.lease_id))).toBe(false);
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+    expect((await cli(["extract", "db", "--lease", grant.lease_id, "--to", join(home, "kept", "three.bak")])).code).toBe(EXIT_CODES.leaseMismatch);
+  });
+
+  it("return reminds on stderr that the slot's state is discarded, once; --quiet leaves it out", async () => {
+    await seed({ "23": 2 });
+    const first = await lease("23");
+    const second = await lease("23", "task-b");
+    const r = await cli(["return", first.lease_id]);
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("Returning slot 23-01. Its state will be discarded; anything you want to keep must already be out.\n");
+    expect(r.stdout).not.toContain("Returning");
+    const again = await cli(["return", first.lease_id]);
+    expect(again.stderr).toBe("");
+    const quiet = await cli(["return", "23-02", "--if-lease-id", second.lease_id, "--quiet"]);
+    expect(quiet.code).toBe(0);
+    expect(quiet.stderr).toBe("");
+    expect(quiet.stdout).toContain("returned 23-02");
   });
 });
 
@@ -597,9 +723,9 @@ describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
-    const commands = ["get", "return", "status", "flavors", "run", "setup", "setup-sql", "doctor", "provision", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable", "help", "version"];
+    const commands = ["get", "return", "status", "flavors", "run", "extract", "setup", "setup-sql", "doctor", "provision", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable", "help", "version"];
     for (const command of commands) expect(overview.stdout).toContain(`  ${command}`);
-    for (const command of ["get", "return", "status", "flavors", "run", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable"]) {
+    for (const command of ["get", "return", "status", "flavors", "run", "extract", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable"]) {
       const r = await cli([command, "--help"]);
       expect(r.code, command).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));

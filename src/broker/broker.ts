@@ -31,6 +31,8 @@ import {
 export interface VerbContext {
   readonly request: BrokerRequest;
   readonly root: string;
+  /** The install root and the host's junction and real-path probes, for a verb that checks a path of its own. */
+  readonly owned: OwnedContext;
   /** The slot and every name it owns, for a `slot` verb, after the guards passed. */
   readonly slot?: SlotRef;
   readonly names?: SlotNames;
@@ -168,7 +170,7 @@ export class Broker {
 
   /** The target checks and guards, then the context the verb runs with. */
   private resolve(spec: VerbSpec, request: BrokerRequest): VerbContext {
-    const base = { request, root: this.root };
+    const base = { request, root: this.root, owned: this.owned };
     const args = this.argsOf(spec, request);
     switch (spec.target) {
       case "none":

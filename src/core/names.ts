@@ -295,6 +295,14 @@ export function sqlDataDir(root: string = DEFAULT_INSTALL_ROOT): string {
 }
 
 /**
+ * `<root>\sqldata\<database>-extract.bak`: where the broker's `backupDatabase` (ticket 43) has SQL Server write a slot's
+ * backup before it copies it to the lease's staging folder. The SQL Server account may write `sqldata\` only (ticket 21).
+ */
+export function extractBackupScratch(ref: SlotRef, root: string = DEFAULT_INSTALL_ROOT): string {
+  return win32.join(sqlDataDir(root), `${databaseName(ref)}-extract.bak`);
+}
+
+/**
  * A database's two files: `<root>\sqldata\<database>.mdf` and `<database>_log.ldf`. `create_slot_database`
  * (ticket 22) creates a slot database with these, and a restore moves the backup's files to them.
  */

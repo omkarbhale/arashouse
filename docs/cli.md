@@ -2,7 +2,7 @@
 
 The worker-facing commands, thin over the lease core (`docs/lease.md`), and the operator commands,
 thin over `src/core/operator.ts`. Source: `src/cli/commands.ts`. `get --bootstrap` and its steps are
-tickets 39 to 42; the extraction helpers are ticket 43.
+tickets 39 to 42; the extraction helpers (`extract`, ticket 43) are in `docs/extract.md`.
 
 > "The philosophy is that Aras are disposable, and anything durable should be taken out by whoever
 > took the lease before giving it back."
@@ -12,11 +12,13 @@ tickets 39 to 42; the extraction helpers are ticket 43.
 | command | what it does |
 |---|---|
 | `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]` | Leases a clean slot of the flavor; `--agent` starts its agent service too; `--password-fd` writes the password to a descriptor. |
-| `arashouse return <lease_id> [--wait[=<seconds>]]` | Gives the lease back; its slot is discarded. |
-| `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]]` | The same, by slot name; the lease id is required (ABA protection). |
+| `arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]` | Gives the lease back; its slot is discarded. |
+| `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]] [--quiet]` | The same, by slot name; the lease id is required (ABA protection). |
 | `arashouse status [--json]` | Every slot, its holder and lease age, totals per flavor, `max_active` in use. |
 | `arashouse flavors [--json]` | Each flavor's release, build, libs-js engine, slot counts, media and baseline. |
 | `arashouse run --lease <lease_id> -- <command ...>` | Runs a command with the lease's connection in its environment. |
+| `arashouse extract code --lease <lease_id> <path> --to <dir> [--allow-config]` | Copies a file or folder of the slot's tree out of the lease (`docs/extract.md`). |
+| `arashouse extract db --lease <lease_id> --to <file.bak>` | Writes a `COPY_ONLY` backup of the slot's database out of the lease (`docs/extract.md`). |
 | `arashouse media check [<flavor>...] [--json] [--write-sums]` | Checks the installers (`docs/media-check.md`). |
 | `arashouse baseline verify <flavor> [--full] [--json]` | Checks the flavor's golden against its manifest, through the broker; exit 1 when it does not verify (`docs/baselines.md`). |
 | `arashouse reset-worker [--slot <slot>]` | Resets returned slots; `return` starts it detached (`docs/reset.md`). |
@@ -73,6 +75,10 @@ twice is a no-op (exit 0, `already returned`). `--wait` blocks until the slot is
 limit; `--wait=<seconds>` sets one. Only the `=` form takes a value, so the lease id after `--wait` is
 never read as seconds.
 
+It reminds the holder on stderr, in one line and with no prompt or delay: `Returning slot 23-02. Its state will be
+discarded; anything you want to keep must already be out.` `--quiet` leaves the line out; a repeated return prints
+none. Take things out first with `arashouse extract` or `run ... aras-pkg export` (`docs/extract.md`).
+
 ### `reset-worker`
 
 `arashouse reset-worker [--slot <slot>]` resets `<slot>`, then every other dirty slot it can, and prints
@@ -118,6 +124,9 @@ folder cannot be found) and `baseline` (the golden verifies at the fast level; n
 not be asked). `media` reads only zip directories; `media check` is the full check.
 
 ### `status`
+
+`status --json` also shows, per slot, `extracted`: whether an `arashouse extract` ran against its lease (`null` with no
+lease). It is information only (`docs/extract.md`).
 
 One row per slot, then totals per flavor, `max_active` and `max_resets` in use, and the `get --wait`
 queue. A lease held 24 hours or more shows `old` after its age, with a line naming the slot, its

@@ -654,6 +654,8 @@ export interface StatusRow {
   readonly lease: string | null;
   readonly leased_at: string | null;
   readonly lease_age_seconds: number | null;
+  /** Whether an `arashouse extract` ran against the lease (ticket 43); null with no lease. Information only: the reset happens either way. */
+  readonly extracted: boolean | null;
   readonly last_reset_at: string | null;
   readonly last_reset_ms: number | null;
   readonly quarantine_reason: string | null;
@@ -701,6 +703,7 @@ export function buildStatus(state: State, options: StatusOptions): StatusReport 
       lease: s.lease ? leaseRef(s.lease.lease_id) : null,
       leased_at: s.lease?.leased_at ?? null,
       lease_age_seconds: Number.isNaN(leasedAt) ? null : Math.max(0, Math.floor((options.now.getTime() - leasedAt) / 1000)),
+      extracted: s.lease ? s.lease.extracted === true : null,
       last_reset_at: s.last_reset_at,
       last_reset_ms: s.last_reset_ms,
       quarantine_reason: s.quarantine_reason ?? null,

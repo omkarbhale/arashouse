@@ -220,6 +220,15 @@ describe("the state file bytes", () => {
     expect(back.slots["23-02"]?.lease).toEqual(leased.lease);
   });
 
+  it("round-trips a lease marked extracted, writes nothing for one that is not, and refuses any other value", () => {
+    const leased = transitionSlot(slotIn("free"), { to: "leased", holder: "h" }, ctx);
+    const extracted = { ...leased, lease: { ...leased.lease!, extracted: true as const } };
+    expect(parseState(serialiseState(stateWith(extracted))).slots["23-02"]?.lease?.extracted).toBe(true);
+    expect(serialiseState(stateWith(leased))).not.toContain("extracted");
+    const bytes = serialiseState(stateWith(extracted)).replace('"extracted": true', '"extracted": false');
+    expect(() => parseState(bytes)).toThrow(/extracted/);
+  });
+
   it("holds no password, key or token: only the fixed fields are written", () => {
     // Assembled from parts so this file holds no secret-shaped literal.
     const canary = ["hunter", "2-canary-", "pw"].join("");

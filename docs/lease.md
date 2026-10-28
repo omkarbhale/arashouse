@@ -78,7 +78,8 @@ or log.
 
 ## `leaseStatus(deps)` / `status --json`: `docs/schemas/status.schema.json`
 
-One row per slot (status, flavor, holder, lease age, last reset duration, the quarantine reason),
+One row per slot (status, flavor, holder, lease age, whether an `extract` ran against the lease, last reset duration,
+the quarantine reason),
 totals per flavor, `max_active` (limit and leased slots), `max_resets` (limit and resetting slots),
 and the live `get --wait` queue (ticket, flavor, holder, when queued). It reads without the lock. It carries no
 password and no full lease id: the `lease` column is the first 8 characters, enough to tell leases

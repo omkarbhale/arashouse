@@ -20,11 +20,12 @@ import {
   type ManifestDiff,
   type ObservedFile,
 } from "../core/manifest.js";
-import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, slotRootSecretName, type SlotRef } from "../core/names.js";
+import { DATABASE_MARKER, DEFAULT_INSTALL_ROOT, agentPort, databaseName, extractBackupScratch, goldenLayout, loginName, slotId, slotLoginSecretName, slotNames, slotRootSecretName, type SlotRef } from "../core/names.js";
 import type { Secret } from "../core/secret.js";
 import { MemorySecretStore } from "../core/secret-store.js";
 import type { ArasHttp } from "./aras-http.js";
 import type { DatabaseReading, GoldenCheck, SlotLogins, SlotSystem, StartInfo, StopInfo, TreeReset, WarmAnswer } from "./provision.js";
+import type { DatabaseBackup } from "./backup-database.js";
 import type { DatabaseMarker, DatabaseReset } from "./reset-database.js";
 
 export const FAKE_GOLDEN_HASH = "9".repeat(64);
@@ -226,6 +227,14 @@ export class FakeSlotSystem implements SlotSystem {
     return { state: "restored", restoreMs: 1400, killed: 0, access: "MULTI_USER", marker: written, version: { ...this.databaseVersion }, ...this.resetAnswer };
   }
 
+  async backupDatabase(slot: SlotRef): Promise<DatabaseBackup> {
+    this.record("backupDatabase", slot);
+    if (!this.objects.has(`database ${databaseName(slot)}`)) return { state: "missing" };
+    const bytes = new TextEncoder().encode(`COPY_ONLY backup of ${databaseName(slot)}`);
+    this.put(extractBackupScratch(slot, this.root), bytes);
+    return { state: "backed-up", backupMs: 900, bytes: bytes.length };
+  }
+
   async stop(slot: SlotRef): Promise<StopInfo> {
     this.record("stop", slot);
     const id = slotId(slot);
@@ -330,6 +339,20 @@ export class FakeSlotSystem implements SlotSystem {
   async writeFile(path: string, data: Uint8Array | string): Promise<void> {
     this.record("writeFile");
     this.put(path, data);
+  }
+
+  async copyFile(from: string, to: string): Promise<boolean> {
+    this.record("copyFile");
+    const bytes = this.files.get(from.toLowerCase());
+    if (bytes === undefined) throw new Error(`${from} does not exist`);
+    if (this.files.has(to.toLowerCase())) return false;
+    this.put(to, bytes);
+    return true;
+  }
+
+  async removeFile(path: string): Promise<void> {
+    this.record("removeFile");
+    this.files.delete(path.toLowerCase());
   }
 
   async removeDir(path: string): Promise<void> {

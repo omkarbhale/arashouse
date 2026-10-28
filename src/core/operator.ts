@@ -59,6 +59,8 @@ export interface OperatorDeps {
   readonly licences?: SecretStore;
   /** What the worker sees of `arashouse setup` on the host (ticket 21). Absent: `doctor` skips the setup checks. */
   readonly setup?: () => Promise<SetupObservation>;
+  /** Where the import tool (libs-js `aras-pkg`, ticket 41) comes from and its version. Absent: `doctor` skips it. */
+  readonly importTool?: () => Promise<{ readonly found: boolean; readonly detail: string }>;
   /** Held while `provision` runs, so two provisions never work on one slot (the CLI's `provision.lock`). Absent: none. */
   readonly provisionLock?: () => Promise<{ release(): Promise<void> }>;
   readonly now?: () => Date;
@@ -666,6 +668,12 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
 
   if (deps.setup) {
     for (const f of checkSetup(await deps.setup())) add(f.level, f.check, f.message);
+  }
+
+  if (deps.importTool) {
+    // Only `get --import` and `import` need it, so its absence is a warning.
+    const tool = await deps.importTool();
+    add(tool.found ? "ok" : "warn", "aras-pkg", tool.detail);
   }
 
   try {

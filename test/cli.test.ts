@@ -2,6 +2,7 @@
 // (`ARASHOUSE_HOST=fake`). Each test gets its own ARASHOUSE_HOME, seeded with free slots.
 
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -390,6 +391,185 @@ describe("extract (ticket 43)", () => {
   });
 });
 
+describe("get --import and import (ticket 41)", () => {
+  const FAKE_APKG = join(repoRoot, "test", "fixtures", "fake-aras-pkg.mjs");
+
+  interface ApkgRun {
+    args: string[];
+    env: { ARAS_URL: string; ARAS_DATABASE: string; ARAS_USER: string; ARAS_PKG_ENGINE: string; ARAS_PASSWORD_SHA256: string | null };
+  }
+
+  /** A manifest in its own folder; `exit` is what the fake aras-pkg exits with when it imports it. */
+  async function manifest(name: string, exit = 0): Promise<string> {
+    const dir = join(home, "packages", name);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "imports.mf"), `exit=${exit}\n<imports><package name="LIBSJS-SCRATCH-${name}" path="${name}\\Import" /></imports>\n`);
+    return join(dir, "imports.mf");
+  }
+
+  function withApkg(env: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+    return { ARASHOUSE_APKG: FAKE_APKG, FAKE_APKG_RECORD: join(home, "apkg-runs.jsonl"), ...env };
+  }
+
+  async function apkgRuns(): Promise<ApkgRun[]> {
+    const file = join(home, "apkg-runs.jsonl");
+    if (!existsSync(file)) return [];
+    return (await readFile(file, "utf8")).trim().split("\n").map((l) => JSON.parse(l) as ApkgRun);
+  }
+
+  async function slotStatus(slot: string): Promise<string> {
+    const report = JSON.parse((await cli(["status", "--json"])).stdout) as { slots: { slot: string; status: string }[] };
+    return report.slots.find((s) => s.slot === slot)?.status ?? "missing";
+  }
+
+  it("imports each manifest in order with the flavor's engine, the password only in the child's environment", async () => {
+    await seed({ "23": 1 });
+    const first = await manifest("one");
+    const second = await manifest("two");
+    const r = await cli(["get", "23", "--holder", "boot", "--json", "--import", first, "--merge", "--release", "R1", "--import", join(home, "packages", "two"), "--package", "A", "--package", "B"], withApkg());
+    expect(r.code, r.stderr).toBe(0);
+    const grant = JSON.parse(r.stdout) as Grant & { imports: { manifest: string; exit_code: number; log: string }[] };
+    const validate = await validator("get.schema.json");
+    expect(validate(grant), JSON.stringify(validate.errors)).toBe(true);
+    const logs = join(home, "logs");
+    expect(grant.imports).toEqual([
+      { manifest: first, exit_code: 0, log: join(logs, `${grant.lease_id}-import-1.log`) },
+      { manifest: second, exit_code: 0, log: join(logs, `${grant.lease_id}-import-2.log`) },
+    ]);
+    expect(statSync(logs).mode & 0o777).toBe(0o700);
+
+    const runs = await apkgRuns();
+    const connection = ["--url", "http://127.0.0.1/ah-23-01", "--database", "arashouse_23_01", "--user", "root"];
+    expect(runs.map((x) => x.args)).toEqual([
+      ["import", first, ...connection, "--log", grant.imports[0]!.log, "--engine", "14.0.7", "--merge", "--release", "R1"],
+      ["import", second, ...connection, "--log", grant.imports[1]!.log, "--engine", "14.0.7", "--package", "A", "--package", "B"],
+    ]);
+    const hash = createHash("sha256").update(grant.password).digest("hex");
+    for (const run of runs) {
+      expect(run.env).toEqual({ ARAS_URL: "http://127.0.0.1/ah-23-01", ARAS_DATABASE: "arashouse_23_01", ARAS_USER: "root", ARAS_PKG_ENGINE: "14.0.7", ARAS_PASSWORD_SHA256: hash });
+      expect(run.args.join(" ")).not.toContain(grant.password);
+    }
+    expect(r.stderr).toContain("[INFO] fake import of");
+    expect(r.stderr).toContain(`import 2 of 2 (${join(home, "packages", "two")}, engine 14.0.7) done`);
+
+    // The password is in the JSON, once, and nowhere else: not in the logs, the state, the events or stderr.
+    expect(r.stderr).not.toContain(grant.password);
+    for (const name of await readdir(logs)) expect(await readFile(join(logs, name), "utf8")).not.toContain(grant.password);
+    expect(await readFile(join(home, "state.json"), "utf8")).not.toContain(grant.password);
+    expect(await readFile(join(home, "events.log"), "utf8")).not.toContain(grant.password);
+  });
+
+  it("a failed import returns the lease and exits 9 with aras-pkg's exit code and log; later imports do not run", async () => {
+    await seed({ "12sp9": 1 });
+    const bad = await manifest("bad", 2);
+    const after = await manifest("after");
+    const r = await cli(["get", "12sp9", "--holder", "boot", "--json", "--import", bad, "--import", after], withApkg());
+    expect(r.code).toBe(EXIT_CODES.importFailed);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(/import 1 of 2 \(.*bad.*, engine 12\.0\) failed: aras-pkg exit 2; its log: .*-import-1\.log; the lease of 12sp9-01 was returned/);
+    expect(r.stderr).toContain("hint: read the import's log");
+    expect((await apkgRuns()).length).toBe(1);
+    expect(await slotStatus("12sp9-01")).toBe("dirty");
+    expect(await readdir(join(home, "leases"))).toEqual([]);
+  });
+
+  it("--keep-on-fail keeps the lease, prints it, and still exits 9", async () => {
+    await seed({ "12sp9": 1 });
+    const bad = await manifest("bad", 1);
+    const r = await cli(["get", "12sp9", "--holder", "boot", "--json", "--import", bad, "--keep-on-fail"], withApkg());
+    expect(r.code).toBe(EXIT_CODES.importFailed);
+    const grant = JSON.parse(r.stdout) as Grant & { imports: { exit_code: number }[] };
+    expect(grant.imports.map((i) => i.exit_code)).toEqual([1]);
+    expect(r.stderr).toContain(`the lease of 12sp9-01 is kept (--keep-on-fail): return it with: arashouse return ${grant.lease_id}`);
+    expect(await slotStatus("12sp9-01")).toBe("leased");
+  });
+
+  it("refuses, before a lease is taken, what libs-js would refuse or what would run the wrong engine", async () => {
+    await seed({ "12sp9": 1, "23": 1 });
+    const ok = await manifest("ok");
+    for (const [flavor, extra, env] of [
+      ["12sp9", ["--languages", "en"], {}],
+      ["23", ["--languages", "*"], {}],
+      ["23", ["--collect-errors"], {}],
+      ["23", ["--batch"], {}],
+      ["23", ["--skip-version-check"], {}],
+      ["23", ["--engine", "13.0"], {}],
+      ["23", ["--merge", "--no-merge"], {}],
+      ["23", ["--timeout", "soon"], {}],
+      ["23", [], { ARAS_PKG_ENGINE: "14.35" }],
+      ["12sp9", [], { ARAS_PKG_ENGINE: "14.0.7" }],
+    ] as const) {
+      const r = await cli(["get", flavor, "--holder", "boot", "--import", ok, ...extra], withApkg(env));
+      expect(r.code, `${flavor} ${extra.join(" ")} ${JSON.stringify(env)}: ${r.stderr}`).toBe(EXIT_CODES.usage);
+    }
+    for (const args of [
+      ["get", "23", "--holder", "boot", "--merge", "--import", ok],
+      ["get", "23", "--holder", "boot", "--keep-on-fail"],
+      ["get", "23", "--holder", "boot", "--import", join(home, "nope", "imports.mf")],
+      ["get", "23", "--holder", "boot", "--import", home],
+      ["get", "23", "--holder", "boot", "--import"],
+    ]) {
+      expect((await cli(args, withApkg())).code, args.join(" ")).toBe(EXIT_CODES.usage);
+    }
+    expect(await apkgRuns()).toEqual([]);
+    expect(await slotStatus("23-01")).toBe("free");
+    expect(await slotStatus("12sp9-01")).toBe("free");
+  });
+
+  it("runs another engine only when the import names it, and passes the 14.35 options on a 35 lease", async () => {
+    await seed({ "23": 1, "35": 1 });
+    const ok = await manifest("ok");
+    const named = await cli(["get", "23", "--holder", "boot", "--import", ok, "--engine", "14.35", "--skip-version-check"], withApkg({ ARAS_PKG_ENGINE: "14.35" }));
+    expect(named.code, named.stderr).toBe(0);
+    const matching = await cli(["get", "35", "--holder", "boot", "--import", ok, "--languages", "en,de", "--collect-errors", "--batch", "--timeout", "-1"], withApkg({ ARAS_PKG_ENGINE: "14.35" }));
+    expect(matching.code, matching.stderr).toBe(0);
+    const runs = await apkgRuns();
+    expect(runs[0]!.args.slice(runs[0]!.args.indexOf("--engine"))).toEqual(["--engine", "14.35", "--skip-version-check"]);
+    expect(runs[1]!.args.slice(runs[1]!.args.indexOf("--engine"))).toEqual(["--engine", "14.35", "--languages", "en,de", "--collect-errors", "--batch", "--timeout=-1"]);
+  });
+
+  it("import --lease imports onto a held lease, numbers its logs after the earlier ones, and keeps the lease when one fails", async () => {
+    await seed({ "23": 1 });
+    const ok = await manifest("ok");
+    const bad = await manifest("bad", 1);
+    const got = await cli(["get", "23", "--holder", "boot", "--json", "--import", ok], withApkg());
+    expect(got.code, got.stderr).toBe(0);
+    const grant = JSON.parse(got.stdout) as Grant;
+    const more = await cli(["import", "--lease", grant.lease_id, join(home, "packages", "ok"), "--merge", ok], withApkg());
+    expect(more.code, more.stderr).toBe(0);
+    expect(more.stdout).toContain(`import 2: ${ok} (exit 0; log ${join(home, "logs", `${grant.lease_id}-import-3.log`)})`);
+    const failed = await cli(["import", "--lease", grant.lease_id, bad], withApkg());
+    expect(failed.code).toBe(EXIT_CODES.importFailed);
+    expect(failed.stderr).toMatch(/aras-pkg exit 1; its log: .*-import-4\.log; the lease is kept/);
+    expect(await slotStatus("23-01")).toBe("leased");
+    for (const run of await apkgRuns()) expect(run.env.ARAS_PASSWORD_SHA256).toBe(createHash("sha256").update(grant.password).digest("hex"));
+    for (const text of printed.slice(1)) expect(text).not.toContain(grant.password);
+
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+    expect((await cli(["import", "--lease", grant.lease_id, ok], withApkg())).code).toBe(EXIT_CODES.leaseMismatch);
+    for (const args of [["import", ok], ["import", "--lease", grant.lease_id], ["import", "--lease", "nope", ok], ["import", "--lease", grant.lease_id, "--merge", ok]]) {
+      expect((await cli(args, withApkg())).code, args.join(" ")).toBe(EXIT_CODES.usage);
+    }
+  });
+
+  it("needs aras-pkg before it takes a lease, and doctor says where it comes from", async () => {
+    await seed({ "23": 1 });
+    const ok = await manifest("ok");
+    const none = await cli(["get", "23", "--holder", "boot", "--import", ok], { PATH: "/nonexistent" });
+    expect(none.code).toBe(1);
+    expect(none.stderr).toContain("aras-pkg (import-export-libs-js) is not on PATH");
+    expect(await slotStatus("23-01")).toBe("free");
+    expect((await cli(["get", "23", "--holder", "boot", "--import", ok], { ARASHOUSE_APKG: join(home, "missing.js") })).code).toBe(1);
+
+    const found = await cli(["doctor"], withApkg());
+    expect(found.code, found.stdout).toBe(0);
+    expect(found.stdout).toContain(`ok    aras-pkg: ${FAKE_APKG} (from ARASHOUSE_APKG), version 9.9.9-fake`);
+    const missing = await cli(["doctor"], { PATH: "/nonexistent" });
+    expect(missing.code, missing.stdout).toBe(0);
+    expect(missing.stdout).toContain("warn  aras-pkg: not on PATH");
+  });
+});
+
 describe("exit codes", () => {
   it("0 for get, status, return and a repeated return", async () => {
     await seed({ "23": 1 });
@@ -723,9 +903,9 @@ describe("help and version", () => {
   it("prints help for the tool and for each command", async () => {
     const overview = await cli(["help"]);
     expect(overview.code).toBe(0);
-    const commands = ["get", "return", "status", "flavors", "run", "extract", "setup", "setup-sql", "doctor", "provision", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable", "help", "version"];
+    const commands = ["get", "return", "status", "flavors", "run", "extract", "import", "setup", "setup-sql", "doctor", "provision", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable", "help", "version"];
     for (const command of commands) expect(overview.stdout).toContain(`  ${command}`);
-    for (const command of ["get", "return", "status", "flavors", "run", "extract", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable"]) {
+    for (const command of ["get", "return", "status", "flavors", "run", "extract", "import", "media", "reset-worker", "setup", "setup-sql", "doctor", "repair", "destroy", "prune", "teardown", "force-return", "disable", "enable"]) {
       const r = await cli([command, "--help"]);
       expect(r.code, command).toBe(0);
       expect(r.stdout).toMatch(new RegExp(`^usage: arashouse ${command}`));

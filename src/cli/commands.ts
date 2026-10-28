@@ -1,5 +1,5 @@
 // The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `extract` (ticket 43), `help`, `version`
-// (and `media check`, ticket 18, `baseline verify`, ticket 28, and `reset-worker`, ticket 14), thin
+// (and `get --import` and `import`, ticket 41, `media check`, ticket 18, `baseline verify`, ticket 28, and `reset-worker`, ticket 14), thin
 // over the lease core, and the operator commands (`doctor`, `repair`, `destroy`, `prune`,
 // `force-return`, `disable`, `enable`, ticket 16; `baseline build`, ticket 24; `teardown`, ticket 49), thin over
 // operator.ts. Output rules: no command prints a password except `get --json`, once; `--verbose`
@@ -10,9 +10,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES } from "../core/exit-codes.js";
-import { FLAVOR_KEYS, getFlavor } from "../core/flavors.js";
+import { FLAVOR_KEYS, getFlavor, isFlavorKey, type FlavorKey } from "../core/flavors.js";
 import { GuardError } from "../core/guards.js";
 import {
+  LeaseError,
   UsageError,
   asLeaseError,
   exitCodeFor,
@@ -43,6 +44,7 @@ import { parseSlotId, slotId } from "../core/names.js";
 import { type ResetDeps, describeOutcome, resetHooks, runResetWorker } from "../core/reset.js";
 import { redactError } from "../core/redact.js";
 import { StateStore } from "../core/store.js";
+import { isLeaseId } from "../core/state.js";
 import { createMsiReader, windowsTempDir } from "../host/msi.js";
 import { parseArgs, parseSeconds, stringOption, type ParsedArgs } from "./args.js";
 import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
@@ -51,6 +53,7 @@ import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { parsePasswordFd, writePasswordFd } from "./password-fd.js";
 import { runWithLease } from "./run.js";
 import { EXTRACT_HELP, runExtract } from "./extract.js";
+import { describeArasPkg, prepareImports, requireArasPkg, runImports, splitImports, leaseFlavor, type ImportDeps, type ImportResult } from "./import.js";
 import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
 import { checkMedia } from "../core/media-check.js";
 import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
@@ -70,6 +73,7 @@ export interface CliIo {
 const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
   get: [
     "usage: arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]",
+    "                     [--import <manifest|folder> [<import options>]]... [--keep-on-fail]",
     "",
     `Leases a clean slot of <flavor> (${FLAVOR_KEYS.join(", ")}) to <task>. With --json, stdout is the`,
     "lease contract (docs/schemas/get.schema.json) and nothing else; it holds the lease's password,",
@@ -79,6 +83,33 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "agent stays stopped. A flavor whose golden has no agent refuses it (exit 7).",
     "--password-fd <n> writes the password and a newline to descriptor <n> (3 or more, opened for the",
     "command, for example `3>file`) instead, and --json then leaves it out.",
+    "--import <manifest|folder> imports a package manifest (imports.mf, or the folder that holds one) onto the",
+    "lease with import-export-libs-js (`aras-pkg import`, the flavor's engine), in the order given; the options",
+    "after an --import are its own (see `arashouse help import`). A failed import returns the lease and exits 9",
+    "with aras-pkg's exit code and log; --keep-on-fail keeps the lease instead, so a human can look (still exit 9).",
+  ],
+  import: [
+    "usage: arashouse import --lease <lease_id> <manifest|folder> [<import options>] [<manifest|folder> [<import options>]]...",
+    "",
+    "Imports package manifests onto a held lease, in order, with import-export-libs-js: `aras-pkg import <manifest>",
+    "--engine <the flavor's> --url --database --user root`, with the lease's password in its environment only. Its",
+    "log goes to $ARASHOUSE_HOME/logs/<lease_id>-import-<n>.log. The first import that fails stops the run with",
+    "exit 9 (aras-pkg's exit code and log on stderr); the lease is kept. aras-pkg is $ARASHOUSE_APKG (a checkout's",
+    "dist/cli.js) or aras-pkg on PATH.",
+    "",
+    "Import options (each belongs to the manifest before it):",
+    "  --merge | --no-merge     merge into existing items, or skip them (aras-pkg's default)",
+    "  --release <text>         the target_release of the DatabaseUpgrade rows",
+    "  --description <text>     their description",
+    "  --package <name>         import only this package of the manifest (repeatable)",
+    "  --os-user <name>         the os_user of the rows",
+    "  --languages <codes|*>    engine 14.35 only: import only these languages",
+    "  --collect-errors, --batch  engine 14.35 only",
+    "  --timeout <ms>           the engine's response timeout (0 its default, -1 for ever)",
+    "  --engine <version>       run this engine, not the flavor's (12.0, 14.0.7, 14.35)",
+    "  --skip-version-check     refused unless --engine is given too",
+    "--verbose also makes aras-pkg verbose. An ARAS_PKG_ENGINE in the environment that is not the flavor's engine",
+    "is refused unless the import names --engine.",
   ],
   return: [
     "usage: arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]",
@@ -218,6 +249,8 @@ const OVERVIEW: readonly string[] = [
   "  return <lease_id> [--wait[=<seconds>]] [--quiet]           give a lease back (its slot is discarded)",
   "  status [--json]                                            every slot and its holder",
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
+  "      [--import <manifest|folder> [...]]... [--keep-on-fail]  ... with packages imported onto it (aras-pkg)",
+  "  import --lease <lease_id> <manifest|folder> [...]           import packages onto a held lease (aras-pkg)",
   "  run --lease <lease_id> -- <command ...>                    run a command with the lease's ARAS_* environment",
   "  extract code --lease <lease_id> <path> --to <dir>          copy code out of a lease before returning it",
   "  extract db --lease <lease_id> --to <file.bak>              ... or a COPY_ONLY backup of its database",
@@ -245,7 +278,7 @@ const OVERVIEW: readonly string[] = [
   "Options for every command: --help, --verbose (more detail on stderr, never a secret).",
   "Exit codes: 0 ok, 1 other failure, 2 usage, 3 no slot available, 4 lease mismatch,",
   "5 reset failed, 6 host unreachable, 7 refused by a guard, 8 a secret is needed and no terminal",
-  "can ask; `run` passes its command's code through. See docs/cli.md.",
+  "can ask, 9 an import failed; `run` passes its command's code through. See docs/cli.md.",
 ];
 
 /** What to try next, by exit code; printed under the error line. */
@@ -258,6 +291,7 @@ const HINTS: Readonly<Record<number, string>> = {
   [EXIT_CODES.hostUnreachable]: "is the Windows host up and the arashouse broker running?",
   [EXIT_CODES.refused]: "arashouse touches only what it owns; check the name",
   [SECRET_REQUIRED_EXIT_CODE]: "run the command again from a terminal",
+  [EXIT_CODES.importFailed]: "read the import's log; `get --keep-on-fail` keeps the lease to look at it",
 };
 
 export function version(): string {
@@ -318,7 +352,7 @@ async function resetDeps(ctx: Context, selected: SelectedHost): Promise<ResetDep
   return { store: ctx.store, host: selected.host, golden: selected.golden, config: await loadConfig({ home: ctx.store.paths.home }) };
 }
 
-async function leaseDeps(ctx: Context): Promise<LeaseDeps> {
+async function leaseDeps(ctx: Context): Promise<LeaseDeps & Pick<SelectedHost, "resolveUrl">> {
   const selected = await host(ctx);
   const reset = await resetDeps(ctx, selected);
   return {
@@ -342,6 +376,7 @@ async function operatorDeps(ctx: Context): Promise<OperatorDeps> {
     startWorker: (slot) => spawnResetWorker(ctx.env, slot),
     media: (flavor) => mediaPresent(flavor, { env: ctx.env }),
     setup: selected.kind === "broker" ? () => observeSetup() : undefined,
+    importTool: () => describeArasPkg(ctx.env),
   };
 }
 
@@ -353,8 +388,23 @@ function printJson(io: CliIo, value: unknown): void {
   io.out(JSON.stringify(value, null, 2));
 }
 
+const GET_OPTIONS = { holder: "value", wait: "value", agent: "flag", json: "flag", "password-fd": "value", "keep-on-fail": "flag" } as const;
+
+function importDeps(ctx: Context, deps: Pick<ImportDeps, "resolveUrl">): ImportDeps {
+  return {
+    store: ctx.store,
+    secrets: new LeaseFileStore(ctx.store.paths.home),
+    resolveUrl: deps.resolveUrl,
+    env: ctx.env,
+    err: ctx.io.err,
+    apkg: requireArasPkg(ctx.env),
+    home: ctx.store.paths.home,
+  };
+}
+
 async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
-  const parsed = parseArgs(args, { holder: "value", wait: "value", agent: "flag", json: "flag", "password-fd": "value" });
+  const { rest, steps } = splitImports(args, GET_OPTIONS, "--import");
+  const parsed = parseArgs(rest, GET_OPTIONS);
   const [flavor, extra] = parsed.positionals;
   if (flavor === undefined) throw new UsageError(`get needs a flavor: ${FLAVOR_KEYS.join(", ")}`);
   if (extra !== undefined) throw new UsageError(`get takes one flavor, not "${extra}" too`);
@@ -362,8 +412,14 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
   if (holder === undefined) throw new UsageError("get needs --holder <task>: who is taking the lease");
   const wait = stringOption(parsed, "wait");
   const fdText = stringOption(parsed, "password-fd");
+  const keepOnFail = parsed.options["keep-on-fail"] === true;
+  if (keepOnFail && steps.length === 0) throw new UsageError("--keep-on-fail goes with --import");
   // Checked before the lease is taken, so a descriptor that is not open costs no slot.
   const passwordFd = fdText === undefined ? undefined : parsePasswordFd(fdText);
+  // So are the imports: their manifests, their options against the flavor's engine, and aras-pkg itself.
+  if (steps.length > 0 && !isFlavorKey(flavor)) throw new UsageError(`unknown flavor "${flavor}"; the flavors are ${FLAVOR_KEYS.join(", ")}`);
+  const imports = steps.length === 0 ? [] : prepareImports(steps, { flavor: flavor as FlavorKey, env: ctx.env, verbose: ctx.verbose });
+  const apkgCheck = steps.length === 0 ? undefined : requireArasPkg(ctx.env);
   const deps = await leaseDeps(ctx);
   const grant = await getLease(deps, {
     flavor,
@@ -372,6 +428,22 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     agent: parsed.options.agent === true,
   });
   const returnHint = `return it with: arashouse return ${grant.lease_id}`;
+  let results: readonly ImportResult[] | undefined;
+  let failure: string | undefined;
+  if (apkgCheck !== undefined) {
+    try {
+      ({ results, failure } = await runImports(importDeps(ctx, deps), grant.lease_id, imports));
+    } catch (err) {
+      // An import that could not even start leaves a lease nobody asked for half made: it goes back.
+      await returnLease(deps, { target: grant.lease_id });
+      throw err;
+    }
+    if (failure !== undefined && !keepOnFail) {
+      // Atomic: the lease goes back, and the slot is reset before it is handed out again.
+      await returnLease(deps, { target: grant.lease_id });
+      throw new LeaseError(EXIT_CODES.importFailed, `${failure}; the lease of ${grant.slot} was returned (--keep-on-fail keeps it)`);
+    }
+  }
   if (passwordFd !== undefined) {
     try {
       writePasswordFd(passwordFd, grant.password);
@@ -381,10 +453,15 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
       throw new UsageError(`the password could not be written to descriptor ${passwordFd}; the lease of ${grant.slot} was returned`);
     }
   }
+  const finish = (): number => {
+    if (failure === undefined) return EXIT_CODES.ok;
+    ctx.io.err(`arashouse: ${failure}; the lease of ${grant.slot} is kept (--keep-on-fail): ${returnHint}`);
+    return EXIT_CODES.importFailed;
+  };
   if (parsed.options.json === true) {
-    printJson(ctx.io, renderGetJson(grant, { password: passwordFd === undefined }));
+    printJson(ctx.io, { ...renderGetJson(grant, { password: passwordFd === undefined }), ...(results === undefined ? {} : { imports: results }) });
     ctx.io.err(`arashouse: leased ${grant.slot} to ${grant.holder}; ${returnHint}`);
-    return EXIT_CODES.ok;
+    return finish();
   }
   const f = getFlavor(grant.flavor);
   for (const line of [
@@ -396,10 +473,28 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     passwordFd === undefined
       ? `password:  not shown; use \`arashouse run --lease ${grant.lease_id} -- <command>\``
       : `password:  written to descriptor ${passwordFd}`,
+    ...(results ?? []).map((r, i) => `import ${i + 1}:  ${r.manifest} (exit ${r.exit_code}; log ${r.log})`),
     returnHint,
   ]) {
     ctx.io.out(line);
   }
+  return finish();
+}
+
+async function cmdImport(ctx: Context, args: readonly string[]): Promise<number> {
+  const outer = { lease: "value" } as const;
+  const { rest, steps } = splitImports(args, outer, "positional");
+  const parsed = parseArgs(rest, outer);
+  const leaseId = stringOption(parsed, "lease");
+  if (leaseId === undefined) throw new UsageError("import needs --lease <lease_id>");
+  if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
+  if (steps.length === 0) throw new UsageError("import needs a manifest (imports.mf) or the folder that holds one");
+  const selected = await host(ctx);
+  const deps = importDeps(ctx, selected);
+  const imports = prepareImports(steps, { flavor: await leaseFlavor(deps, leaseId), env: ctx.env, verbose: ctx.verbose });
+  const { results, failure } = await runImports(deps, leaseId, imports);
+  for (const [i, r] of results.entries()) ctx.io.out(`import ${i + 1}: ${r.manifest} (exit ${r.exit_code}; log ${r.log})`);
+  if (failure !== undefined) throw new LeaseError(EXIT_CODES.importFailed, `${failure}; the lease is kept`);
   return EXIT_CODES.ok;
 }
 
@@ -692,6 +787,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   flavors: cmdFlavors,
   run: cmdRun,
   extract: cmdExtract,
+  import: cmdImport,
   media: cmdMedia,
   baseline: cmdBaseline,
   "reset-worker": cmdResetWorker,

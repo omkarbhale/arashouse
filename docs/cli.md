@@ -2,7 +2,7 @@
 
 The worker-facing commands, thin over the lease core (`docs/lease.md`), and the operator commands,
 thin over `src/core/operator.ts`. Source: `src/cli/commands.ts`. `get --bootstrap` and its steps are
-tickets 39 to 42; the extraction helpers (`extract`, ticket 43) are in `docs/extract.md`.
+tickets 39 to 42 (`get --import` and `import`, ticket 41, are in `docs/import.md`); the extraction helpers (`extract`, ticket 43) are in `docs/extract.md`.
 
 > "The philosophy is that Aras are disposable, and anything durable should be taken out by whoever
 > took the lease before giving it back."
@@ -12,6 +12,8 @@ tickets 39 to 42; the extraction helpers (`extract`, ticket 43) are in `docs/ext
 | command | what it does |
 |---|---|
 | `arashouse get <flavor> --holder <task> [--wait <seconds>] [--agent] [--json] [--password-fd <n>]` | Leases a clean slot of the flavor; `--agent` starts its agent service too; `--password-fd` writes the password to a descriptor. |
+| `arashouse get <flavor> --holder <task> --import <manifest\|folder> [<import options>] ... [--keep-on-fail]` | The same, then imports package manifests onto the lease with import-export-libs-js, in order (`docs/import.md`). |
+| `arashouse import --lease <lease_id> <manifest\|folder> [<import options>] ...` | Imports package manifests onto a held lease (`docs/import.md`). |
 | `arashouse return <lease_id> [--wait[=<seconds>]] [--quiet]` | Gives the lease back; its slot is discarded. |
 | `arashouse return <slot> --if-lease-id <lease_id> [--wait[=<seconds>]] [--quiet]` | The same, by slot name; the lease id is required (ABA protection). |
 | `arashouse status [--json]` | Every slot, its holder and lease age, totals per flavor, `max_active` in use. |
@@ -65,6 +67,18 @@ and so is a descriptor that is not open or is Node's own (its event loop opens d
 lowest free number, so one the caller did not open is never written to). It is checked before the
 lease is taken, so a mistake costs no slot (exit 2). If the write fails after the lease is taken, the
 lease is returned at once.
+
+`--import <manifest|folder>` (repeatable) imports each package manifest onto the lease after it is taken, in
+order, with import-export-libs-js's `aras-pkg import` and the flavor's engine; the options after an `--import`
+are that import's. A failed import returns the lease and exits 9; `--keep-on-fail` keeps it and prints it
+(still exit 9). With `--json` the contract gains `imports`, one `{ manifest, exit_code, log }` per import that
+ran. See `docs/import.md`.
+
+### `import`
+
+`arashouse import --lease <lease_id> <manifest|folder> [<import options>] ...` is `get --import` for a lease
+already held: the same options, the same child process, logs numbered after the lease's earlier ones. A
+failed import exits 9 and the lease is kept. A lease that is not held exits 4, as with `run`.
 
 ### `return`
 
@@ -167,6 +181,7 @@ code. It checks:
 | `disk`, `ram` | free disk is under `min_free_disk_gb`, free RAM under `min_free_ram_mb` (warn; `docs/governor.md`) |
 | `media <flavor>` | the flavor's media is missing or its folder cannot be found (warn; `media check` is the full check) |
 | `baseline <flavor>` | the golden does not verify at the fast level (the full level, every file's SHA-256, with `--deep`): fail if the pool has slots of the flavor, else warn |
+| `aras-pkg` | the import tool (`$ARASHOUSE_APKG`, else `aras-pkg` on `PATH`) is not there or does not answer `--version` (warn; only `get --import` and `import` need it); when it is there, the line names where it came from and its version |
 | `slot <id>` | a record whose slot is not on the host; a stamp that belongs to another slot; a `free` slot that is not clean on the host (its stamp, tree, database marker or health; the same check `get` makes); a `resetting` slot whose worker has ended; a `dirty` slot with no reset running (warn); a `quarantined` slot (warn); a lease 24 hours old or more (warn); a lease the stamp does not name (warn) |
 | `orphan <id>` | a slot on the host with no record (`arashouse_*` database, `ah-*` application) |
 
@@ -262,6 +277,7 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | 6 | host unreachable (the host or broker did not answer) |
 | 7 | refused by a guard: the name is not one arashouse owns, or is on the deny-list; or an operator command the slot's status does not allow (destroying a leased slot, a `teardown` while a slot is leased, repairing one that is not quarantined), or `repair --rebuild` under the disk gate |
 | 8 | a step needs a secret and no terminal can ask for it |
+| 9 | an import failed: `aras-pkg import` exited non-zero in `get --import` (the lease was returned, unless `--keep-on-fail`) or `import` (the lease is kept); stderr names its exit code and log |
 | 127 | `run` could not start its command |
 
 ## Environment
@@ -275,4 +291,5 @@ Stable. `src/core/exit-codes.ts` is the source; `test/cli.test.ts` checks this t
 | `ARASHOUSE_HOST_ADDR` | the Windows host address for slot URLs (`docs/slot-url.md`) |
 | `ARASHOUSE_RESET_WORKER` | `off`: `return` and `get` start no detached reset worker (a lazy reset in `get --wait` still runs); the CLI tests use it |
 | `ARASHOUSE_MEDIA` | the folder holding `media/<flavor>/` (`docs/media-check.md`) |
+| `ARASHOUSE_APKG` | the import-export-libs-js CLI for `get --import` and `import`: a checkout's `dist/cli.js` (run with this Node) or an executable; else `aras-pkg` on `PATH` (`docs/import.md`) |
 | `ARASHOUSE_DEBUG` | `1` prints the stack of an error |

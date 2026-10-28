@@ -154,7 +154,7 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
 
 describe("the exit codes", () => {
   it("are the stable table of ticket 13", () => {
-    expect(EXIT_CODES).toEqual({ ok: 0, usage: 2, noSlot: 3, leaseMismatch: 4, resetFailed: 5, hostUnreachable: 6, refused: 7 });
+    expect(EXIT_CODES).toEqual({ ok: 0, usage: 2, noSlot: 3, leaseMismatch: 4, resetFailed: 5, hostUnreachable: 6, refused: 7, importFailed: 9 });
     expect(Object.values(EXIT_CODES)).not.toContain(SECRET_REQUIRED_EXIT_CODE);
   });
 

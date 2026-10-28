@@ -56,24 +56,16 @@ export async function heldSlot(store: StateStore, leaseId: string): Promise<Slot
   return slot;
 }
 
-/** Starts the command with the lease's environment and resolves with its exit code. */
-export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<number> {
-  const { leaseId, command } = request;
-  if (leaseId === undefined) throw new UsageError("run needs --lease <lease_id>");
-  if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
-  const [program, ...args] = command;
-  if (program === undefined || program === "") throw new UsageError("run needs a command after --");
-
+/** The lease's connection, as the variables `run` (and `get --import`) put in a child's environment. */
+export async function leaseEnvironment(deps: Pick<RunDeps, "store" | "secrets" | "resolveUrl">, leaseId: string): Promise<Record<(typeof RUN_ENV_NAMES)[number], string>> {
   const slot = await heldSlot(deps.store, leaseId);
   const secret = await deps.secrets.get(leaseSecretName(leaseId));
   if (!secret) {
     throw staleLease(`the password of lease ${leaseRef(leaseId)} on ${slot.id} is gone (the state was recovered); return the lease and take a new one`);
   }
   const ref = { flavor: slot.flavor, slot: slot.number };
-  const url = await deps.resolveUrl(webAlias(ref));
-  const env: NodeJS.ProcessEnv = {
-    ...(deps.env ?? process.env),
-    ARAS_URL: url,
+  return {
+    ARAS_URL: await deps.resolveUrl(webAlias(ref)),
     ARAS_DATABASE: databaseName(ref),
     ARAS_USER: LEASE_USER,
     ARAS_PASSWORD: secret.reveal(),
@@ -81,10 +73,38 @@ export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<
     ARASHOUSE_FLAVOR: slot.flavor,
     ARAS_PKG_ENGINE: getFlavor(slot.flavor).libsJsEngine,
   };
+}
 
+export interface ChildOptions {
+  readonly env: NodeJS.ProcessEnv;
+  /** `inherit` (the default) or where the child's stdout and stderr go, line by line. */
+  readonly output?: (line: string) => void;
+  readonly err: (line: string) => void;
+}
+
+/**
+ * Starts a program without a shell and resolves with its exit code: 128 plus the signal's number when a signal ended it,
+ * 127 when it could not start. Ctrl-C reaches the child too; this process waits for it rather than dying first.
+ */
+export function runChild(program: string, args: readonly string[], options: ChildOptions): Promise<number> {
   return new Promise<number>((resolve) => {
-    const child = spawn(program, args, { stdio: "inherit", env });
-    // A terminal's Ctrl-C reaches the child too; this process waits for it rather than dying first.
+    const { output } = options;
+    const child = spawn(program, args, { stdio: output === undefined ? "inherit" : ["ignore", "pipe", "pipe"], env: options.env });
+    if (output !== undefined) {
+      for (const stream of [child.stdout, child.stderr]) {
+        let pending = "";
+        stream?.setEncoding("utf8");
+        stream?.on("data", (chunk: string) => {
+          const lines = (pending + chunk).split(/\r?\n/);
+          pending = lines.pop() ?? "";
+          for (const line of lines) output(line);
+        });
+        stream?.on("end", () => {
+          if (pending !== "") output(pending);
+          pending = "";
+        });
+      }
+    }
     const forward = (signal: NodeJS.Signals) => () => {
       if (signal !== "SIGINT") child.kill(signal);
     };
@@ -98,11 +118,23 @@ export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<
       resolve(code);
     };
     child.on("error", (error: NodeJS.ErrnoException) => {
-      deps.err(`arashouse: cannot run "${program}": ${error.code ?? error.message}`);
+      options.err(`arashouse: cannot run "${program}": ${error.code ?? error.message}`);
       done(COMMAND_NOT_STARTED);
     });
-    child.on("exit", (code, signal) => {
+    // "close", not "exit": with piped output the last lines are read before the code is reported.
+    child.on("close", (code, signal) => {
       done(code ?? 128 + (signal ? (constants.signals[signal] ?? 0) : 0));
     });
   });
+}
+
+/** Starts the command with the lease's environment and resolves with its exit code. */
+export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<number> {
+  const { leaseId, command } = request;
+  if (leaseId === undefined) throw new UsageError("run needs --lease <lease_id>");
+  if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
+  const [program, ...args] = command;
+  if (program === undefined || program === "") throw new UsageError("run needs a command after --");
+  const env = { ...(deps.env ?? process.env), ...(await leaseEnvironment(deps, leaseId)) };
+  return runChild(program, args, { env, err: deps.err });
 }

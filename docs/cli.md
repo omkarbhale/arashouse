@@ -248,7 +248,7 @@ not in the pool gets a `provisioning` record and is made on the host from the fl
 stamp; `docs/provision.md`). A slot already in the pool is left alone (`23-01 is in the pool already
 (free)`), and one an earlier run left `provisioning` is finished. After its provision the slot's health
 check decides: `free` when it passes, `quarantined` when it fails, `dirty` (with a reset worker) when it
-cannot run. A slot whose provision fails was rolled back by the host: its record is removed (or the
+cannot run or only timed out (`docs/health.md`). A slot whose provision fails was rolled back by the host: its record is removed (or the
 slot quarantined if the host still lists it) and the run stops there with that error; when the host did
 not answer, the record stays `provisioning` and running `provision` again finishes it. Only one
 `provision` runs at a time (`provision.lock` next to the state file). A flavor key comes first: `12sp9`

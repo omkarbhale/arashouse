@@ -55,7 +55,7 @@ path, and in `repair` (`docs/cli.md`).
 | `database` | `resetDatabase` | Restores the golden `db\ootb.bak` over the slot database as its owner, maps its users again and writes the marker (ticket 31, `docs/reset-database.md`). |
 | `tree` | `resetTree` | Mirrors the golden tree, clears the runtime state, renders the configs, verifies, and writes a fresh stamp (ticket 30). Below. |
 | `start` | `startSlot` | Starts the slot's pools and warms them (`Client/`, `Server/DBList.aspx`, OAuth discovery), without the agent (`docs/start-stop.md`; `get --agent` starts it). |
-| `health` | `healthCheck`, `readStamp` | The health check must pass: server, tree, configs, marker, version, and `root`'s login with a one-time password, which is what makes the free slot's `root` and `admin` passwords random (`docs/health.md`). The stamp must carry the golden hash, no lease and a reset time. A failed check is retried once, then quarantines the slot with the checks named. |
+| `health` | `healthCheck`, `readStamp` | The health check must pass: server, tree, configs, marker, version, and `root`'s login with a one-time password, which is what makes the free slot's `root` and `admin` passwords random (`docs/health.md`). The stamp must carry the golden hash, no lease and a reset time. A failed check is retried once, then quarantines the slot with the checks named; one that only timed out leaves it `dirty` (below). |
 
 Then the golden is read again: if its hash changed during the reset (a `baseline build -Replace`
 promoted a new one), the slot goes back to `dirty`. Otherwise, under the lock, the slot moves

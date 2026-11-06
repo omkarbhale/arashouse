@@ -23,6 +23,7 @@ import { Broker } from "./broker.js";
 import { nodeBrokerFs, type BrokerFs } from "./fs.js";
 import { servePipe } from "./pipe.js";
 import { PIPE_PATH } from "./protocol.js";
+import { powershellAdminProbe } from "./admin-probe.js";
 import { powershellSqlProbe } from "./sql-probe.js";
 import { newToken, writeTokenFile } from "./token.js";
 import { registerCoreVerbs, type BrokerSystem } from "./verbs.js";
@@ -68,6 +69,7 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
     freeRamBytes: options.system?.freeRamBytes ?? freemem,
     sqlLogin: options.system?.sqlLogin ?? powershellSqlProbe(),
     licences: options.system?.licences ?? (() => licenceStatus(slotSystem.secrets)),
+    token: options.system?.token ?? powershellAdminProbe(),
   };
   const broker = new Broker({
     root,

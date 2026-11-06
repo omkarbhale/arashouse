@@ -9,7 +9,7 @@
 // - There is no lease expiry (the captain's answer 5): nothing here reclaims a lease by age.
 //   `force-return` is the operator's explicit `return`, and needs the lease as `status` shows it.
 
-import type { HostDriver, ListedSlot } from "../host/driver.js";
+import type { BrokerToken, HostDriver, ListedSlot } from "../host/driver.js";
 import { isHostError } from "../host/errors.js";
 import { type ArashouseConfig, DEFAULT_CONFIG } from "./config.js";
 import { EXIT_CODES } from "./exit-codes.js";
@@ -36,14 +36,14 @@ import { rebuildState } from "./recovery.js";
 import { redact } from "./redact.js";
 import { type ResetDeps, type ResetHost, currentGoldenHash, describeOutcome, recoverDeadResets, resetSlot } from "./reset.js";
 import { type SetupObservation, checkSetup } from "./setup-host.js";
-import { checkSqlLogin } from "./setup-sql.js";
+import { checkBrokerToken, checkSqlLogin } from "./setup-sql.js";
 import type { SecretStore } from "./secret-store.js";
 import { type Lease, RECOVERED_HOLDER, type Slot, type State, StateCorruptError, isLeaseId } from "./state.js";
 import type { StateStore } from "./store.js";
 
 /** The host calls the operator commands make. */
 export type OperatorHost = ResetHost &
-  Pick<HostDriver, "ping" | "hostInfo" | "listSlots" | "provisionSlot" | "destroySlot" | "stopSlot" | "baselineVerify" | "healthCheck" | "readStamp">;
+  Pick<HostDriver, "ping" | "hostInfo" | "brokerToken" | "listSlots" | "provisionSlot" | "destroySlot" | "stopSlot" | "baselineVerify" | "healthCheck" | "readStamp">;
 
 export interface OperatorDeps {
   readonly store: StateStore;
@@ -696,6 +696,15 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
     add("fail", "broker", `did not answer: ${errorText(err)}; the host checks were skipped`);
     return done();
   }
+
+  let token: BrokerToken | null = null;
+  try {
+    token = (await host.brokerToken()).token;
+  } catch (err) {
+    if (!isHostError(err)) throw err;
+  }
+  const tokenFinding = checkBrokerToken(token);
+  add(tokenFinding.level, tokenFinding.check, tokenFinding.message);
 
   let hostLicences: readonly LicenceStatus[] | undefined;
   try {

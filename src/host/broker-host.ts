@@ -25,6 +25,8 @@ import type {
   HealthCheckEntry,
   HealthResult,
   HostDriver,
+  BrokerToken,
+  BrokerTokenResult,
   HostInfo,
   HostInfoResult,
   HostMethod,
@@ -88,6 +90,15 @@ function parseLicences(value: unknown): readonly LicenceStatus[] | undefined {
     }
     return { line: entry.line, present: entry.present };
   });
+}
+
+/** The broker's token as `brokerToken` sends it; null when the broker could not read it. */
+function parseToken(value: unknown): BrokerToken | null {
+  if (value === null) return null;
+  if (!isRecord(value) || Object.keys(value).length !== 2 || typeof value.isAdministrator !== "boolean" || typeof value.identity !== "string" || value.identity === "") {
+    throw new ProtocolError("token has the wrong fields");
+  }
+  return { isAdministrator: value.isAdministrator, identity: value.identity };
 }
 
 function parseHostInfo(value: unknown): HostInfo {
@@ -195,6 +206,15 @@ export class BrokerHost implements HostDriver {
       return { ok: result.ok, ms, detail: result.detail, info: parseHostInfo(result.info) };
     } catch (err) {
       throw malformed("hostInfo", (err as Error).message);
+    }
+  }
+
+  async brokerToken(): Promise<BrokerTokenResult> {
+    const { result, ms } = await this.call("brokerToken");
+    try {
+      return { ok: result.ok, ms, detail: result.detail, token: parseToken(result.token) };
+    } catch (err) {
+      throw malformed("brokerToken", (err as Error).message);
     }
   }
 

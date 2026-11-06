@@ -46,6 +46,14 @@ export interface SqlLoginInfo {
   readonly maxServerMemoryMb?: number;
 }
 
+/** The token the broker runs with, as the broker reads it in its own process (names and a flag; no secret). */
+export interface BrokerToken {
+  /** Whether the token is an administrator's (`WindowsPrincipal.IsInRole(Administrator)`): the real token, not the group on disk. */
+  readonly isAdministrator: boolean;
+  /** The account it runs as, for example `NT SERVICE\ArasHouseBroker`. */
+  readonly identity: string;
+}
+
 export interface HostInfo {
   readonly os: string;
   readonly freeRamMb: number;
@@ -57,6 +65,11 @@ export interface HostInfo {
   readonly sqlLogin?: SqlLoginInfo | null;
   /** Whether a licence is stored for each licence line: booleans only (ticket 34b); absent from an older broker. */
   readonly licences?: readonly LicenceStatus[];
+}
+
+export interface BrokerTokenResult extends HostResult {
+  /** Null when the broker could not read its token. */
+  readonly token: BrokerToken | null;
 }
 
 export interface HostInfoResult extends HostResult {
@@ -187,6 +200,11 @@ export interface DeployResult extends HostResult {
 export interface HostDriver {
   ping(): Promise<HostResult>;
   hostInfo(): Promise<HostInfoResult>;
+  /**
+   * The broker's own token. IIS reads as empty for a broker that is not an administrator, so every reset fails
+   * (docs/runbook.md). It starts a PowerShell process, so only `doctor` asks; a broker older than this verb refuses it.
+   */
+  brokerToken(): Promise<BrokerTokenResult>;
 
   /** Creates the slot's folders, database, application and agent from the flavor's templates (ticket 25). */
   provisionSlot(slot: SlotRef): Promise<HostResult>;
@@ -238,6 +256,7 @@ export interface HostDriver {
 export const HOST_METHODS = [
   "ping",
   "hostInfo",
+  "brokerToken",
   "provisionSlot",
   "destroySlot",
   "quiesce",

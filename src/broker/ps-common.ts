@@ -44,16 +44,33 @@ function Invoke-Sql($Connection, [string]$Query, [hashtable]$Parameters = @{}, [
 }`;
 }
 
-/** `Get-Iis`: a `ServerManager`, refused when the configuration reads as empty (not elevated). */
+/**
+ * `Get-Iis`: a `ServerManager`, refused when the configuration reads as empty. A process whose token is not an
+ * administrator's can read as empty, and PowerShell hides an exception thrown by a property read (so the getters are called as methods); the refusal says who is running, whether that
+ * token is an administrator's, whether `applicationHost.config` opens and any exception that was caught (names only,
+ * no secret), and points at the runbook: the broker has no one to "run elevated"; its account's membership is what is missing.
+ */
 export const PS_IIS = `function Get-Iis {
     $dll = Join-Path $env:windir 'System32\\inetsrv\\Microsoft.Web.Administration.dll'
     if (-not (Test-Path -LiteralPath $dll)) { Stop-Step 'IIS is not installed (no Microsoft.Web.Administration.dll)' }
     Add-Type -Path $dll
     $mgr = New-Object Microsoft.Web.Administration.ServerManager
-    # Without elevation the configuration reads as empty rather than failing; an empty read would make the checks pass on nothing.
+    # Without administrator rights the configuration reads as empty rather than failing; an empty read would make the checks pass on nothing.
+    # @($null).Count is 1, so the pools are filtered before they are counted.
     $readable = $false
-    try { $readable = ($null -ne $mgr.Sites) -and (@($mgr.ApplicationPools).Count -gt 0) } catch { }
-    if (-not $readable) { $mgr.Dispose(); Stop-Step 'the IIS configuration is not readable (run elevated)' }
+    $caught = ''
+    try { $readable = ($null -ne $mgr.get_Sites()) -and (@($mgr.get_ApplicationPools() | Where-Object { $_ }).Count -gt 0) } catch { $caught = ($_.Exception.Message -replace '\\s*[\\r\\n]+\\s*', ' ').Trim() }
+    if (-not $readable) {
+        $mgr.Dispose()
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $admin = (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        $cfgOpens = $false
+        try { [IO.File]::Open((Join-Path $env:windir 'System32\\inetsrv\\config\\applicationHost.config'), 'Open', 'Read', 'ReadWrite').Dispose(); $cfgOpens = $true } catch { }
+        $facts = "running as $($id.Name); is an administrator: $(if ($admin) { 'yes' } else { 'no' }); applicationHost.config opens: $(if ($cfgOpens) { 'yes' } else { 'no' })"
+        if ($caught) { $facts += "; error: $caught" }
+        $hint = if (-not $admin) { 'the process has no administrator token; if it is the broker, its Administrators membership was probably removed (a domain Group Policy does that) and the service needs it back and a restart' } else { 'the process is an administrator, so look at the error, if any, and at applicationHost.config' }
+        Stop-Step "the IIS configuration is not readable: $facts. $hint (docs/runbook.md, 'The IIS configuration is not readable')"
+    }
     return $mgr
 }`;
 

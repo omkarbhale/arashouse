@@ -38,6 +38,7 @@ export type BrokerVerb = HostMethod | (typeof HOST_SIDE_VERBS)[number];
 export const VERB_TIMEOUT_MS: Readonly<Partial<Record<BrokerVerb, number>>> = {
   ping: 5_000,
   hostInfo: 20_000,
+  brokerToken: 20_000,
   readStamp: 10_000,
   listSlots: 20_000,
   // `full` hashes every file of a golden tree: about 560 to 750 MB, at the 2 MB/s measured with real-time scanning (design 8.3).

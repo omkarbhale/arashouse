@@ -6,7 +6,7 @@ import { win32 } from "node:path";
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import type { LicenceStatus } from "../core/licence.js";
 import { MAX_SLOT, STAMP_FILE_NAME, slotId, type SlotRef } from "../core/names.js";
-import type { HostInfo, ListedSlot, SlotStamp, SqlLoginInfo } from "../host/driver.js";
+import type { BrokerToken, HostInfo, ListedSlot, SlotStamp, SqlLoginInfo } from "../host/driver.js";
 import { HostError, isHostError } from "../host/errors.js";
 import { assertSlotOwned } from "../host/owned.js";
 import type { Broker, VerbContext } from "./broker.js";
@@ -29,6 +29,8 @@ export interface BrokerSystem {
   sqlLogin(): Promise<SqlLoginInfo | null>;
   /** Whether each licence line has a stored licence (booleans only); absent, `hostInfo` reports none. */
   licences?(): Promise<readonly LicenceStatus[]>;
+  /** The broker's own token (an administrator's or not, and whose); null when it cannot be read; absent, `brokerToken` answers null. */
+  token?(): Promise<BrokerToken | null>;
 }
 
 const MB = 1024 * 1024;
@@ -71,6 +73,13 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
           ...(licences ? { licences: licences.map((l) => ({ line: l.line, present: l.present })) } : {}),
         };
         return { ok: true, detail: hostInfoDetail(info), info };
+      },
+    })
+    .register("brokerToken", {
+      target: "none",
+      run: async (): Promise<WireResult> => {
+        const token = (await system.token?.()) ?? null;
+        return { ok: true, detail: token ? token.identity : "the token could not be read", token };
       },
     })
     .register("readStamp", {

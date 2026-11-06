@@ -662,6 +662,30 @@ describe("doctor", () => {
     expect((await doctor(p.deps, {})).lines).toContain("fail  sql: the broker cannot connect to SQL Server with its login; run `arashouse setup-sql` and the script it writes (docs/setup-sql.md)");
   });
 
+  it("fails when the broker's own token is not an administrator's: IIS reads as empty and every reset fails", async () => {
+    const p = await pool({ "23": 1 });
+    const lineOf = async () => (await doctor(p.deps, {})).lines.find((l) => l.includes("broker token:"));
+    expect(await lineOf()).toBe("ok    broker token: NT SERVICE\\ArasHouseBroker runs with an administrator token");
+
+    p.host.setBrokerToken({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" });
+    const down = await doctor(p.deps, {});
+    expect(down.exitCode).toBe(1);
+    const line = down.lines.find((l) => l.includes("broker token:"));
+    expect(line).toMatch(/^fail {2}broker token: NT SERVICE\\ArasHouseBroker runs without an administrator token, so IIS reads as empty/);
+    expect(line).toContain("Group Policy");
+    expect(line).toContain("docs/runbook.md");
+
+    p.host.setBrokerToken(null);
+    const unread = await doctor(p.deps, {});
+    expect(unread.exitCode).toBe(0);
+    expect(unread.lines.find((l) => l.includes("broker token:"))).toMatch(/^warn {2}broker token: the broker does not report whether it is an administrator/);
+
+    p.host.injectFault({ method: "brokerToken", kind: "fail", error: "Refused" });
+    const old = await doctor(p.deps, {});
+    expect(old.exitCode).toBe(0);
+    expect(old.lines.find((l) => l.includes("broker token:"))).toMatch(/^warn {2}broker token: the broker does not report whether it is an administrator/);
+  });
+
   it("prints host settings that would help as advice, never as a failure or a warning (ticket 55)", async () => {
     const p = await pool({ "23": 2 });
     const login = { login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 7 };

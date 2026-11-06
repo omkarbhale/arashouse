@@ -187,6 +187,58 @@ A broker outage loses no lease: leases live in WSL's state, and `run` still work
 WSL itself can fail to start `node.exe` on a busy host (`UtilAcceptVsock ... accept4 failed 110`); the CLI retries that,
 and a call that still fails exits 6 with the broker untouched (`docs/broker.md`).
 
+## The IIS configuration is not readable
+
+Every reset, start, provision and deploy fails at its IIS step with
+
+```
+the IIS configuration is not readable: running as NT SERVICE\ArasHouseBroker; is an administrator: no; applicationHost.config opens: no. the process has no administrator token; ...
+```
+
+and the slots that were being reset end `quarantined` (`reset step ... failed twice ...`). `ArasHouseBroker`, `W3SVC` and
+`WAS` all read `Running`, `ping` answers, and it began at a restart or reboot: the broker needs an **administrator
+token** to read IIS (a process without one reads the configuration as empty or gets an access error, which the message then quotes), and it no longer has one.
+`arashouse doctor` fails `broker token: NT SERVICE\ArasHouseBroker runs without an administrator token ...`; the broker
+reads its own token in its own process for this, so a membership that was put back but a service that was not
+restarted is reported too. A broker that predates the check gives a `warn` (`-UpdateBroker`, `docs/setup.md`).
+
+**Cause seen on the host (2026-11-06).** A domain Group Policy ("Restricted Groups", `Group Membership` in the
+security template) sets the local Administrators group to exactly the domain's list, which removes any account added by
+hand, the broker's virtual account `NT SERVICE\ArasHouseBroker` included (`setup-host.ps1` adds it at install,
+`docs/setup.md`). The running broker keeps its old token until it restarts, so resets worked until the reboot and
+then every one failed. Arashouse's code and tests cannot see the policy; this is the host's setting.
+
+Diagnose from WSL or Windows, no elevation needed:
+
+1. `arashouse doctor`: the `broker token` line.
+2. `net localgroup Administrators` (Windows): `NT SERVICE\ArasHouseBroker` is missing from the list. `sc.exe showsid
+   ArasHouseBroker` gives the service's SID (it depends on the service name only, so it is the same on any machine).
+3. Elevated only, to learn when and by what: Event Viewer, Security log, events 4732 (member added) and 4733 (removed)
+   for `Administrators`.
+
+Put it back (**elevated**, in a Windows PowerShell; arashouse never changes a host group by itself, the same step
+`setup-host.ps1` does at install):
+
+```
+net localgroup Administrators "NT SERVICE\ArasHouseBroker" /add
+Restart-Service ArasHouseBroker      # a new token is only minted when the service starts
+```
+
+Then `arashouse doctor` (`broker token` ok) and `arashouse repair <slot>` for each quarantined slot (`A quarantined slot`
+above), or `arashouse doctor --fix` for slots left `dirty`.
+
+**It will be undone** at the next policy refresh and then show again at the next broker restart, because the policy owns the
+group. Lasting fixes are not arashouse's to apply:
+
+1. Ask IT to add the broker's service SID (from `sc.exe showsid`, step 2) to that policy's Administrators list. Cleanest.
+2. Run the broker as `LocalSystem`, which Restricted Groups does not touch. A design change (service account, the broker's
+   SQL login in `docs/setup-sql.md`, the ACLs in `docs/setup.md`), not a quick fix.
+3. Repeat the step above after every reboot, whenever `doctor` fails the `broker token` check. Cheapest and fragile.
+
+Follow-up, not built: a reset that fails for this host-wide reason still ends `quarantined` after two tries, so one
+outage turns every returned slot into `repair` work. The reset could check the token first and leave the slot `dirty`
+(retry later) with one host-level warning in `status`.
+
 ## Free disk
 
 `doctor`'s `disk` check warns under `min_free_disk_gb` (10 GB); a provision or a baseline build will not start below it.

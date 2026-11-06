@@ -165,7 +165,7 @@ describe("FakeHost guards", () => {
   };
 
   it("covers every slot-taking method", () => {
-    const slotless: HostMethod[] = ["ping", "hostInfo", "listSlots", "baselineBuild", "baselineVerify"];
+    const slotless: HostMethod[] = ["ping", "hostInfo", "brokerToken", "listSlots", "baselineBuild", "baselineVerify"];
     expect(Object.keys(slotCalls).sort()).toEqual(HOST_METHODS.filter((m) => !slotless.includes(m)).sort());
   });
 

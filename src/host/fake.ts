@@ -20,6 +20,8 @@ import {
   type GoldenRef,
   type HealthCheckEntry,
   type HealthResult,
+  type BrokerToken,
+  type BrokerTokenResult,
   type HostDriver,
   type HostInfo,
   type HostInfoResult,
@@ -186,6 +188,7 @@ export class FakeHost implements HostDriver {
   private readonly promoting = new Set<FlavorKey>();
   private readonly baselines: Set<FlavorKey>;
   private info: HostInfo;
+  private token: BrokerToken | null = { isAdministrator: true, identity: POOL_LOGIN };
   private reachable = true;
   private faults: ActiveFault[] = [];
   private hangs: (() => void)[] = [];
@@ -244,6 +247,11 @@ export class FakeHost implements HostDriver {
     this.info = { ...this.info, ...info };
   }
 
+  /** What `brokerToken` answers; null is a broker that could not read its token. */
+  setBrokerToken(token: BrokerToken | null): void {
+    this.token = token;
+  }
+
   /** Dirties one part of a slot: an extra file in the tree, a database that is not golden, a stamp from another golden. */
   dirty(slot: SlotRef, part: DirtyPart): void {
     const state = this.stateOf(slot);
@@ -291,6 +299,14 @@ export class FakeHost implements HostDriver {
       ok: true,
       detail: `${this.info.os}, broker ${this.info.brokerVersion}`,
       info: { ...this.info },
+    }));
+  }
+
+  brokerToken(): Promise<BrokerTokenResult> {
+    return this.call<BrokerTokenResult>("brokerToken", {}, () => {}, () => ({
+      ok: true,
+      detail: this.token ? this.token.identity : "the token could not be read",
+      token: this.token,
     }));
   }
 

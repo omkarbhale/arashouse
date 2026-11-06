@@ -46,7 +46,7 @@ function Invoke-Sql($Connection, [string]$Query, [hashtable]$Parameters = @{}, [
 
 /**
  * `Get-Iis`: a `ServerManager`, refused when the configuration reads as empty. A process whose token is not an
- * administrator's reads `Sites` as null without any exception, so the refusal says who is running, whether that
+ * administrator's can read as empty, and PowerShell hides an exception thrown by a property read (so the getters are called as methods); the refusal says who is running, whether that
  * token is an administrator's, whether `applicationHost.config` opens and any exception that was caught (names only,
  * no secret), and points at the runbook: the broker has no one to "run elevated"; its account's membership is what is missing.
  */
@@ -59,7 +59,7 @@ export const PS_IIS = `function Get-Iis {
     # @($null).Count is 1, so the pools are filtered before they are counted.
     $readable = $false
     $caught = ''
-    try { $readable = ($null -ne $mgr.Sites) -and (@($mgr.ApplicationPools | Where-Object { $_ }).Count -gt 0) } catch { $caught = $_.Exception.Message }
+    try { $readable = ($null -ne $mgr.get_Sites()) -and (@($mgr.get_ApplicationPools() | Where-Object { $_ }).Count -gt 0) } catch { $caught = $_.Exception.Message }
     if (-not $readable) {
         $mgr.Dispose()
         $id = [Security.Principal.WindowsIdentity]::GetCurrent()

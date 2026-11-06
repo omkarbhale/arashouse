@@ -197,10 +197,10 @@ the IIS configuration is not readable: running as NT SERVICE\ArasHouseBroker; ad
 
 and the slots that were being reset end `quarantined` (`reset step ... failed twice ...`). `ArasHouseBroker`, `W3SVC` and
 `WAS` all read `Running`, `ping` answers, and it began at a restart or reboot: the broker needs an **administrator
-token** to read IIS (a process without one reads `Sites` as null, with no error), and it no longer has one.
+token** to read IIS (a process without one reads the configuration as empty or gets an access error, which the message then quotes), and it no longer has one.
 `arashouse doctor` fails `broker token: NT SERVICE\ArasHouseBroker runs without an administrator token ...`; the broker
 reads its own token in its own process for this, so a membership that was put back but a service that was not
-restarted is reported too. A broker that predates the field gives a `warn` (`-UpdateBroker`, `docs/setup.md`).
+restarted is reported too. A broker that predates the check gives a `warn` (`-UpdateBroker`, `docs/setup.md`).
 
 **Cause seen on the host (2026-11-06).** A domain Group Policy ("Restricted Groups", `Group Membership` in the
 security template) sets the local Administrators group to exactly the domain's list, which removes any account added by

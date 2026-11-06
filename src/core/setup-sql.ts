@@ -20,7 +20,7 @@ import {
   type LoginRole,
   type SlotRef,
 } from "./names.js";
-import type { HostInfo } from "../host/driver.js";
+import type { BrokerToken, HostInfo } from "../host/driver.js";
 import { STAGED_BACKUP_NAME, stagedBackup } from "./restore.js";
 import { psQuote, serviceAccount, type SetupFinding } from "./setup-host.js";
 
@@ -402,9 +402,8 @@ export function renderAdminProcedures(root: string = DEFAULT_INSTALL_ROOT): Reco
  * reset fails (docs/runbook.md, "The IIS configuration is not readable"). `ping` still answers, so this is the check
  * that sees it. arashouse never adds the account back itself: the operator does (the runbook's elevated step).
  */
-export function checkBrokerToken(info: Pick<HostInfo, "token">): SetupFinding {
-  const token = info.token;
-  if (token === undefined) {
+export function checkBrokerToken(token: BrokerToken | null): SetupFinding {
+  if (token === null) {
     return { level: "warn", check: "broker token", message: "the broker does not report whether it is an administrator (it predates this check, or could not read its token); install this build with setup-host.ps1 -UpdateBroker (docs/setup.md)" };
   }
   if (token.isAdministrator) return { level: "ok", check: "broker token", message: `${token.identity} runs with an administrator token` };

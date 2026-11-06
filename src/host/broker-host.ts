@@ -26,6 +26,7 @@ import type {
   HealthResult,
   HostDriver,
   BrokerToken,
+  BrokerTokenResult,
   HostInfo,
   HostInfoResult,
   HostMethod,
@@ -91,11 +92,11 @@ function parseLicences(value: unknown): readonly LicenceStatus[] | undefined {
   });
 }
 
-/** The broker's token as `hostInfo` sends it; undefined from a broker that sends none. */
-function parseToken(value: unknown): BrokerToken | undefined {
-  if (value === undefined) return undefined;
+/** The broker's token as `brokerToken` sends it; null when the broker could not read it. */
+function parseToken(value: unknown): BrokerToken | null {
+  if (value === null) return null;
   if (!isRecord(value) || Object.keys(value).length !== 2 || typeof value.isAdministrator !== "boolean" || typeof value.identity !== "string" || value.identity === "") {
-    throw new ProtocolError("info.token has the wrong fields");
+    throw new ProtocolError("token has the wrong fields");
   }
   return { isAdministrator: value.isAdministrator, identity: value.identity };
 }
@@ -110,9 +111,8 @@ function parseHostInfo(value: unknown): HostInfo {
   // A broker older than ticket 22 sends no sqlLogin; the doctor says so instead of guessing.
   const sqlLogin = parseSqlLogin(value.sqlLogin);
   const licences = parseLicences(value.licences);
-  const token = parseToken(value.token);
   const info: HostInfo = { os, freeRamMb: freeRamMb as number, freeDiskGb: freeDiskGb as number, brokerVersion, sqlReachable };
-  return { ...info, ...(sqlLogin === undefined ? {} : { sqlLogin }), ...(licences === undefined ? {} : { licences }), ...(token === undefined ? {} : { token }) };
+  return { ...info, ...(sqlLogin === undefined ? {} : { sqlLogin }), ...(licences === undefined ? {} : { licences }) };
 }
 
 function parseLevel(value: unknown): VerifyLevel {
@@ -206,6 +206,15 @@ export class BrokerHost implements HostDriver {
       return { ok: result.ok, ms, detail: result.detail, info: parseHostInfo(result.info) };
     } catch (err) {
       throw malformed("hostInfo", (err as Error).message);
+    }
+  }
+
+  async brokerToken(): Promise<BrokerTokenResult> {
+    const { result, ms } = await this.call("brokerToken");
+    try {
+      return { ok: result.ok, ms, detail: result.detail, token: parseToken(result.token) };
+    } catch (err) {
+      throw malformed("brokerToken", (err as Error).message);
     }
   }
 

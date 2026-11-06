@@ -29,7 +29,7 @@ export interface BrokerSystem {
   sqlLogin(): Promise<SqlLoginInfo | null>;
   /** Whether each licence line has a stored licence (booleans only); absent, `hostInfo` reports none. */
   licences?(): Promise<readonly LicenceStatus[]>;
-  /** The broker's own token (an administrator's or not, and whose); null when it cannot be read; absent, `hostInfo` reports none. */
+  /** The broker's own token (an administrator's or not, and whose); null when it cannot be read; absent, `brokerToken` answers null. */
   token?(): Promise<BrokerToken | null>;
 }
 
@@ -62,7 +62,7 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
     .register("hostInfo", {
       target: "none",
       run: async (ctx: VerbContext): Promise<WireResult> => {
-        const [freeBytes, sqlLogin, licences, token] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlLogin(), system.licences?.(), system.token?.()]);
+        const [freeBytes, sqlLogin, licences] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlLogin(), system.licences?.()]);
         const info: HostInfo = {
           os: system.os(),
           freeRamMb: Math.floor(system.freeRamBytes() / MB),
@@ -71,9 +71,15 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
           sqlReachable: sqlLogin !== null,
           sqlLogin,
           ...(licences ? { licences: licences.map((l) => ({ line: l.line, present: l.present })) } : {}),
-          ...(token ? { token: { isAdministrator: token.isAdministrator, identity: token.identity } } : {}),
         };
         return { ok: true, detail: hostInfoDetail(info), info };
+      },
+    })
+    .register("brokerToken", {
+      target: "none",
+      run: async (): Promise<WireResult> => {
+        const token = (await system.token?.()) ?? null;
+        return { ok: true, detail: token ? token.identity : "the token could not be read", token };
       },
     })
     .register("readStamp", {

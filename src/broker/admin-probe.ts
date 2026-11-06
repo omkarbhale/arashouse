@@ -1,4 +1,4 @@
-// Whether the broker's own token is an administrator's, for `hostInfo`. A domain Group Policy ("Restricted Groups")
+// Whether the broker's own token is an administrator's, for the `brokerToken` verb. A domain Group Policy ("Restricted Groups")
 // can take `NT SERVICE\ArasHouseBroker` out of the local Administrators group; the service keeps the token it was
 // started with, so the loss shows at the next restart, as IIS reading as empty (docs/runbook.md). `ping` still answers,
 // so `doctor` asks this. The script is a fixed string and reads the token of the process it runs in: PowerShell

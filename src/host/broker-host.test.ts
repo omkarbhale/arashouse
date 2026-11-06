@@ -354,11 +354,12 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
     expect((await withLogin({ ...login, maxServerMemoryMb: 4096 }).hostInfo()).info.sqlLogin).toEqual({ ...login, maxServerMemoryMb: 4096 });
     expect((await withLogin(login).hostInfo()).info.sqlLogin).toEqual(login);
     expect((await rejection(withLogin({ ...login, maxServerMemoryMb: "4096" }).hostInfo())).message).toMatch(/maxServerMemoryMb is not a count/);
-    const withToken = (token: unknown) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: { ...base, token } } }));
-    expect((await withToken({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" }).hostInfo()).info.token).toEqual({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" });
-    expect((await rejection(withToken({ isAdministrator: "no", identity: "x" }).hostInfo())).message).toMatch(/info.token has the wrong fields/);
-    expect((await rejection(withToken({ isAdministrator: true }).hostInfo())).message).toMatch(/info.token has the wrong fields/);
-    expect("token" in (await answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: base } })).hostInfo()).info).toBe(false);
+    const withToken = (result: Record<string, unknown>) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", ...result } }));
+    expect((await withToken({ token: { isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" } }).brokerToken()).token).toEqual({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" });
+    expect((await withToken({ token: null }).brokerToken()).token).toBeNull();
+    expect((await rejection(withToken({ token: { isAdministrator: "no", identity: "x" } }).brokerToken())).message).toMatch(/brokerToken is malformed: token has the wrong fields/);
+    expect((await rejection(withToken({ token: { isAdministrator: true } }).brokerToken())).message).toMatch(/token has the wrong fields/);
+    expect((await rejection(withToken({}).brokerToken())).message).toMatch(/token has the wrong fields/);
     const before22 = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: base } }));
     expect("sqlLogin" in (await before22.hostInfo()).info).toBe(false);
     expect("licences" in (await before22.hostInfo()).info).toBe(false);

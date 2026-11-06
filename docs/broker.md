@@ -25,7 +25,8 @@ WSL side first, so a refused name is never sent.
 | verb | target | what it does | ticket |
 |---|---|---|---|
 | `ping` | none | answers with the broker's version | 20 |
-| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute, for each licence line whether a licence is stored (a boolean), and the broker's own token: whether it is an administrator's and the account it runs as (read by one fixed PowerShell call in the broker's process; `doctor`'s `broker token` check, `docs/runbook.md`) | 20, 22, 34b |
+| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute, and for each licence line whether a licence is stored (a boolean) | 20, 22, 34b |
+| `brokerToken` | none | whether the broker's own token is an administrator's and the account it runs as, or null when it cannot be read. One fixed PowerShell call in the broker's process, so only `doctor` asks (its `broker token` check, `docs/runbook.md`); the lease path and the disk gate do not | |
 | `readStamp` | slot | reads `<slot folder>\.arashouse-slot.json`; a slot with no folder is `Refused`, an unusable stamp `Quarantine` | 20 |
 | `listSlots` | none | every `slots\<key>\<NN>` folder whose name is the tool's and that is not a junction, with its stamp | 20 |
 | `provisionSlot` | slot | makes the slot from its flavor's golden: folders, IIS application and pools, agent, database and logins, rendered configs, stamp; refuses a slot with a stamp; a failure is rolled back (`docs/provision.md`) | 25 |
@@ -64,7 +65,7 @@ of quarantining it. A ticket that adds a verb registers it in `src/broker/` the 
   sent: `BrokerHost` measures the round trip on its own clock.
 - Limits: a request line of 64 KiB, a response line of 1 MiB; the broker drops a connection that has not
   sent its line within 5 s; each verb has a time bound (`VERB_TIMEOUT_MS`: `ping` 5 s, `readStamp` 10 s,
-  `hostInfo` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot`, `destroySlot` and `resetTree` 30 minutes, `quiesce`, `resetDatabase`, `setLeaseCredentials` and `healthCheck` 10 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
+  `hostInfo`, `brokerToken` and `listSlots` 20 s, `baselineVerify` 30 minutes (for `full`), `provisionSlot`, `destroySlot` and `resetTree` 30 minutes, `quiesce`, `resetDatabase`, `setLeaseCredentials` and `healthCheck` 10 minutes, otherwise 30 s) past which it is answered `Retryable`. The client waits
   the bound plus 5 s, and `BrokerHost` the bound plus 10 s, killing the client after that.
 
 | failure | kind |

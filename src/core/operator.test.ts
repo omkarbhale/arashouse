@@ -667,7 +667,7 @@ describe("doctor", () => {
     const lineOf = async () => (await doctor(p.deps, {})).lines.find((l) => l.includes("broker token:"));
     expect(await lineOf()).toBe("ok    broker token: NT SERVICE\\ArasHouseBroker runs with an administrator token");
 
-    p.host.setHostInfo({ token: { isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" } });
+    p.host.setBrokerToken({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" });
     const down = await doctor(p.deps, {});
     expect(down.exitCode).toBe(1);
     const line = down.lines.find((l) => l.includes("broker token:"));
@@ -675,7 +675,12 @@ describe("doctor", () => {
     expect(line).toContain("Group Policy");
     expect(line).toContain("docs/runbook.md");
 
-    p.host.setHostInfo({ token: undefined });
+    p.host.setBrokerToken(null);
+    const unread = await doctor(p.deps, {});
+    expect(unread.exitCode).toBe(0);
+    expect(unread.lines.find((l) => l.includes("broker token:"))).toMatch(/^warn {2}broker token: the broker does not report whether it is an administrator/);
+
+    p.host.injectFault({ method: "brokerToken", kind: "fail", error: "Refused" });
     const old = await doctor(p.deps, {});
     expect(old.exitCode).toBe(0);
     expect(old.lines.find((l) => l.includes("broker token:"))).toMatch(/^warn {2}broker token: the broker does not report whether it is an administrator/);

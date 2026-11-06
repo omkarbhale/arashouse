@@ -279,8 +279,17 @@ describe("get and the host's free RAM", () => {
     expect(exitCodeFor(err)).toBe(3);
     expect((err as Error).message).toBe("the host has 1500 MB of free RAM, under min_free_ram_mb 2048: no 23 slot can be leased now");
     expect(p.host.callLog).toContain("hostInfo");
+    expect(p.host.callLog).not.toContain("brokerToken");
     expect(p.host.callLog).not.toContain("healthCheck");
     expect(await p.status("23-01")).toBe("free");
+  });
+
+  it("hands out a slot and checks the disk without asking for the broker's token, which starts a PowerShell process", async () => {
+    const p = await pool({ "23": 1 });
+    expect((await getLease(p.deps, { flavor: "23", holder: "t" })).slot).toBe("23-01");
+    await checkDiskForBuild(p.host, DEFAULT_CONFIG);
+    expect(p.host.callLog).toContain("hostInfo");
+    expect(p.host.callLog).not.toContain("brokerToken");
   });
 
   it("makes a get --wait wait until RAM is free again", async () => {

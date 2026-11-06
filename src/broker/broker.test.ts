@@ -33,7 +33,10 @@ function result(response: BrokerResponse) {
   return response.result;
 }
 
+let tokenReads = 0;
+
 beforeEach(() => {
+  tokenReads = 0;
   root = mappedRoot(ROOT);
   audit = new MemoryAudit();
   system = {
@@ -42,7 +45,10 @@ beforeEach(() => {
     os: () => "Windows_NT 10.0.26100",
     freeRamBytes: () => 3.5 * 1024 * 1024 * 1024,
     sqlLogin: async () => ({ login: "NT SERVICE\\ArasHouseBroker", sysadmin: false, dbcreator: false, procedures: 5 }),
-    token: async () => ({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" }),
+    token: async () => {
+      tokenReads += 1;
+      return { isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" };
+    },
   };
   broker = registerCoreVerbs(new Broker({ root: ROOT, isReparsePoint: root.fs.isReparsePoint, realPath: root.fs.realPath, audit }), system);
 });
@@ -51,7 +57,7 @@ afterEach(() => root.cleanup());
 
 describe("the core verbs", () => {
   it("registers ping, hostInfo, readStamp and listSlots, and only those", () => {
-    expect(broker.registered()).toEqual(["ping", "hostInfo", "readStamp", "listSlots"]);
+    expect(broker.registered()).toEqual(["ping", "hostInfo", "brokerToken", "readStamp", "listSlots"]);
   });
 
   it("ping answers with the broker's version", async () => {
@@ -60,11 +66,17 @@ describe("the core verbs", () => {
     expect(audit.entries()).toEqual([expect.objectContaining({ id: "r-1", verb: "ping", target: null, outcome: "ok" })]);
   });
 
+  it("brokerToken alone reads the broker's token; hostInfo starts no probe for it", async () => {
+    const info = result(await ask({ verb: "hostInfo" })).info as Record<string, unknown>;
+    expect("token" in info).toBe(false);
+    expect(tokenReads).toBe(0);
+    expect(result(await ask({ verb: "brokerToken" })).token).toEqual({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" });
+    expect(tokenReads).toBe(1);
+  });
+
   it("hostInfo reports the OS, free RAM and disk, the version and SQL", async () => {
     const info = result(await ask({ verb: "hostInfo" })).info as Record<string, unknown>;
     expect(info).toMatchObject({ os: "Windows_NT 10.0.26100", freeRamMb: 3584, brokerVersion: "9.9.9", sqlReachable: true, sqlLogin: { sysadmin: false, procedures: 5 } });
-    // The broker's own token, computed in its process.
-    expect(info.token).toEqual({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" });
     expect(typeof info.freeDiskGb).toBe("number");
     expect(info.freeDiskGb as number).toBeGreaterThanOrEqual(0);
   });

@@ -33,7 +33,7 @@ namespace Microsoft.Web.Administration {
   public class ServerManager : System.IDisposable {
     static string Mode { get { return System.Environment.GetEnvironmentVariable("STUB_IIS"); } }
     public object Sites { get {
-      if (Mode == "throws") throw new System.InvalidOperationException("stub read failure");
+      if (Mode == "throws") throw new System.InvalidOperationException("stub read failure\r\nLine number: 7\r\n\r\nError: stub detail\r\n");
       return Mode == "null-sites" ? null : new object[0];
     } }
     public object ApplicationPools { get {
@@ -103,7 +103,8 @@ describeWithPs("Get-Iis under Windows PowerShell", { timeout: 120_000 }, () => {
     const r = getIis("throws");
     expect(r.code).toBe(7);
     expect(r.out).toContain("; error: ");
-    expect(r.out).toContain("stub read failure");
+    expect(r.out).toContain("stub read failure Line number: 7 Error: stub detail");
+    expect(r.out.trim().split(/\r?\n/)).toHaveLength(1);
     expect(r.out).toContain(`administrator token: ${administrator}`);
   });
 

@@ -59,7 +59,7 @@ export const PS_IIS = `function Get-Iis {
     # @($null).Count is 1, so the pools are filtered before they are counted.
     $readable = $false
     $caught = ''
-    try { $readable = ($null -ne $mgr.get_Sites()) -and (@($mgr.get_ApplicationPools() | Where-Object { $_ }).Count -gt 0) } catch { $caught = $_.Exception.Message }
+    try { $readable = ($null -ne $mgr.get_Sites()) -and (@($mgr.get_ApplicationPools() | Where-Object { $_ }).Count -gt 0) } catch { $caught = ($_.Exception.Message -replace '\\s*[\\r\\n]+\\s*', ' ').Trim() }
     if (-not $readable) {
         $mgr.Dispose()
         $id = [Security.Principal.WindowsIdentity]::GetCurrent()

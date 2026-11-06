@@ -192,7 +192,7 @@ and a call that still fails exits 6 with the broker untouched (`docs/broker.md`)
 Every reset, start, provision and deploy fails at its IIS step with
 
 ```
-the IIS configuration is not readable: running as NT SERVICE\ArasHouseBroker; administrator token: no; applicationHost.config opens: no. the process has no administrator token; ...
+the IIS configuration is not readable: running as NT SERVICE\ArasHouseBroker; is an administrator: no; applicationHost.config opens: no. the process has no administrator token; ...
 ```
 
 and the slots that were being reset end `quarantined` (`reset step ... failed twice ...`). `ArasHouseBroker`, `W3SVC` and

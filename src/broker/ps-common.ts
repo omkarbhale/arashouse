@@ -66,7 +66,7 @@ export const PS_IIS = `function Get-Iis {
         $admin = (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         $cfgOpens = $false
         try { [IO.File]::Open((Join-Path $env:windir 'System32\\inetsrv\\config\\applicationHost.config'), 'Open', 'Read', 'ReadWrite').Dispose(); $cfgOpens = $true } catch { }
-        $facts = "running as $($id.Name); administrator token: $(if ($admin) { 'yes' } else { 'no' }); applicationHost.config opens: $(if ($cfgOpens) { 'yes' } else { 'no' })"
+        $facts = "running as $($id.Name); is an administrator: $(if ($admin) { 'yes' } else { 'no' }); applicationHost.config opens: $(if ($cfgOpens) { 'yes' } else { 'no' })"
         if ($caught) { $facts += "; error: $caught" }
         $hint = if (-not $admin) { 'the process has no administrator token; if it is the broker, its Administrators membership was probably removed (a domain Group Policy does that) and the service needs it back and a restart' } else { 'the process is an administrator, so look at the error, if any, and at applicationHost.config' }
         Stop-Step "the IIS configuration is not readable: $facts. $hint (docs/runbook.md, 'The IIS configuration is not readable')"

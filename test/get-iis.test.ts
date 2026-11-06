@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { powershellAdminProbe } from "../src/broker/admin-probe.js";
 import { PS_IIS } from "../src/broker/ps-common.js";
+import { redact } from "../src/core/redact.js";
 
 function findPowerShell(): string | undefined {
   const probe = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
@@ -87,9 +88,11 @@ describeWithPs("Get-Iis under Windows PowerShell", { timeout: 120_000 }, () => {
   it("refuses a configuration that reads Sites as null, saying who runs, with what token, and that the file does not open", () => {
     const r = getIis("null-sites");
     expect(r.code).toBe(7);
-    expect(r.out).toContain(`the IIS configuration is not readable: running as ${identity}; administrator token: ${administrator}; applicationHost.config opens: no`);
+    expect(r.out).toContain(`the IIS configuration is not readable: running as ${identity}; is an administrator: ${administrator}; applicationHost.config opens: no`);
     expect(r.out).toContain("The IIS configuration is not readable");
     expect(r.out).not.toContain("run elevated");
+    expect(redact(r.out)).toContain(`is an administrator: ${administrator}; applicationHost.config opens: no`);
+    expect(redact(r.out)).not.toContain("[redacted]");
     expect(r.out).not.toContain("error:");
   });
 
@@ -105,7 +108,7 @@ describeWithPs("Get-Iis under Windows PowerShell", { timeout: 120_000 }, () => {
     expect(r.out).toContain("; error: ");
     expect(r.out).toContain("stub read failure Line number: 7 Error: stub detail");
     expect(r.out.trim().split(/\r?\n/)).toHaveLength(1);
-    expect(r.out).toContain(`administrator token: ${administrator}`);
+    expect(r.out).toContain(`is an administrator: ${administrator}`);
   });
 
   it.each(["empty-pools", "null-pools"])("refuses when there are no pools: %s", (mode) => {

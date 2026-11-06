@@ -46,6 +46,14 @@ export interface SqlLoginInfo {
   readonly maxServerMemoryMb?: number;
 }
 
+/** The token the broker runs with, as the broker reads it in its own process (names and a flag; no secret). */
+export interface BrokerToken {
+  /** Whether the token is an administrator's (`WindowsPrincipal.IsInRole(Administrator)`): the real token, not the group on disk. */
+  readonly isAdministrator: boolean;
+  /** The account it runs as, for example `NT SERVICE\ArasHouseBroker`. */
+  readonly identity: string;
+}
+
 export interface HostInfo {
   readonly os: string;
   readonly freeRamMb: number;
@@ -57,6 +65,11 @@ export interface HostInfo {
   readonly sqlLogin?: SqlLoginInfo | null;
   /** Whether a licence is stored for each licence line: booleans only (ticket 34b); absent from an older broker. */
   readonly licences?: readonly LicenceStatus[];
+  /**
+   * The broker's own token, computed by the broker; absent from a broker older than this field, and when the broker
+   * could not read it. IIS reads as empty for a broker that is not an administrator, so every reset fails (docs/runbook.md).
+   */
+  readonly token?: BrokerToken;
 }
 
 export interface HostInfoResult extends HostResult {

@@ -25,7 +25,7 @@ WSL side first, so a refused name is never sent.
 | verb | target | what it does | ticket |
 |---|---|---|---|
 | `ping` | none | answers with the broker's version | 20 |
-| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute, and for each licence line whether a licence is stored (a boolean) | 20, 22, 34b |
+| `hostInfo` | none | OS, free RAM, free disk at the root, broker version, whether the broker's SQL login connects, and that login's name, `sysadmin` and `dbcreator` membership and how many `arashouse_admin` procedures it may execute, for each licence line whether a licence is stored (a boolean), and the broker's own token: whether it is an administrator's and the account it runs as (read by one fixed PowerShell call in the broker's process; `doctor`'s `broker token` check, `docs/runbook.md`) | 20, 22, 34b |
 | `readStamp` | slot | reads `<slot folder>\.arashouse-slot.json`; a slot with no folder is `Refused`, an unusable stamp `Quarantine` | 20 |
 | `listSlots` | none | every `slots\<key>\<NN>` folder whose name is the tool's and that is not a junction, with its stamp | 20 |
 | `provisionSlot` | slot | makes the slot from its flavor's golden: folders, IIS application and pools, agent, database and logins, rendered configs, stamp; refuses a slot with a stamp; a failure is rolled back (`docs/provision.md`) | 25 |

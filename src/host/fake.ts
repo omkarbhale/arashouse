@@ -159,6 +159,7 @@ const DEFAULT_INFO: HostInfo = {
   brokerVersion: "0.0.0-fake",
   sqlReachable: true,
   sqlLogin: { login: POOL_LOGIN, sysadmin: false, dbcreator: false, procedures: ADMIN_PROCEDURES.length },
+  token: { isAdministrator: true, identity: POOL_LOGIN },
 };
 
 interface CallTarget {

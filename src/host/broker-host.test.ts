@@ -354,6 +354,11 @@ describe("BrokerHost refuses an answer it cannot trust", () => {
     expect((await withLogin({ ...login, maxServerMemoryMb: 4096 }).hostInfo()).info.sqlLogin).toEqual({ ...login, maxServerMemoryMb: 4096 });
     expect((await withLogin(login).hostInfo()).info.sqlLogin).toEqual(login);
     expect((await rejection(withLogin({ ...login, maxServerMemoryMb: "4096" }).hostInfo())).message).toMatch(/maxServerMemoryMb is not a count/);
+    const withToken = (token: unknown) => answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: { ...base, token } } }));
+    expect((await withToken({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" }).hostInfo()).info.token).toEqual({ isAdministrator: false, identity: "NT SERVICE\\ArasHouseBroker" });
+    expect((await rejection(withToken({ isAdministrator: "no", identity: "x" }).hostInfo())).message).toMatch(/info.token has the wrong fields/);
+    expect((await rejection(withToken({ isAdministrator: true }).hostInfo())).message).toMatch(/info.token has the wrong fields/);
+    expect("token" in (await answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: base } })).hostInfo()).info).toBe(false);
     const before22 = answering((r: BrokerRequest) => ({ id: r.id, ok: true, result: { ok: true, detail: "", info: base } }));
     expect("sqlLogin" in (await before22.hostInfo()).info).toBe(false);
     expect("licences" in (await before22.hostInfo()).info).toBe(false);

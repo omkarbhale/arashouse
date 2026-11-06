@@ -36,7 +36,7 @@ import { rebuildState } from "./recovery.js";
 import { redact } from "./redact.js";
 import { type ResetDeps, type ResetHost, currentGoldenHash, describeOutcome, recoverDeadResets, resetSlot } from "./reset.js";
 import { type SetupObservation, checkSetup } from "./setup-host.js";
-import { checkSqlLogin } from "./setup-sql.js";
+import { checkBrokerToken, checkSqlLogin } from "./setup-sql.js";
 import type { SecretStore } from "./secret-store.js";
 import { type Lease, RECOVERED_HOLDER, type Slot, type State, StateCorruptError, isLeaseId } from "./state.js";
 import type { StateStore } from "./store.js";
@@ -701,6 +701,8 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
   try {
     const { info } = await host.hostInfo();
     hostLicences = info.licences;
+    const tokenFinding = checkBrokerToken(info);
+    add(tokenFinding.level, tokenFinding.check, tokenFinding.message);
     for (const f of checkSqlLogin(info)) add(f.level, f.check, f.message);
     if (info.freeDiskGb >= config.min_free_disk_gb) add("ok", "disk", `${info.freeDiskGb} GB free at the install root`);
     else add("warn", "disk", `${info.freeDiskGb} GB free at the install root, under min_free_disk_gb ${config.min_free_disk_gb}: no provision or baseline build starts`);

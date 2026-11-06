@@ -98,7 +98,9 @@ The steps, in order:
      `<root>\logs\broker-service.log`, and exits 1 when Node exits on its own;
    - creates the service `ArasHouseBroker` (automatic start) as the virtual account `NT SERVICE\ArasHouseBroker`,
      sets its recovery to restart after 5 s, 10 s and 60 s, adds the account to the local Administrators group
-     (it creates IIS applications, pools and services; ticket 03), and starts it;
+     (it creates IIS applications, pools and services; ticket 03), and starts it. The membership is not permanent:
+     a domain Group Policy that sets the group's members removes it, and the broker notices at its next restart
+     (`doctor`'s `broker token` check; `docs/runbook.md`, "The IIS configuration is not readable");
    - pings it through the same client a worker uses (`node.exe <root>\broker\app\broker\client.js`).
 
    An installed broker is left as it is on a second run. `-UpdateBroker` installs the bundle's build over it,
@@ -117,7 +119,8 @@ The steps, in order:
 The captain's elevated `-Apply` of the script generated from this branch exited 0 with `"ok": true` and no
 errors: the root's own ACL tightened, the eight new folders created and `staging\` re-permissioned, every
 folder's ACL as planned, no prerequisite missing for `12sp9`, `23` or `35`, and `ArasHouseBroker` running as
-`NT SERVICE\ArasHouseBroker`, a member of Administrators, with restart recovery, answering `ping`. Read back from
+`NT SERVICE\ArasHouseBroker`, a member of Administrators (on that day; a domain policy removed it on 2026-11-06,
+see below), with restart recovery, answering `ping`. Read back from
 WSL as the worker:
 
 - `arashouse doctor --json`: `setup`, `prerequisites`, `setup acl`, `broker` (`arashouse-broker 0.0.0`), `disk`
@@ -125,6 +128,16 @@ WSL as the worker:
   `baselineVerify`.
 - `ls /mnt/c/aras_installations/secrets`: `Permission denied`.
 - `ping` through `node.exe <root>\broker\app\broker\client.js` from WSL: about 0.27 s.
+
+## Administrators membership lost to Group Policy (2026-11-06)
+
+After a reboot every reset failed with "the IIS configuration is not readable" and slots ended quarantined: the broker's
+account was no longer in Administrators, so its new token could not read IIS. A domain policy had replaced the group's
+members at 11:51, the broker kept its old token until the 12:15 restart, and `ping` and the services looked healthy.
+Diagnosis, the elevated re-add and restart, and the lasting options (IT adds the service SID to the policy; run the broker
+as `LocalSystem`; or re-add after each reboot) are in `docs/runbook.md`, "The IIS configuration is not readable".
+`arashouse doctor` now fails `broker token` when the broker's own token is not an administrator's. Setup does not make
+the membership permanent and arashouse never re-adds it by itself.
 
 ## Uninstall
 

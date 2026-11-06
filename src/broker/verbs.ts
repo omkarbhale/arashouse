@@ -6,7 +6,7 @@ import { win32 } from "node:path";
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import type { LicenceStatus } from "../core/licence.js";
 import { MAX_SLOT, STAMP_FILE_NAME, slotId, type SlotRef } from "../core/names.js";
-import type { HostInfo, ListedSlot, SlotStamp, SqlLoginInfo } from "../host/driver.js";
+import type { BrokerToken, HostInfo, ListedSlot, SlotStamp, SqlLoginInfo } from "../host/driver.js";
 import { HostError, isHostError } from "../host/errors.js";
 import { assertSlotOwned } from "../host/owned.js";
 import type { Broker, VerbContext } from "./broker.js";
@@ -29,6 +29,8 @@ export interface BrokerSystem {
   sqlLogin(): Promise<SqlLoginInfo | null>;
   /** Whether each licence line has a stored licence (booleans only); absent, `hostInfo` reports none. */
   licences?(): Promise<readonly LicenceStatus[]>;
+  /** The broker's own token (an administrator's or not, and whose); null when it cannot be read; absent, `hostInfo` reports none. */
+  token?(): Promise<BrokerToken | null>;
 }
 
 const MB = 1024 * 1024;
@@ -60,7 +62,7 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
     .register("hostInfo", {
       target: "none",
       run: async (ctx: VerbContext): Promise<WireResult> => {
-        const [freeBytes, sqlLogin, licences] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlLogin(), system.licences?.()]);
+        const [freeBytes, sqlLogin, licences, token] = await Promise.all([system.fs.freeBytes(ctx.root), system.sqlLogin(), system.licences?.(), system.token?.()]);
         const info: HostInfo = {
           os: system.os(),
           freeRamMb: Math.floor(system.freeRamBytes() / MB),
@@ -69,6 +71,7 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
           sqlReachable: sqlLogin !== null,
           sqlLogin,
           ...(licences ? { licences: licences.map((l) => ({ line: l.line, present: l.present })) } : {}),
+          ...(token ? { token: { isAdministrator: token.isAdministrator, identity: token.identity } } : {}),
         };
         return { ok: true, detail: hostInfoDetail(info), info };
       },

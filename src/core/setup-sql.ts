@@ -394,6 +394,27 @@ export function renderAdminProcedures(root: string = DEFAULT_INSTALL_ROOT): Reco
   };
 }
 
+// ---- what `arashouse doctor` says of the broker's token --------------------------------------------
+
+/**
+ * The doctor's finding for the broker's own token. A domain Group Policy can take the broker's account out of the
+ * local Administrators group; the service keeps its old token until it restarts, then reads IIS as empty and every
+ * reset fails (docs/runbook.md, "The IIS configuration is not readable"). `ping` still answers, so this is the check
+ * that sees it. arashouse never adds the account back itself: the operator does (the runbook's elevated step).
+ */
+export function checkBrokerToken(info: Pick<HostInfo, "token">): SetupFinding {
+  const token = info.token;
+  if (token === undefined) {
+    return { level: "warn", check: "broker token", message: "the broker does not report whether it is an administrator (it predates this check, or could not read its token); install this build with setup-host.ps1 -UpdateBroker (docs/setup.md)" };
+  }
+  if (token.isAdministrator) return { level: "ok", check: "broker token", message: `${token.identity} runs with an administrator token` };
+  return {
+    level: "fail",
+    check: "broker token",
+    message: `${token.identity} runs without an administrator token, so IIS reads as empty and every reset, start and provision fails; its Administrators membership was probably removed (a domain Group Policy does that): add it back and restart the service (docs/runbook.md, "The IIS configuration is not readable")`,
+  };
+}
+
 // ---- what `arashouse doctor` says of the broker's SQL login -----------------------------------------
 
 /**

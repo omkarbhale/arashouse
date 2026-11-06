@@ -25,6 +25,7 @@ import type {
   HealthCheckEntry,
   HealthResult,
   HostDriver,
+  BrokerToken,
   HostInfo,
   HostInfoResult,
   HostMethod,
@@ -90,6 +91,15 @@ function parseLicences(value: unknown): readonly LicenceStatus[] | undefined {
   });
 }
 
+/** The broker's token as `hostInfo` sends it; undefined from a broker that sends none. */
+function parseToken(value: unknown): BrokerToken | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Object.keys(value).length !== 2 || typeof value.isAdministrator !== "boolean" || typeof value.identity !== "string" || value.identity === "") {
+    throw new ProtocolError("info.token has the wrong fields");
+  }
+  return { isAdministrator: value.isAdministrator, identity: value.identity };
+}
+
 function parseHostInfo(value: unknown): HostInfo {
   if (!isRecord(value)) throw new ProtocolError("info is missing");
   const { os, freeRamMb, freeDiskGb, brokerVersion, sqlReachable } = value;
@@ -100,8 +110,9 @@ function parseHostInfo(value: unknown): HostInfo {
   // A broker older than ticket 22 sends no sqlLogin; the doctor says so instead of guessing.
   const sqlLogin = parseSqlLogin(value.sqlLogin);
   const licences = parseLicences(value.licences);
+  const token = parseToken(value.token);
   const info: HostInfo = { os, freeRamMb: freeRamMb as number, freeDiskGb: freeDiskGb as number, brokerVersion, sqlReachable };
-  return { ...info, ...(sqlLogin === undefined ? {} : { sqlLogin }), ...(licences === undefined ? {} : { licences }) };
+  return { ...info, ...(sqlLogin === undefined ? {} : { sqlLogin }), ...(licences === undefined ? {} : { licences }), ...(token === undefined ? {} : { token }) };
 }
 
 function parseLevel(value: unknown): VerifyLevel {

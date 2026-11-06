@@ -237,6 +237,7 @@ code. It checks:
 | `prerequisites` | the last setup run found a prerequisite of a flavor in `media/` missing (warn) |
 | `setup acl` | from WSL, the worker can list a folder it should be kept out of (`secrets\`, `golden\`, ...) or cannot list `slots\`, `staging\` or `broker\` |
 | `broker` | the broker does not answer `ping` (the host checks below are then skipped) |
+| `broker token` | the broker's own token is not an administrator's, so IIS reads as empty and resets fail (`docs/runbook.md`, "The IIS configuration is not readable"); warns when the broker predates this check or could not read its token |
 | `sql` | the broker cannot connect to SQL Server with its login (`docs/setup-sql.md`) |
 | `sql login` | the broker's SQL login is in `sysadmin` or `dbcreator`, or cannot execute all seven `arashouse_admin` procedures; warns when the broker predates ticket 22 and does not report them |
 | `disk`, `ram` | free disk is under `min_free_disk_gb`, free RAM under `min_free_ram_mb` (warn; `docs/governor.md`) |

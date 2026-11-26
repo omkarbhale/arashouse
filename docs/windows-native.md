@@ -160,21 +160,26 @@ Run it with the caller's own Node 20 or newer, by an absolute path computed from
 
 ## Migrating a pool from WSL's state to Windows
 
-Before this change the state was WSL's `~/.arashouse`. The pool must be quiet: no slot `resetting`, no `get --wait`
-queued, and either no lease held or every leaseholder's `arashouse` already the new build (the launcher). An older WSL
-build keeps reading WSL's state; once that is renamed, it sees an empty pool, and a holder using it would find its lease
-gone.
+Before this change the state was WSL's `~/.arashouse`. Held leases carry over with their passwords, so the pool need not
+be empty, but it should be quiet (no slot `resetting`, no `get --wait` queued), and every WSL caller's `arashouse` must
+already be the new build (the launcher): an older WSL build keeps reading WSL's state, and once that is set aside it sees
+an empty pool, so a holder using it would find its lease gone.
 
-1. Build the new arashouse and put it where WSL's `arashouse` runs from (the launcher). Optionally update the broker to
-   the same build: `arashouse setup`, then `setup-host.ps1 -Apply -UpdateBroker` (elevated); the CLI works with the
-   installed broker either way (the protocol is unchanged), and `doctor` names the difference.
-2. Copy `~/.arashouse/` (`state.json`, `events.log`, `config.json`, `leases/`, `recipes/`, `logs/`) to
-   `%LOCALAPPDATA%\arashouse\` (`/mnt/c/Users/<you>/AppData/Local/arashouse/`). Held leases and their passwords carry
-   over. A `config.json` `"media"` should name the media's folder if it moves to Windows.
-3. Rename WSL's `state.json` (to `state.json.moved-to-windows`) and delete WSL's `leases/`, so no older WSL build can act
-   on a stale pool, and the launcher (which refuses while that file is there) runs. The one hazard left is
+1. Build the new arashouse and put it where WSL's `arashouse` runs from (the launcher). From that moment the launcher
+   refuses every command but `help` and `version` until the state is moved, so do the next step at once.
+2. In WSL: `arashouse migrate-state`, a dry run that names the slots and the leases it carries; then
+   `arashouse migrate-state --yes`. Under the old state's own lock (which every earlier build takes, so none writes
+   meanwhile) it copies `config.json`, `events.log`, `recipes/`, `logs/` and `leases/` to `%LOCALAPPDATA%\arashouse\`,
+   `state.json` last, then renames WSL's `state.json` and `leases/` to `*.moved-to-windows-<time>` (never deletes them).
+   It refuses a Windows home that already holds a state, and a pool with a reset running or a waiter queued unless
+   `--busy-ok` (a WSL reset's slot then reads dead on Windows, goes back to dirty and is reset again). A `config.json`
+   `"media"` should name the media's folder if the media moves to Windows.
+3. `arashouse doctor`, then `doctor --fix` for anything left dirty. Once the pool works from Windows, delete WSL's
+   `*.moved-to-windows-*` copies (the old leases' passwords are in them). The one hazard left is
    `doctor --rebuild-state --yes` from an older WSL build: do not.
-4. Natively (or through the launcher): `arashouse doctor`, then `doctor --fix` for anything left dirty.
+4. Optionally, update the broker to the same build: `arashouse setup`, then `setup-host.ps1 -Apply -UpdateBroker`
+   (elevated). The CLI works with the installed broker either way (the protocol is unchanged), and `doctor` names the
+   difference. Restarting the broker ends any call in flight, so do it when no lane is mid-command.
 
 The fallback when anything is in doubt is the ticket 11 path: drain the pool, natively `doctor --rebuild-state --yes`
 and `doctor --fix`; every free slot comes back dirty and is reset (about 46 s each).

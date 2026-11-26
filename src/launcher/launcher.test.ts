@@ -4,6 +4,7 @@ import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import type { Secret } from "../core/secret.js";
@@ -16,6 +17,7 @@ import {
   runtimeId,
   windowsEnvironment,
   windowsLocalAppData,
+  checkoutMedia,
   windowsPathFor,
   type LauncherDeps,
   type Networking,
@@ -23,6 +25,7 @@ import {
 } from "./launcher.js";
 
 const dir = mkdtempSync(join(tmpdir(), "arashouse-launcher-"));
+const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 /** A build to launch: `dist/` with a file or two, and package.json. */
@@ -82,7 +85,7 @@ posix("what the Windows process is given", () => {
         PATH: "",
       },
       "Ubuntu",
-      { net: nat },
+      { net: nat, checkoutMedia: () => "/home/me/arashouse/media" },
     );
     expect(env).toEqual({
       ARASHOUSE_WSL_DISTRO: "Ubuntu",
@@ -94,6 +97,15 @@ posix("what the Windows process is given", () => {
       ARASHOUSE_HOST_ADDR: "172.19.0.1",
       WSLENV: "WT_SESSION::ARASHOUSE_WSL_DISTRO:ARASHOUSE_DEBUG:ARAS_PKG_ENGINE:ARASHOUSE_MEDIA:ARASHOUSE_APKG:ARASHOUSE_HOME:ARASHOUSE_HOST_ADDR",
     });
+  });
+
+  it("passes the launcher's own checkout's media/ as the last resort, only when ARASHOUSE_MEDIA is not set", () => {
+    const env = windowsEnvironment({ PATH: "" }, "Ubuntu", { net: nat, checkoutMedia: () => "/home/me/arashouse/media" });
+    expect(env.ARASHOUSE_CHECKOUT_MEDIA).toBe("\\\\wsl.localhost\\Ubuntu\\home\\me\\arashouse\\media");
+    expect(String(env.WSLENV)).toContain("ARASHOUSE_CHECKOUT_MEDIA");
+    expect(windowsEnvironment({ PATH: "" }, "Ubuntu", { net: nat, checkoutMedia: () => undefined })).not.toHaveProperty("ARASHOUSE_CHECKOUT_MEDIA");
+    // This checkout is arashouse's: its media/ is found (media/README.md is tracked).
+    expect(checkoutMedia(repoRoot)).toMatch(/\/media$/);
   });
 
   it("refuses a state home on WSL's disk: the pool's state lives on Windows", () => {

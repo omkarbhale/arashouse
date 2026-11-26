@@ -14,6 +14,13 @@ import { getFlavor, type FlavorKey } from "./flavors.js";
 /** Environment variable that replaces the `media/` folder (the one holding `<key>/` subfolders). */
 export const MEDIA_ENV = "ARASHOUSE_MEDIA";
 
+/**
+ * Set by the WSL launcher on the Windows process: the `media/` of the arashouse checkout the launcher runs from, which
+ * the Windows build (a runtime copy outside any checkout) cannot find itself. Used where the checkout's own would be:
+ * after `ARASHOUSE_MEDIA` and config.json's `media`.
+ */
+export const CHECKOUT_MEDIA_ENV = "ARASHOUSE_CHECKOUT_MEDIA";
+
 /** A missing media folder or file. The message says what to do; callers print it without a stack. */
 export class MediaError extends Error {
   constructor(message: string) {
@@ -77,6 +84,8 @@ export function resolveMediaRoot(options: MediaOptions = {}): string {
   if (override !== undefined && override.trim() !== "") return resolve(startDir, override);
   const configured = configuredMedia(options, env);
   if (configured !== null) return configured;
+  const launched = env[CHECKOUT_MEDIA_ENV]?.trim();
+  if (launched) return launched;
 
   let common: string;
   try {

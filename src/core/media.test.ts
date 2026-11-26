@@ -96,6 +96,14 @@ describe("media resolver", () => {
     expect(resolveMediaRoot({ env: noConfig, startDir: outside, configured: join(outside, "given") })).toBe(join(outside, "given"));
   });
 
+  it("takes the media the WSL launcher's checkout has, after ARASHOUSE_MEDIA and config.json, before its own", () => {
+    const launched = { ...noConfig, ARASHOUSE_CHECKOUT_MEDIA: join(outside, "checkout-media") };
+    expect(resolveMediaRoot({ env: launched, startDir: outside })).toBe(join(outside, "checkout-media"));
+    expect(resolveMediaRoot({ env: launched, startDir: main })).toBe(join(outside, "checkout-media"));
+    expect(resolveMediaRoot({ env: { ...launched, [MEDIA_ENV]: join(outside, "m") }, startDir: outside })).toBe(join(outside, "m"));
+    expect(resolveMediaRoot({ env: launched, startDir: outside, configured: join(outside, "given") })).toBe(join(outside, "given"));
+  });
+
   it("never takes another repository's media/: a copy vendored into it names its media explicitly", () => {
     mkdirSync(join(other, "vendor", "arashouse", "dist"), { recursive: true });
     git(other, "init", "-q", "-b", "main");

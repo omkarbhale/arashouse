@@ -83,6 +83,7 @@ What crosses to the Windows process, through `WSLENV`:
 | `ARASHOUSE_HOST_ADDR` | yours if set; else the default gateway in NAT mode (`wslinfo --networking-mode`), none when mirrored |
 | `ARASHOUSE_MEDIA`, `ARASHOUSE_APKG`, `ARASHOUSE_WINDOWS_GIT`, `ARASHOUSE_LOCAL_ROOT`, `ARASHOUSE_BROKER_TOKEN_FILE`, `LOCALAPPDATA` | the Windows path of the WSL path given |
 | `ARASHOUSE_APKG`, when not set | `aras-pkg` on WSL's `PATH`, when it is a link to libs-js's `dist/cli.js` (Windows Node runs it from `\\wsl.localhost`) |
+| `ARASHOUSE_CHECKOUT_MEDIA`, when `ARASHOUSE_MEDIA` is not set | the `media/` of the arashouse checkout the launcher runs from (its main checkout's, as the CLI in WSL found it); the Windows side takes it after `ARASHOUSE_MEDIA` and config.json's `"media"` |
 | `ARASHOUSE_HOME` | only a folder under `/mnt/<drive>`; one on WSL's disk is refused (exit 2): the pool's state lives on Windows |
 | `ARASHOUSE_HOST`, `ARASHOUSE_DEBUG`, `ARASHOUSE_RESET_WORKER`, `ARAS_PKG_ENGINE`, `ARASHOUSE_FAKE_*` | as they are |
 
@@ -111,12 +112,12 @@ against about 0.45 s natively. Host calls themselves are faster than before: in-
 |---|---|
 | `ARASHOUSE_HOME` | the state folder; default `%LOCALAPPDATA%\arashouse` on Windows, `~/.arashouse` elsewhere |
 | `ARASHOUSE_BROKER_TOKEN_FILE` | where the native transport reads the broker's token instead of `<root>\broker\client.token`; tests point it at a missing file, so "no broker" never reaches this machine's broker |
-| `ARASHOUSE_WSL_DISTRO` | set by the launcher, never by hand |
+| `ARASHOUSE_WSL_DISTRO`, `ARASHOUSE_CHECKOUT_MEDIA` | set by the launcher, never by hand |
 | `ARASHOUSE_LAUNCHER` | `always`: launch the Windows build for the fake host too (tests) |
 | `ARASHOUSE_WINDOWS_NODE` | the launcher's `node.exe` (and the WSL CLI's interop transport), as a WSL path |
 | `ARASHOUSE_WINDOWS_GIT` | Git for Windows' `git.exe`; natively a Windows path (default `git.exe` on `PATH`, else `C:\Program Files\Git\cmd\git.exe`) |
 | `ARASHOUSE_LOCAL_ROOT` | the install root as the CLI opens it (default `C:\aras_installations` natively) |
-| `config.json` `"media"` | the folder holding `<flavor>/` media folders, as an absolute path; after `ARASHOUSE_MEDIA`, before the checkout's `media/` |
+| `config.json` `"media"` | the folder holding `<flavor>/` media folders, as an absolute path; after `ARASHOUSE_MEDIA`, before the launcher's checkout's and the build's own checkout's `media/` |
 
 ## Build identity and copies sharing one state
 

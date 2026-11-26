@@ -49,6 +49,26 @@ export const BUILD_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url)
 /** The variables passed on to the Windows process, their values as Windows reads them (`WSLENV` carries them). */
 // LOCALAPPDATA is not set in WSL; when it is, it was set on purpose (the launcher's tests keep the runtime folder there).
 const PATH_VARS = ["ARASHOUSE_MEDIA", "ARASHOUSE_APKG", "ARASHOUSE_HOME", "ARASHOUSE_WINDOWS_GIT", "ARASHOUSE_LOCAL_ROOT", "ARASHOUSE_BROKER_TOKEN_FILE", "LOCALAPPDATA"] as const;
+
+/** `ARASHOUSE_CHECKOUT_MEDIA` (src/core/media.ts): the media of the checkout this launcher runs from. */
+const CHECKOUT_MEDIA_ENV = "ARASHOUSE_CHECKOUT_MEDIA";
+
+/**
+ * The `media/` of the arashouse checkout this launcher runs from (its main checkout's, as the CLI in WSL always found
+ * it), or undefined: not in a checkout, git missing, or not arashouse's. It is the Windows side's last resort, after
+ * `ARASHOUSE_MEDIA` and config.json's `media`.
+ */
+export function checkoutMedia(root: string = BUILD_ROOT): string | undefined {
+  try {
+    const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: root, encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (!common.endsWith("/.git")) return undefined;
+    const checkout = dirname(common);
+    const pkg = JSON.parse(readFileSync(join(checkout, "package.json"), "utf8")) as { name?: unknown };
+    return pkg.name === "arashouse" && existsSync(join(checkout, "media")) ? join(checkout, "media") : undefined;
+  } catch {
+    return undefined;
+  }
+}
 const PLAIN_VARS = ["ARASHOUSE_HOST", "ARASHOUSE_DEBUG", "ARASHOUSE_RESET_WORKER", "ARAS_PKG_ENGINE", "ARASHOUSE_FAKE_FAULTS", "ARASHOUSE_FAKE_PROBE"] as const;
 
 /** WSL's own line when it cannot connect a Windows process's channels; the process never ran. */
@@ -208,7 +228,11 @@ export function hostAddressFor(env: NodeJS.ProcessEnv, net: Networking = liveNet
 }
 
 /** The variables the Windows process gets, and the `WSLENV` that carries them across. */
-export function windowsEnvironment(env: NodeJS.ProcessEnv, distro: string, options: { readonly cwd?: string; readonly net?: Networking } = {}): NodeJS.ProcessEnv {
+export function windowsEnvironment(
+  env: NodeJS.ProcessEnv,
+  distro: string,
+  options: { readonly cwd?: string; readonly net?: Networking; readonly checkoutMedia?: () => string | undefined } = {},
+): NodeJS.ProcessEnv {
   const out: Record<string, string> = { [WSL_DISTRO_ENV]: distro };
   for (const name of PLAIN_VARS) {
     const value = env[name];
@@ -226,6 +250,10 @@ export function windowsEnvironment(env: NodeJS.ProcessEnv, distro: string, optio
       );
     }
     out[name] = windows;
+  }
+  if (!env.ARASHOUSE_MEDIA?.trim()) {
+    const media = (options.checkoutMedia ?? checkoutMedia)();
+    if (media !== undefined) out[CHECKOUT_MEDIA_ENV] = windowsPathFor(media, distro);
   }
   const address = hostAddressFor(env, options.net);
   if (address !== undefined) out[HOST_ADDR_ENV] = address;

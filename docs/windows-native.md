@@ -40,10 +40,16 @@ WSL
 Every lock, reset-worker record and `get --wait` ticket names its process by pid and a token that tells a reused pid
 from the holder. On Linux the token is the process's start time from `/proc`. Windows reuses pids quickly and has no
 `/proc`, so each arashouse process there listens on a named pipe of its own, `\\.\pipe\arashouse-live-<pid>-<random>`,
-before its first lock, and records `pipe:<random>`. The pipe is listed in `\\.\pipe\` (a 1 ms synchronous listing)
-while the process runs and is gone the moment it ends, whatever ends it. A record without a beacon (written by an older
-build, or another OS) is judged dead on Windows. The state file's format is unchanged: `start_time` was already an
-opaque string. (`src/core/lock.ts`.)
+before its first lock, and records `pipe:<random>`. The pipe exists while the process runs and is gone the moment it
+ends, whatever ends it. A record without a beacon (written by an older build, or another OS) is judged dead on Windows.
+The state file's format is unchanged: `start_time` was already an opaque string. (`src/core/lock.ts`.)
+
+How a beacon is looked for depends on the Node: Node 24 lists `\\.\pipe\` (a 1 ms synchronous listing, no side
+effect), and a record's exact pipe is in the listing or not. Node 20 cannot list it (`readdir` throws `ENOTDIR`), so
+there the exact name is opened with `stat`. That connects to the beacon, whose server drops the connection; while the
+server has no free instance the open fails `EBUSY`, so only `ENOENT` means the process has ended, and any other answer
+counts as alive, so a lock is never taken from a holder on a doubt. (`fs.existsSync` is not usable: it reports a busy
+pipe as missing.) Without a listing, a temp file's writer, known only by its pid, is judged by whether that pid exists.
 
 ### NTFS
 
@@ -57,7 +63,10 @@ common case. `test/races.test.ts` and the store's concurrency tests run on `wind
 On Linux the lease files are 0600 in a 0700 folder. On Windows a mode is not access: the home's ACL is, and
 `%LOCALAPPDATA%` inherits the worker user, SYSTEM and the administrators only. `arashouse doctor` reads the home's ACL
 (by SID) and warns, `state home`, when it allows anyone else, which a home set with `ARASHOUSE_HOME` somewhere like
-`C:\work` would (it inherits `Authenticated Users` from `C:\`). Keep the default.
+`C:\work` would (it inherits `Authenticated Users` from `C:\`). Keep the default. The check starts Windows PowerShell, so
+it runs with the host checks, once the broker has answered, and gives up after 20 s. Every Windows PowerShell arashouse
+starts gets its environment without `PSModulePath`: a process started from PowerShell 7 would otherwise hand 5.1 a
+module path it cannot load its own modules (`Get-Acl`, `Get-FileHash`) from.
 
 Run arashouse as the worker user that `arashouse setup` recorded, unelevated, as WSL interop always did: the broker's
 token file is the worker user's to read (another account fails `Unreachable`, exit 6), and an elevated process can read
@@ -207,5 +216,38 @@ On this host (Windows 11, Node 24.13.0 on Windows, WSL 2 Ubuntu, NAT networking)
   2026-11-06) is older than build ids; the three baselines verify; the copy outside a checkout finds no media without
   `ARASHOUSE_MEDIA` or `"media"`; and every slot on the host is an orphan of the empty state, which is why the launcher
   refuses until the state is moved.
-- Not yet on this host: migrating the live pool and the per-flavor host e2e natively. The pool was not quiet (leases
-  held by other lanes), so neither was started; see the procedure above.
+- Ticket 12's broker contract suite natively (`ARASHOUSE_TEST_BROKER=1`, Windows Node, the pipe transport in-process,
+  unelevated), on the unused slot `12sp9-98`: 10 of 10 in 472 s (ping and hostInfo 13.7 s; provision, list and destroy
+  75 s; reset to golden and healthy 131 s; a dirty tree's health check and its reset 13 s; stamp round trip 70 s; a
+  foreign stamp refused 65 s; foreign names and the deny-list refused 14.6 s; bad staged paths refused 60 s; a slot never
+  provisioned refused 13.5 s; a retryable fault 15.5 s). The slot was destroyed after each test, and the pool's state was
+  not touched.
+- CI on `windows-latest` found what this host did not, and each is fixed and tested on both Node versions: Node 20
+  cannot list `\\.\pipe\` (above); the hosted runner's temp folder is an 8.3 short path, which the broker's real-path
+  guard sees in its long form; the runner runs its steps under PowerShell 7 (`PSModulePath`, above); and it has no SQL
+  Server, so `setup-host.ps1`'s dry run rightly reports one error there.
+
+### The live pool moved to Windows
+
+2026-11-26, after the merge of #61, with three leases held by other lanes (12sp9-01, -02 and -03) and the pool otherwise
+quiet (no reset running, no waiter):
+
+- `~/.local/share/arashouse/update.sh` installed main `bba3d1d` as WSL's `arashouse` (the earlier `dist/` kept beside
+  it as `dist.pre-ahwin-f84d459`), then at once `arashouse migrate-state` (the dry run: 7 slots, the 3 leases it carries)
+  and `--yes`: 72 files moved to `C:\Users\<worker>\AppData\Local\arashouse`, WSL's `state.json` and `leases/` renamed
+  aside. No arashouse command was running at the time.
+- `arashouse status` from WSL through the launcher: the same 7 slots at revision 1797, the three leases with their lease
+  ids, holders and bootstrap records. `arashouse doctor`: 0 problems; its warnings were `aras-pkg` not on WSL's
+  `PATH` (as before), the two old leases, and `build` (the installed broker predates build ids).
+- A vendored copy (`npm run vendor`, 129 files, 1.2 MB) run natively from a folder outside any checkout, read-only:
+  `version` names build `bba3d1d` (0.5 s); `status --json` is the machine's pool; `flavors --json` reports no media
+  until `ARASHOUSE_MEDIA` names it, then all three present; `doctor` 0 problems (71 s, most of it the three baselines'
+  fast verify).
+
+Waiting for the pool to be free (every lease returned: `max_active` is 3 of 3, so no other lease can be taken, and the
+broker's restart would end the holders' calls in flight):
+
+- the broker update through firstmate's elevated gate (`arashouse setup`, then `setup-host.ps1 -Apply -UpdateBroker`),
+  after which `doctor`'s `build` check passes;
+- the per-flavor host e2e natively (`ARASHOUSE_TEST_E2E=1`: `test/host/e2e-12sp9.test.ts`, `e2e-23`, `e2e-35`);
+- aras-mr-envs deploying an MR through the vendored copy.

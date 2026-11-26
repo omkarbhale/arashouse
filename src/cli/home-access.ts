@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { promisify } from "node:util";
+import { powershellEnv } from "../host/platform.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -37,7 +38,7 @@ const runPowerShell: RunPowerShell = async (script) =>
     await execFileAsync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-      { encoding: "utf8", timeout: 60_000, windowsHide: true },
+      { encoding: "utf8", timeout: 60_000, windowsHide: true, env: powershellEnv() },
     )
   ).stdout;
 

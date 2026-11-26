@@ -14,7 +14,7 @@
 // antivirus scanner may hold a fresh file for a moment; `retryBusy` retries those for a bounded time on Windows.
 
 import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { link, open, readFile, unlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -76,30 +76,53 @@ export function beaconName(pid: number, token: string): string {
   return `${BEACON_PREFIX}${pid}-${token}`;
 }
 
-/** The names of the pipes listed now (a synchronous listing of `\\.\pipe\`, about a millisecond); empty off Windows. */
-export function listPipes(): Set<string> {
+/**
+ * The names of the pipes listed now (a synchronous listing of `\\.\pipe\`, about a millisecond), or null when it cannot
+ * be listed: off Windows, and on Node 20, whose `readdir` of `\\.\pipe\` throws ENOTDIR. A failure is never an empty set.
+ */
+export function listPipes(): Set<string> | null {
   try {
     return new Set(readdirSync(PIPE_DIR));
   } catch {
-    return new Set();
+    return null;
+  }
+}
+
+/**
+ * Whether `\\.\pipe\<name>` is listening now. From the listing where Node can list pipes (it has no side effect).
+ * Where it cannot (Node 20), by opening the name: that connects to the pipe (the beacon's server drops the connection),
+ * and while the server has no free instance the open fails EBUSY, so only ENOENT means there is no such pipe; any other
+ * answer counts as there, so a lock is never taken from a holder on a doubt.
+ */
+export function pipeExists(name: string): boolean {
+  const pipes = listPipes();
+  if (pipes !== null) return pipes.has(name);
+  try {
+    statSync(`${PIPE_DIR}${name}`);
+    return true;
+  } catch (err) {
+    return errnoCode(err) !== "ENOENT";
   }
 }
 
 /** Where the beacons are looked up and this process's beacon is started; replaced in tests. */
 export interface BeaconSystem {
-  readonly listPipes: () => Set<string>;
+  /** Every pipe's name, or null when they cannot be listed. */
+  readonly listPipes: () => Set<string> | null;
+  /** Whether a pipe of exactly this name is listening. */
+  readonly exists: (name: string) => boolean;
   /** Starts listening on `\\.\pipe\<name>` for the rest of the process, without keeping it alive; throws when it cannot. */
   readonly listen: (name: string) => void;
 }
 
 const nativeBeacons: BeaconSystem = {
   listPipes,
+  exists: pipeExists,
   listen(name) {
     const server = createServer((socket) => socket.destroy());
     server.on("error", () => undefined);
     server.listen(`${PIPE_DIR}${name}`);
-    // Binding a pipe is synchronous: a server not listening now never will be. The listing of `\\.\pipe\` is how
-    // others find the beacon, but it is not trusted to confirm our own, because it can come back short.
+    // Binding a pipe is synchronous: a server not listening now never will be.
     if (!server.listening) throw new Error(`cannot start this process's liveness beacon (${PIPE_DIR}${name})`);
     server.unref();
   },
@@ -116,12 +139,14 @@ export function startBeacon(system: BeaconSystem = nativeBeacons, pid: number = 
   const token = randomBytes(8).toString("hex");
   const name = beaconName(pid, token);
   system.listen(name);
+  if (!system.exists(name)) throw new Error(`cannot start this process's liveness beacon (${PIPE_DIR}${name})`);
   if (system === nativeBeacons && pid === process.pid) ownBeacon = token;
   return token;
 }
 
-/** The token of `pid`'s beacon if one is listed, else null. */
-export function beaconOf(pid: number, pipes: Set<string> = listPipes()): string | null {
+/** The token of `pid`'s beacon if one is listed, else null (also when the pipes cannot be listed). */
+export function beaconOf(pid: number, pipes: Set<string> | null = listPipes()): string | null {
+  if (pipes === null) return null;
   const prefix = `${BEACON_PREFIX}${pid}-`;
   for (const name of pipes) if (name.startsWith(prefix)) return name.slice(prefix.length);
   return null;
@@ -167,7 +192,7 @@ export function isProcessAlive(info: LockInfo, options: LivenessOptions = {}): b
   if ((options.platform ?? process.platform) === "win32") {
     // Only a beacon tells the holder from a reused pid; a record without one is an older build's or another OS's.
     if (info.start_time === null || !info.start_time.startsWith(BEACON_MARK)) return false;
-    return (options.beacons ?? nativeBeacons).listPipes().has(beaconName(info.pid, info.start_time.slice(BEACON_MARK.length)));
+    return (options.beacons ?? nativeBeacons).exists(beaconName(info.pid, info.start_time.slice(BEACON_MARK.length)));
   }
   if (info.start_time !== null) {
     const now = processStartTime(info.pid, options);
@@ -182,7 +207,11 @@ export function isProcessAlive(info: LockInfo, options: LivenessOptions = {}): b
  */
 export function isPidAlive(pid: number, options: LivenessOptions = {}): boolean {
   if (!pidExists(pid)) return false;
-  if ((options.platform ?? process.platform) === "win32") return beaconOf(pid, (options.beacons ?? nativeBeacons).listPipes()) !== null;
+  if ((options.platform ?? process.platform) === "win32") {
+    const pipes = (options.beacons ?? nativeBeacons).listPipes();
+    // Without a listing (Node 20) the pid is all there is: a reused pid only leaves a stale temp file behind.
+    return pipes === null ? true : beaconOf(pid, pipes) !== null;
+  }
   return true;
 }
 

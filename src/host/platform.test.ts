@@ -7,6 +7,7 @@ import {
   detectSide,
   drivePathOfMount,
   isDrivePath,
+  powershellEnv,
   runCwd,
   tempDir,
   toLocal,
@@ -87,6 +88,12 @@ describe("a path the caller gave", () => {
 });
 
 describe("Windows tools from this process", () => {
+  it("start Windows PowerShell without the PSModulePath a PowerShell 7 parent leaves, whatever its case", () => {
+    const env = { PATH: "C:\\x", PSModulePath: "C:\\Program Files\\PowerShell\\7\\Modules", psmodulepath: "y", SystemRoot: "C:\\Windows" };
+    expect(powershellEnv(env)).toEqual({ PATH: "C:\\x", SystemRoot: "C:\\Windows" });
+    expect(env.PSModulePath).toBeDefined();
+  });
+
   it("start in no particular folder natively", () => {
     expect(runCwd("windows")).toBeUndefined();
   });

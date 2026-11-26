@@ -40,14 +40,17 @@ describeOnWindowsHost(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
   it("dry run plans every step, ends with the result as JSON, and creates nothing", () => {
     const r = run([]);
     expect(r.err).toBe("");
-    expect(r.code).toBe(0);
     const [head, json] = r.out.split(/^result:\r?$/m) as [string, string];
     const lines = head.split(/\r?\n/).filter((l) => l.trim());
     expect(lines.filter((l) => !/^(would do: |dry run: |missing: )/.test(l))).toEqual([]);
     expect(lines).toContain(`would do: create ${root}`);
     for (const folder of ROOT_FOLDERS) expect(lines).toContain(`would do: create ${root}\\${folder}`);
     expect(lines.filter((l) => l.startsWith(`would do: set the ACL of ${root}\\`))).toHaveLength(ROOT_FOLDERS.length);
-    const result = JSON.parse(json) as { applied: boolean; ok: boolean; folders: unknown[]; planned: string[]; changes: unknown[]; principals: { brokerSid: string }; broker: { installed: boolean } };
+    const result = JSON.parse(json) as { applied: boolean; ok: boolean; folders: unknown[]; planned: string[]; changes: unknown[]; errors: string[]; principals: { brokerSid: string }; broker: { installed: boolean } };
+    // A host without SQL Server (a CI runner) has one error, naming the service, and the dry run rightly exits 1.
+    const sqlMissing = /^the SQL Server service \S+ was not found/;
+    expect(result.errors.filter((e) => !sqlMissing.test(e))).toEqual([]);
+    expect(r.code, r.out).toBe(result.errors.length === 0 ? 0 : 1);
     // On a host where setup has already run, the service exists and the dry run rightly does not plan to create it.
     expect(lines.some((l) => l.startsWith("would do: create the service ArasHouseBroker"))).toBe(!result.broker.installed);
     expect(result.applied).toBe(false);

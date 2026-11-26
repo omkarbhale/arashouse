@@ -2,6 +2,7 @@
 // starts Windows PowerShell through interop and a local path needs `wslpath -w`, or natively under Windows node, where a
 // local path is already a Windows path. On a Linux machine without Windows PowerShell the suites that need it skip.
 
+import { powershellEnv } from "../src/host/platform.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { describe } from "vitest";
@@ -67,6 +68,8 @@ export function runPs(args: readonly string[], options: PsOptions = {}): PsRun {
   const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args], {
     encoding: "utf8",
     cwd: psCwd,
+    // Started from PowerShell 7 (a Windows CI runner's shell), the inherited PSModulePath would break 5.1's modules.
+    env: powershellEnv(),
     timeout: options.timeout ?? 120_000,
     ...(options.input === undefined ? {} : { input: options.input }),
   });

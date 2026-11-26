@@ -8,7 +8,7 @@ import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { MsiProperties, MsiReader } from "../core/media-check.js";
-import { SIDE, runCwd, tempDir, windowsPathOf, type Side } from "./platform.js";
+import { SIDE, powershellEnv, runCwd, tempDir, windowsPathOf, type Side } from "./platform.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -97,6 +97,7 @@ async function defaultRun(file: string, args: string[], timeoutMs: number): Prom
     maxBuffer: 16 * 1024 * 1024,
     windowsHide: true,
     cwd: runCwd(),
+    env: powershellEnv(),
   });
   return stdout;
 }

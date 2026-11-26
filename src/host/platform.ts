@@ -107,6 +107,15 @@ export function callerPath(text: string, options: CallerPathOptions = {}): strin
 /** Runs a program and returns its stdout; replaced in tests. */
 export type Run = (file: string, args: string[]) => Promise<string>;
 
+/**
+ * The environment Windows PowerShell 5.1 is started with: this one without `PSModulePath`. A process started from
+ * PowerShell 7 inherits a `PSModulePath` naming 7's modules, which 5.1 then fails to load (`Get-Acl`, `Get-FileHash`
+ * "is not recognized"); without it, 5.1 builds its own.
+ */
+export function powershellEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== "PSMODULEPATH"));
+}
+
 /** The folder Windows tools start in: none natively; from WSL a `C:` one, since `cmd.exe` complains in `\\wsl.localhost\`. */
 export function runCwd(side: Side = SIDE): string | undefined {
   if (side === "windows") return undefined;

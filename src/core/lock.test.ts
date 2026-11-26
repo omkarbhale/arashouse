@@ -15,17 +15,20 @@ import {
   isPidAlive,
   isProcessAlive,
   listPipes,
+  pipeExists,
   processStartTime,
   retryBusy,
   startBeacon,
 } from "./lock.js";
 
 /** A beacon system in memory: what `listen` started is listed until `end` takes it away. */
-function memoryBeacons(): BeaconSystem & { readonly pipes: Set<string>; end(name: string): void } {
+function memoryBeacons(listable = true): BeaconSystem & { readonly pipes: Set<string>; end(name: string): void } {
   const pipes = new Set<string>();
   return {
     pipes,
-    listPipes: () => new Set(pipes),
+    // Node 20 cannot list \\.\pipe\ (readdir throws ENOTDIR): `listable: false` is that.
+    listPipes: () => (listable ? new Set(pipes) : null),
+    exists: (name) => pipes.has(name),
     listen: (name) => void pipes.add(name),
     end: (name) => void pipes.delete(name),
   };
@@ -45,7 +48,23 @@ describe("liveness on Windows: the beacon", () => {
     const listen = () => {
       throw new Error("cannot start this process's liveness beacon");
     };
-    expect(() => startBeacon({ listPipes: () => new Set(), listen }, 1234)).toThrow(/liveness beacon/);
+    expect(() => startBeacon({ listPipes: () => new Set(), exists: () => false, listen }, 1234)).toThrow(/liveness beacon/);
+    // A listen that returns but leaves no pipe of that name is no beacon either.
+    expect(() => startBeacon({ listPipes: () => null, exists: () => false, listen: () => undefined }, 1234)).toThrow(/liveness beacon/);
+  });
+
+  it("without a listing (Node 20), still tells a holder by its exact beacon, and a temp file's writer by its pid", () => {
+    const beacons = memoryBeacons(false);
+    const own = processStartTime(process.pid, { platform: "win32", beacons })!;
+    expect(own).toMatch(/^pipe:[0-9a-f]{16}$/);
+    expect(isProcessAlive(info(process.pid, own), { platform: "win32", beacons })).toBe(true);
+    expect(isProcessAlive(info(process.pid, "pipe:0000000000000000"), { platform: "win32", beacons })).toBe(false);
+    expect(processStartTime(4242, { platform: "win32", beacons })).toBeNull();
+    expect(beaconOf(process.pid, beacons.listPipes())).toBeNull();
+    expect(isPidAlive(process.pid, { platform: "win32", beacons })).toBe(true);
+    expect(isPidAlive(2_000_000_000, { platform: "win32", beacons })).toBe(false);
+    beacons.end(beaconName(process.pid, own.slice(5)));
+    expect(isProcessAlive(info(process.pid, own), { platform: "win32", beacons })).toBe(false);
   });
 
   it("reads another process's beacon from the listing, or null when it has none", () => {
@@ -158,15 +177,20 @@ describe.skipIf(process.platform !== "win32")("the beacon of a real process (Win
     });
   }
 
-  it("lists this process's own beacon", () => {
+  it("starts this process's own beacon, found by its name (and in the listing where Node can list pipes)", () => {
     const start = processStartTime(process.pid);
     expect(start).toMatch(/^pipe:/);
-    expect(listPipes().has(beaconName(process.pid, start!.slice(5)))).toBe(true);
+    const name = beaconName(process.pid, start!.slice(5));
+    expect(pipeExists(name)).toBe(true);
+    expect(pipeExists(`${name}-not-there`)).toBe(false);
+    const pipes = listPipes();
+    if (pipes !== null) expect(pipes.has(name)).toBe(true);
   });
 
   it("reads a killed holder's lock and resetting record dead at once, and a reused pid as not the holder", async () => {
     const { pid, startTime } = await beaconChild();
-    expect(processStartTime(pid)).toBe(startTime);
+    // Another process's beacon is found only by listing, which Node 20 cannot do.
+    expect(processStartTime(pid)).toBe(listPipes() === null ? null : startTime);
     expect(isProcessAlive(info(pid, startTime))).toBe(true);
     expect(isResetWorkerAlive(pid, startTime)).toBe(true);
     // A record of the same pid with another beacon is a process that reused the pid: not the holder.

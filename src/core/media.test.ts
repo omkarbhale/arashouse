@@ -31,7 +31,7 @@ const git = (cwd: string, ...args: string[]) =>
   );
 
 beforeAll(() => {
-  sandbox = realpathSync(mkdtempSync(join(tmpdir(), "arashouse-media-")));
+  sandbox = realpathSync.native(mkdtempSync(join(tmpdir(), "arashouse-media-")));
   main = join(sandbox, "main");
   worktree = join(sandbox, "worktree");
   outside = join(sandbox, "outside");

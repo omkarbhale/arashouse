@@ -113,6 +113,8 @@ export function startBeacon(system: BeaconSystem = nativeBeacons, pid: number = 
   const token = randomBytes(8).toString("hex");
   const name = beaconName(pid, token);
   system.listen(name);
+  // Windows lists a pipe a moment after it is bound, and a listing can come back short while others are being made.
+  for (let attempt = 0; attempt < 10 && !system.listPipes().has(name); attempt++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
   if (!system.listPipes().has(name)) throw new Error(`cannot start this process's liveness beacon (\\\\.\\pipe\\${name})`);
   if (system === nativeBeacons && pid === process.pid) ownBeacon = token;
   return token;

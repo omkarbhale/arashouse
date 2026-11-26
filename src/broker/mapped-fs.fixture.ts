@@ -1,7 +1,7 @@
 // For the broker's tests: the install root `C:\aras_installations` mapped onto a temporary folder, so
 // the verbs read real files on Linux by their Windows paths.
 
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { DEFAULT_INSTALL_ROOT, STAMP_FILE_NAME, slotDir, slotId, type SlotRef } from "../core/names.js";
@@ -21,7 +21,8 @@ export interface MappedRoot {
 }
 
 export function mappedRoot(root: string = DEFAULT_INSTALL_ROOT): MappedRoot {
-  const dir = mkdtempSync(join(tmpdir(), "arashouse-broker-"));
+  // The long form of the path (Windows temp can be an 8.3 name), so the real path of the root maps back to it.
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "arashouse-broker-")));
   const prefix = `${root.toLowerCase()}\\`;
   const local = (path: string): string => {
     if (path.toLowerCase() === root.toLowerCase()) return dir;

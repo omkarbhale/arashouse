@@ -7,6 +7,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { release, totalmem } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1129,6 +1130,8 @@ async function cmdProvision(ctx: Context, args: readonly string[]): Promise<numb
   const deps = await operatorDeps(ctx);
   const lockPath = join(ctx.store.paths.home, "provision.lock");
   const provisionLock = async () => {
+    // On a machine's first provision the home is not there yet; the lock file goes in it.
+    await mkdir(ctx.store.paths.home, { recursive: true, mode: 0o700 });
     try {
       return await acquireLock(lockPath, { timeoutMs: 2_000 });
     } catch (err) {

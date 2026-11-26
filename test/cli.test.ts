@@ -1370,6 +1370,11 @@ describe("operator commands (ticket 16)", () => {
     const again = await cli(["provision", "23", "2"]);
     expect(again.stdout.trim().split("\n")).toEqual(["23-01 is in the pool already (free)", "23-02 is in the pool already (free)"]);
     expect(JSON.parse((await cli(["status", "--json"])).stdout).slots.map((s: { slot: string; status: string }) => `${s.slot} ${s.status}`)).toEqual(["23-01 free", "23-02 free"]);
+    // A machine's first provision: the state home is made, then its provision lock.
+    const fresh = join(home, "fresh-home");
+    const first35 = await cli(["provision", "35", "1"], { ARASHOUSE_HOME: fresh });
+    expect(first35.code, first35.stderr).toBe(0);
+    expect(existsSync(join(fresh, "state.json"))).toBe(true);
     expect((await cli(["provision", "OLM_Local"])).code).toBe(EXIT_CODES.refused);
     for (const args of [["provision"], ["provision", "23", "x"], ["provision", "23", "0"], ["provision", "23", "1", "2"], ["provision", "14sp18"]]) {
       expect((await cli(args)).code, args.join(" ")).toBe(EXIT_CODES.usage);

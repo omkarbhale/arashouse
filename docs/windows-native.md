@@ -244,10 +244,41 @@ quiet (no reset running, no waiter):
   until `ARASHOUSE_MEDIA` names it, then all three present; `doctor` 0 problems (71 s, most of it the three baselines'
   fast verify).
 
-Waiting for the pool to be free (every lease returned: `max_active` is 3 of 3, so no other lease can be taken, and the
-broker's restart would end the holders' calls in flight):
+### The broker updated, and the lease cycle natively
 
-- the broker update through firstmate's elevated gate (`arashouse setup`, then `setup-host.ps1 -Apply -UpdateBroker`),
-  after which `doctor`'s `build` check passes;
-- the per-flavor host e2e natively (`ARASHOUSE_TEST_E2E=1`: `test/host/e2e-12sp9.test.ts`, `e2e-23`, `e2e-35`);
-- aras-mr-envs deploying an MR through the vendored copy.
+2026-11-26, once 12sp9-01 was released, with two leases still held by other lanes (12sp9-02 and -03, never touched) and
+no reset running:
+
+- **The broker update**, through firstmate's elevated gate: `arashouse setup` from WSL (build `bba3d1db5992`), its
+  dry run read, then `setup-host.ps1 -Apply -UpdateBroker` elevated: exit 0, `"ok": true`. It stopped the broker,
+  installed the build (114 files, each checked by SHA-256), recompiled the wrapper, put `NT SERVICE\ArasHouseBroker`
+  back in Administrators (the domain policy had removed it again; the running broker still had its old token) and
+  started it; no ACL changed. `arashouse doctor` then: 0 problems, `build: the CLI and the broker are build
+  bba3d1db5992`, `broker token` an administrator's.
+- **The per-flavor e2e natively** (`ARASHOUSE_TEST_E2E=1`, Windows Node 24.13.0, vitest in an NTFS mirror of the
+  worktree, the CLI under test that mirror's `dist\`, unelevated), two cycles each:
+
+  | flavor | result | cycle 1 | cycle 2 | a reset (golden, quiesce, database, tree, start, health) |
+  |---|---|---|---|---|
+  | `23` | passed, 70 and 71 checks | 529 s | 591 s | 62.1 s: 2.7, 14.4, 3.9, 6.7, 19.6, 21.3 s |
+  | `35` | passed, 79 and 80 checks | 523 s | 607 s | 56.4 s: 2.8, 14.1, 6.2, 6.5, 7.5, 29.0 s |
+
+  Natively too, the reset worker killed 5.6 to 5.9 s into its reset was read dead at once by its beacon: the next
+  `get --wait 900` recovered and leased the slot in 63 to 66 s (cycle 1), `doctor --fix --yes` in cycle 2. Each
+  slot held open by the leaseholder was quarantined with its reason and cleared by `repair`; the old lease's password,
+  refresh token and access token were refused; the deny-list objects were unchanged; no lease password was in the
+  state file, the events log, any output or the record.
+
+  The e2e holds two leases of its flavor at once (the second from step 4 to step 9) and needs `<flavor>-01` and `-02`
+  free. With two leases held by others and `max_active` 3, it cannot finish: `max_active` was raised to 4 for these two
+  runs only (a `config.json` holding `{"max_active": 4}` in the state home) and the file removed after them, back to
+  the default 3.
+- **12sp9**, where only 12sp9-01 was free, so the two-lease e2e could not run: a single-lease check natively
+  instead, one lease at a time, all 12 checks passed in 192 s. `get --json --wait 900` leased 12sp9-01 (14.0 s); root
+  logged in with the lease's password and added a Part through the API; `return` exited in 0.29 s; the reset took
+  73.7 s (golden 1.6, quiesce 9.0, database 6.2, tree 7.4, start 14.5, health 32.0 s); the next `get` leased the same
+  slot, where the old password was refused, the new one worked and the Part was gone; the second return's reset took
+  82.3 s; no lease password in the state, the events log, the output or the record. The two-lease e2e for 12sp9 is
+  left for when 12sp9-02 or -03 is free.
+
+Left to its own lane: aras-mr-envs deploying an MR through the vendored copy.

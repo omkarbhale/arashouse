@@ -1,5 +1,5 @@
 // Ticket 38: three leases at once on the laptop, the races, and the capacity limits, on the host (docs/capacity.md). Run
-// from WSL as the worker, non-elevated, against the installed broker and the provisioned v1 pool (ticket 37), by
+// natively on Windows or from WSL, as the worker, non-elevated, against the installed broker and the provisioned v1 pool (ticket 37), by
 // test/host/capacity.test.ts (ARASHOUSE_TEST_E2E=1). Every step is recorded in `<out>/capacity.json` and `.log`, and the
 // host's memory every 5 s in `<out>/memory.jsonl`. The same races run offline against the fake host in
 // test/races.test.ts.
@@ -22,13 +22,14 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, totalmem } from "node:os";
+import { totalmem } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG } from "../../src/core/config.js";
 import type { FlavorKey } from "../../src/core/flavors.js";
 import { redact } from "../../src/core/redact.js";
 import { Secret } from "../../src/core/secret.js";
-import { BrokerHost, interopTransport } from "../../src/host/index.js";
+import { BrokerHost } from "../../src/host/index.js";
+import { SIDE, poolHome, runCwd, transport, wslConfigPath } from "./local.js";
 import { repoRoot } from "../helpers.js";
 import { ArasClient, newItemId } from "./aras-client.js";
 import { denyListPrints, runProcess, slotMemory } from "./e2e-cycle.js";
@@ -133,7 +134,7 @@ function startSampler(file: string, phase: () => string): { stop: () => MemorySa
   const samples: MemorySample[] = [];
   // As -EncodedCommand: a loop read from stdin (`-Command -`) is never run, as PowerShell waits for a blank line.
   const encoded = Buffer.from(SAMPLER, "utf16le").toString("base64");
-  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined, stdio: ["ignore", "pipe", "ignore"] });
+  const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { cwd: runCwd(), stdio: ["ignore", "pipe", "ignore"] });
   let buffer = "";
   child.stdout.on("data", (d: Buffer) => {
     buffer += d.toString("utf8");
@@ -186,7 +187,7 @@ export function resetConcurrency(log: readonly LogEvent[]): { peak: number; dirt
 
 export async function runCapacity(options: CapacityOptions): Promise<StepRecord[]> {
   const { out } = options;
-  const home = process.env.ARASHOUSE_HOME || join(homedir(), ".arashouse");
+  const home = poolHome();
   const tag = randomBytes(4).toString("hex");
   const records: StepRecord[] = [];
   const seenPasswords: Secret[] = [];
@@ -376,7 +377,7 @@ export async function runCapacity(options: CapacityOptions): Promise<StepRecord[
     const done = existsSync(join(dir, `kill-${n}.done`)) ? readFileSync(join(dir, `kill-${n}.done`), "utf8").trim() : "no .done";
     const back = existsSync(join(dir, `kill-${n}.back`)) ? readFileSync(join(dir, `kill-${n}.back`), "utf8").trim() : "no .back";
     let pinged = false;
-    const host = new BrokerHost(interopTransport({ node: process.env.ARASHOUSE_WINDOWS_NODE || undefined }));
+    const host = new BrokerHost(transport());
     while (!pinged && Date.now() < deadline) {
       pinged = await host.ping().then((r) => r.ok, () => false);
       if (!pinged) await sleep(2000);
@@ -390,9 +391,9 @@ export async function runCapacity(options: CapacityOptions): Promise<StepRecord[
     const denyBefore = await denyListPrints();
     check("0.deny-list before", Object.keys(denyBefore).length > 0, `${Object.keys(denyBefore).length} objects fingerprinted (names and hashes only)`);
     const profile = (await runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "$env:USERPROFILE"])).stdout.trim();
-    const wslconfig = join((await runProcess("wslpath", ["-u", profile])).stdout.trim(), ".wslconfig");
+    const wslconfig = wslConfigPath(profile);
     const capLines = existsSync(wslconfig) ? readFileSync(wslconfig, "utf8").split(/\r?\n/).filter((l) => /^\s*(memory|autoMemoryReclaim)\s*=/.test(l)).map((l) => l.trim()) : [];
-    check("0.WSL's memory", true, `.wslconfig ${existsSync(wslconfig) ? `has ${capLines.join(", ") || "no memory line"}` : "absent"}; the VM sees ${Math.round(totalmem() / 1024 / 1024)} MB`);
+    check("0.WSL's memory", true, `.wslconfig ${existsSync(wslconfig) ? `has ${capLines.join(", ") || "no memory line"}` : "absent"}; ${SIDE === "wsl" ? `the VM sees ${Math.round(totalmem() / 1024 / 1024)} MB` : `natively; the machine has ${Math.round(totalmem() / 1024 / 1024)} MB`}`);
     const rest = await status();
     must("0.every slot free", rest.slots.length === 7 && allFree(rest.slots), describeRows(rest.slots));
     phase = "idle";

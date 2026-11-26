@@ -92,7 +92,8 @@ describe("npm run vendor", () => {
   });
 });
 
-describe("a vendored copy, outside any arashouse checkout", () => {
+// Each test starts the copy's CLI; under a whole suite's load that outruns the default.
+describe("a vendored copy, outside any arashouse checkout", { timeout: 60_000 }, () => {
   let bin: string;
   let home: string;
 

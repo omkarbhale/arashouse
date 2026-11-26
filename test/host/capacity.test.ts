@@ -1,6 +1,6 @@
 // Ticket 38's acceptance on the real host (test/host/capacity.ts, docs/capacity.md): three leases at once on the v1
 // pool, busy, returned at once, and the broker killed during a lease and during a reset. It takes every slot of the
-// pool in turn, so it runs only when asked, with the host to itself: ARASHOUSE_TEST_E2E=1, from WSL, with the broker
+// pool in turn, so it runs only when asked, with the host to itself: ARASHOUSE_TEST_E2E=1, natively on Windows (or from WSL, through the launcher), with the broker
 // installed, the v1 pool provisioned and free (ticket 37), `npm run build` done, and:
 //   ARASHOUSE_E2E_OUT              a folder outside the worktree for the record, the memory samples and the packages
 //   ARASHOUSE_E2E_ARAS_PKG         libs-js's built CLI (`dist/cli.js`)

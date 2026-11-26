@@ -20,16 +20,14 @@ import { MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PIPE_PATH, UNREACHABLE_HINT, enc
 import { DEFAULT_INSTALL_ROOT, brokerClientScript } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { HostError } from "./errors.js";
-import { SIDE, type Side } from "./platform.js";
+import { DEFAULT_WINDOWS_NODE, SIDE, WINDOWS_NODE_ENV, type Side } from "./platform.js";
 
 /** One round trip to the broker: resolves the response as parsed JSON, or rejects with a `HostError`. */
 export interface BrokerTransport {
   call(request: BrokerRequest, timeoutMs: number): Promise<unknown>;
 }
 
-/** The Windows `node.exe` as WSL sees it; `ARASHOUSE_WINDOWS_NODE` overrides it. */
-export const WINDOWS_NODE_ENV = "ARASHOUSE_WINDOWS_NODE";
-export const DEFAULT_WINDOWS_NODE = "/mnt/c/Program Files/nodejs/node.exe";
+export { DEFAULT_WINDOWS_NODE, WINDOWS_NODE_ENV } from "./platform.js";
 
 /** What the client and the process start may add to the verb's own bound before WSL gives up. */
 const TRANSPORT_MARGIN_MS = 10_000;

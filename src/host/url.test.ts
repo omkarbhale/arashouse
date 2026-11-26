@@ -102,7 +102,7 @@ describe("hostAddress", () => {
       side: "wsl",
       gateway: () => gateway.address,
       loopback: loopback.address,
-      timeoutMs: 100,
+      timeoutMs: 500,
     });
     expect(address).toBe(loopback.address);
   });

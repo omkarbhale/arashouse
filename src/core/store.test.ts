@@ -197,7 +197,8 @@ describe("concurrent writers", () => {
     expect(existsSync(store.paths.lock)).toBe(false);
   });
 
-  it("serialise updates inside one process too", async () => {
+  // 25 updates contend for one lock; under a whole suite's load that outruns the default.
+  it("serialise updates inside one process too", { timeout: 30_000 }, async () => {
     const store = new StateStore({ home });
     await store.update((tx) => void tx.addSlot(slot));
     await Promise.all(

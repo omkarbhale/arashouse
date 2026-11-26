@@ -1,6 +1,6 @@
 // Ticket 35: the whole lease cycle on the host for one flavor, with a deliberately dirtied slot. It proves the
 // captain's promise end to end: "It doesn't necessarily clean it up ON freeing the lease, but the worker can assume it
-// has cleaned up." A returned slot is wiped, and the next lease is clean. Run from WSL, non-elevated, by
+// has cleaned up." A returned slot is wiped, and the next lease is clean. Run natively on Windows or from WSL, non-elevated, by
 // test/host/e2e-12sp9.test.ts, e2e-23.test.ts and e2e-35.test.ts (ARASHOUSE_TEST_E2E=1); every step is recorded in
 // `<out>/cycle-<n>.json` and `.log` for docs/e2e-12sp9.md, docs/e2e-23.md (ticket 36, which adds the 14.x OAuth
 // server's runtime state: its SQLite file, where a lease's refresh token lives, and its data-protection keys) and
@@ -18,18 +18,16 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, appendFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../../src/core/redact.js";
 import { Secret } from "../../src/core/secret.js";
 import { type FlavorKey, getFlavor } from "../../src/core/flavors.js";
-import { BrokerHost, interopTransport } from "../../src/host/index.js";
+import { BrokerHost } from "../../src/host/index.js";
 import { repoRoot } from "../helpers.js";
 import { ArasClient, type Login, isNoItems, newItemId, xmlText } from "./aras-client.js";
+import { ROOT_LOCAL, ROOT_WIN, poolHome, runCwd, toLocal, transport, windowsPathOf } from "./local.js";
 
 const CLI = join(repoRoot, "dist/cli/index.js");
-const ROOT_WSL = "/mnt/c/aras_installations";
-const ROOT_WIN = "C:\\aras_installations";
 /** How long the leaseholder's lock in step 8 is held: enough for a reset to fail twice (about 30 s), and then it ends. */
 const LOCK_SECONDS = 150;
 /**
@@ -180,7 +178,7 @@ return inn.newError("arashouse e2e: bad mode");`;
 
 export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
   const { cycle, flavor, out } = options;
-  const home = process.env.ARASHOUSE_HOME || join(homedir(), ".arashouse");
+  const home = poolHome();
   const tag = randomBytes(4).toString("hex");
   const TAG = tag.toUpperCase();
   const records: StepRecord[] = [];
@@ -269,7 +267,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     return s?.status === "resetting" ? s.reset : undefined;
   };
 
-  const slotDir = (slot: string) => join(ROOT_WSL, "slots", flavor, slotNumber(slot));
+  const slotDir = (slot: string) => join(ROOT_LOCAL, "slots", flavor, slotNumber(slot));
   const binHashes = (slot: string): Map<string, string> => {
     const bin = join(slotDir(slot), "Innovator/Server/bin");
     return new Map(readdirSync(bin).filter((f) => /\.dll$/i.test(f)).map((f) => [f, sha256(readFileSync(join(bin, f)))]));
@@ -321,7 +319,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     return { loggedIn: r.code === 0, line: redact(r.stdout.trim() || r.stderr.trim()) };
   };
 
-  const host = new BrokerHost(interopTransport({ node: process.env.ARASHOUSE_WINDOWS_NODE || undefined }));
+  const host = new BrokerHost(transport());
   const t0 = Date.now();
   const since = (t: number) => Date.now() - t;
 
@@ -345,7 +343,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     const A = a.grant!;
     const aras = new ArasClient(A.url, A.database);
     const loginA = await aras.login("root", A.password);
-    must("2.root logs in with the lease's password (from WSL)", loginA.ok, loginA.ok ? "token issued" : loginA.detail);
+    must("2.root logs in with the lease's password (from the worker's side)", loginA.ok, loginA.ok ? "token issued" : loginA.detail);
     const token = (loginA as { token: Secret }).token;
     const ootbA = await ootbLogsIn(A.slot);
     if (ootbA) check("2.root does not log in with the golden backup's password", !ootbA.loggedIn, ootbA.line);
@@ -541,7 +539,7 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
     await gone("the Method", `<Item type="Method" action="get" select="id"><name>${methodName}</name></Item>`);
 
     const after = { bin: binHashes(A2.slot), config: configHash(A2.slot) };
-    check("6.the Client file is gone", !existsSync(clientFile), clientFile.slice(ROOT_WSL.length));
+    check("6.the Client file is gone", !existsSync(clientFile), clientFile.slice(ROOT_LOCAL.length));
     const temp = readdirSync(join(slotDir(A2.slot), "Innovator/Server/temp"));
     check("6.Server\\temp holds nothing of the lease", !temp.some((f) => f.includes("arashouse-e2e")), `${temp.length} entries, none of the lease's`);
     check("6.the DLL equals golden's (as provisioned)", after.bin.get(dll!) === before.bin.get(dll!), dll!);
@@ -697,13 +695,12 @@ export async function runCycle(options: CycleOptions): Promise<StepRecord[]> {
 // ---- Windows helpers -----------------------------------------------------------------------------------------
 
 async function toWindows(path: string): Promise<string> {
-  const r = await runProcess("wslpath", ["-w", path]);
-  return r.stdout.trim();
+  return windowsPathOf(path);
 }
 
 export function runProcess(cmd: string, args: string[], input?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd: runCwd(), stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString("utf8")));
@@ -723,7 +720,7 @@ export function runProcess(cmd: string, args: string[], input?: string): Promise
 function holdLock(path: string, seconds: number): Promise<{ locked: boolean; pid?: number; detail: string }> {
   return new Promise((resolve) => {
     const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `$f = [IO.File]::Open([Console]::In.ReadLine(), 'Open', 'Read', 'None'); [Console]::Out.WriteLine('locked'); Start-Sleep -Seconds ${seconds}; $f.Close()`], {
-      cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
+      cwd: runCwd(),
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stderr = "";
@@ -767,12 +764,12 @@ export async function denyListPrints(): Promise<Record<string, string>> {
   const prints: Record<string, string> = {};
   const { DENIED_INSTALL_ROOTS, DENIED_SERVICE_PREFIXES } = await import("../../src/core/guards.js");
   for (const root of DENIED_INSTALL_ROOTS) {
-    const wsl = `/mnt/c/${root.slice(3).replace(/\\/g, "/")}/InnovatorServerConfig.xml`;
+    const wsl = join(toLocal(root), "InnovatorServerConfig.xml");
     let print = "absent";
     try {
       if (statSync(wsl).isFile()) print = sha256(readFileSync(wsl));
     } catch {
-      print = existsSync(`/mnt/c/${root.slice(3).replace(/\\/g, "/")}`) ? "no readable config" : "absent";
+      print = existsSync(toLocal(root)) ? "no readable config" : "absent";
     }
     prints[`install root ${root}`] = print;
   }

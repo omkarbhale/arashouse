@@ -1,6 +1,6 @@
 // Ticket 41's acceptance on the real host (test/host/e2e-import.ts, docs/import.md): `get --import` onto a lease of each
 // flavor, an atomic failure, and the password grep. It takes and returns leases of the installed pool, so it runs only
-// when asked: ARASHOUSE_TEST_IMPORT=1, from WSL, with the broker installed, the flavors' slots provisioned and free,
+// when asked: ARASHOUSE_TEST_IMPORT=1, natively on Windows (or from WSL, through the launcher), with the broker installed, the flavors' slots provisioned and free,
 // `npm run build` done, and:
 //   ARASHOUSE_E2E_OUT       a folder outside the worktree for the record, the packages and the exports
 //   ARASHOUSE_E2E_ARAS_PKG  libs-js's built CLI (`dist/cli.js` of a checkout, whose fixtures/ give the scratch packages)

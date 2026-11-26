@@ -12,6 +12,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/** The Windows `node.exe` as WSL sees it (the interop transport's, and the launcher's); `ARASHOUSE_WINDOWS_NODE` overrides it. */
+export const WINDOWS_NODE_ENV = "ARASHOUSE_WINDOWS_NODE";
+export const DEFAULT_WINDOWS_NODE = "/mnt/c/Program Files/nodejs/node.exe";
+
 /** `windows`: native Windows. `wsl`: Linux inside WSL, with the Windows drives under `/mnt`. `linux`: anything else. */
 export type Side = "windows" | "wsl" | "linux";
 

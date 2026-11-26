@@ -13,29 +13,41 @@
 //
 // `ARASHOUSE_HOST=fake` (the tests' host) runs the CLI here instead, with its own state; so does a WSL with no Windows
 // Node, where nothing on Windows could be reached anyway (the CLI then says the host is unreachable, as it always has).
+//
+// Each launch costs a Node start here and a `node.exe` start through interop. Once this build's runtime copy exists,
+// `node.exe` is started on it by its Windows path; the `\wsl.localhost` entry is only for the first launch of a build.
+// The modules `run` and `--password-fd` need are loaded when those run.
 
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import { setTimeout as sleepMs } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { EXIT_CODES } from "../core/exit-codes.js";
-import { exitCodeFor } from "../core/lease.js";
 import { Secret } from "../core/secret.js";
-import { DEFAULT_WINDOWS_NODE, TOKEN_FILE_ENV, WINDOWS_NODE_ENV } from "../host/broker-transport.js";
-import { SIDE, WSL_DISTRO_ENV, drivePathOfMount, uncPathOf, type Side } from "../host/platform.js";
-import { HOST_ADDR_ENV, parseDefaultGateway } from "../host/url.js";
-import { parseArgs } from "../cli/args.js";
-import { parsePasswordFd, writePasswordFd } from "../cli/password-fd.js";
-import { runChild } from "../cli/run.js";
+import { SIDE, WINDOWS_NODE_ENV, WSL_DISTRO_ENV, drivePathOfMount, isDrivePath, runCwd, uncPathOf, wslPathOf, type Side } from "../host/platform.js";
+import { LAUNCHER_ENV, launcherApplies as applies, windowsNode } from "./applies.js";
+import { RUNTIME_MARKER } from "./windows-entry.js";
+
+export { LAUNCHER_ENV, windowsNode };
+
+/** `ARASHOUSE_HOST_ADDR` (src/host/url.ts): the host address slot URLs are built with. */
+const HOST_ADDR_ENV = "ARASHOUSE_HOST_ADDR";
+
+/** The gateway in `ip route` output (`default via 172.19.0.1 dev eth0 ...`), or undefined; as src/host/url.ts reads it. */
+function parseDefaultGateway(routeOutput: string): string | undefined {
+  const gateway = /^default\s+via\s+(\S+)/m.exec(routeOutput)?.[1];
+  return gateway !== undefined && /^\d{1,3}(?:\.\d{1,3}){3}$/.test(gateway) ? gateway : undefined;
+}
 
 /** The build this launcher belongs to: the folder holding `dist/` and `package.json`. */
 export const BUILD_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 /** The variables passed on to the Windows process, their values as Windows reads them (`WSLENV` carries them). */
 // LOCALAPPDATA is not set in WSL; when it is, it was set on purpose (the launcher's tests keep the runtime folder there).
-const PATH_VARS = ["ARASHOUSE_MEDIA", "ARASHOUSE_APKG", "ARASHOUSE_HOME", "ARASHOUSE_WINDOWS_GIT", "ARASHOUSE_LOCAL_ROOT", TOKEN_FILE_ENV, "LOCALAPPDATA"] as const;
+const PATH_VARS = ["ARASHOUSE_MEDIA", "ARASHOUSE_APKG", "ARASHOUSE_HOME", "ARASHOUSE_WINDOWS_GIT", "ARASHOUSE_LOCAL_ROOT", "ARASHOUSE_BROKER_TOKEN_FILE", "LOCALAPPDATA"] as const;
 const PLAIN_VARS = ["ARASHOUSE_HOST", "ARASHOUSE_DEBUG", "ARASHOUSE_RESET_WORKER", "ARAS_PKG_ENGINE", "ARASHOUSE_FAKE_FAULTS", "ARASHOUSE_FAKE_PROBE"] as const;
 
 /** WSL's own line when it cannot connect a Windows process's channels; the process never ran. */
@@ -43,18 +55,48 @@ const INTEROP_START_FAILURE = /^<\d+>WSL \(\d+[^)]*\) ERROR: Util\w*Vsock\w*:.*$
 export const LAUNCH_ATTEMPTS = 3;
 const LAUNCH_RETRY_MS = 1_000;
 
-/** The Windows `node.exe` the launcher starts, as a WSL path. */
-export function windowsNode(env: NodeJS.ProcessEnv): string {
-  return env[WINDOWS_NODE_ENV]?.trim() || DEFAULT_WINDOWS_NODE;
+/** Whether `arashouse` in this process is the launcher (src/launcher/applies.ts). */
+export function launcherApplies(env: NodeJS.ProcessEnv, side: Side = SIDE, exists: (path: string) => boolean = existsSync): boolean {
+  return applies(env, side, exists);
 }
 
-/** `always`: launch the Windows build for the fake host too (the launcher's own tests, with a state on a Windows drive). */
-export const LAUNCHER_ENV = "ARASHOUSE_LAUNCHER";
+/** Where this side keeps the Windows `%LOCALAPPDATA%` it asked for once (`cmd.exe` takes a moment to start). */
+export function localAppDataCache(env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.XDG_CACHE_HOME?.trim() || join(homedir(), ".cache"), "arashouse", "localappdata");
+}
 
-/** Whether `arashouse` in this process is the launcher: in WSL, with a Windows Node to run, for every host but the fake one. */
-export function launcherApplies(env: NodeJS.ProcessEnv, side: Side = SIDE, exists: (path: string) => boolean = existsSync): boolean {
-  if (side !== "wsl" || !exists(windowsNode(env))) return false;
-  return env.ARASHOUSE_HOST !== "fake" || env[LAUNCHER_ENV] === "always";
+/**
+ * The Windows `%LOCALAPPDATA%`, as a Windows path: `LOCALAPPDATA` when set here (tests), else the one this side asked
+ * Windows for and kept, else asked now (and kept). Undefined when it cannot be found: the launch then goes through the
+ * `\\wsl.localhost` entry, which finds it on the Windows side.
+ */
+export function windowsLocalAppData(env: NodeJS.ProcessEnv, distro: string, ask: () => string | undefined = askLocalAppData, cwd?: string): string | undefined {
+  const given = env.LOCALAPPDATA?.trim();
+  if (given) return windowsPathFor(given, distro, cwd);
+  const cache = localAppDataCache(env);
+  try {
+    const kept = readFileSync(cache, "utf8").trim();
+    if (isDrivePath(kept) && existsSync(wslPathOf(kept))) return kept;
+  } catch {
+    // Not kept yet.
+  }
+  const asked = ask();
+  if (asked === undefined || !isDrivePath(asked)) return undefined;
+  try {
+    mkdirSync(dirname(cache), { recursive: true });
+    writeFileSync(cache, `${asked}\n`);
+  } catch {
+    // Kept next time, then.
+  }
+  return asked;
+}
+
+function askLocalAppData(): string | undefined {
+  try {
+    return execFileSync("cmd.exe", ["/c", "echo %LOCALAPPDATA%"], { encoding: "utf8", timeout: 10_000, cwd: runCwd(), stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return undefined;
+  }
 }
 
 class LaunchError extends Error {
@@ -184,6 +226,10 @@ export interface LauncherDeps {
   /** The build to run (the folder holding `dist/`); defaults to this one. */
   readonly root?: string;
   readonly sleep?: (ms: number) => Promise<void>;
+  /** The Windows `%LOCALAPPDATA%` (`windowsLocalAppData`); replaced in tests. */
+  readonly localAppData?: (env: NodeJS.ProcessEnv, distro: string) => string | undefined;
+  /** Whether a path exists on this side (the runtime copy's marker); replaced in tests. */
+  readonly exists?: (path: string) => boolean;
   /** How `--password-fd` is checked and written on this side; replaced in tests. */
   readonly passwordFd?: { readonly parse: (text: string) => number; readonly write: (fd: number, password: Secret) => void };
 }
@@ -203,14 +249,18 @@ async function runWindows(deps: LauncherDeps, args: readonly string[], capture: 
   const distro = env.WSL_DISTRO_NAME?.trim();
   if (!distro) throw new LaunchError(1, "WSL_DISTRO_NAME is not set, so the Windows side cannot read this distribution's paths");
   const root = deps.root ?? BUILD_ROOT;
-  const entry = windowsPathFor(join(root, "dist", "launcher", "windows-entry.js"), distro);
   const childEnv = { ...env, ...windowsEnvironment(env, distro, { cwd: deps.cwd, net: deps.net }) };
   const id = runtimeId(root);
+  // This build's runtime copy, when it exists, by its Windows path; else the entry, which makes it.
+  const localAppData = (deps.localAppData ?? ((e: NodeJS.ProcessEnv, d: string) => windowsLocalAppData(e, d, undefined, deps.cwd)))(env, distro);
+  const runtime = localAppData === undefined ? undefined : win32.join(localAppData, "arashouse", "runtime", id);
+  const ready = runtime !== undefined && (deps.exists ?? existsSync)(wslPathOf(win32.join(runtime, RUNTIME_MARKER)));
+  const launchArgs = ready ? [win32.join(runtime, "dist", "cli", "index.js")] : [windowsPathFor(join(root, "dist", "launcher", "windows-entry.js"), distro), id];
   const start = deps.spawn ?? liveSpawner;
   const sleep = deps.sleep ?? ((ms: number) => sleepMs(ms).then(() => undefined));
   for (let attempt = 1; ; attempt++) {
     const outcome = await new Promise<Launch & { stderr: string }>((resolveRun) => {
-      const child = start(node, [entry, id, ...args], childEnv);
+      const child = start(node, [...launchArgs, ...args], childEnv);
       let stdout = "";
       let stderr = "";
       let pending = "";
@@ -263,6 +313,7 @@ function commandOf(argv: readonly string[]): { command: string | undefined; args
 
 /** `run`, here: the lease's environment from the Windows side, the command in WSL. */
 async function runHere(deps: LauncherDeps, args: readonly string[], globals: readonly string[]): Promise<number> {
+  const [{ parseArgs }, { runChild }] = await Promise.all([import("../cli/args.js"), import("../cli/run.js")]);
   const parsed = parseArgs(args, { lease: "value" });
   const lease = typeof parsed.options.lease === "string" ? parsed.options.lease : undefined;
   if (parsed.positionals.length > 0 || parsed.rest === undefined || lease === undefined) {
@@ -287,6 +338,7 @@ async function getWithFd(deps: LauncherDeps, command: string, args: readonly str
   const at = args.indexOf("--password-fd");
   const fdText = args[at + 1];
   if (fdText === undefined) return (await runWindows(deps, [...globals, command, ...args], false)).code;
+  const { parsePasswordFd, writePasswordFd } = await import("../cli/password-fd.js");
   const fdIo = deps.passwordFd ?? { parse: (text: string) => parsePasswordFd(text, "linux"), write: writePasswordFd };
   const fd = fdIo.parse(fdText);
   const json = args.includes("--json");
@@ -335,7 +387,8 @@ export async function runLauncher(argv: readonly string[], deps: LauncherDeps): 
     if (!help && command === "get" && args.includes("--password-fd")) return await getWithFd(deps, command, args, globals);
     return (await runWindows(deps, argv, false)).code;
   } catch (err) {
-    const code = err instanceof LaunchError ? err.code : exitCodeFor(err);
+    const exitCode = (err as { exitCode?: unknown }).exitCode;
+    const code = err instanceof LaunchError ? err.code : typeof exitCode === "number" ? exitCode : 1;
     deps.io.stderr(`arashouse: ${err instanceof Error ? err.message : String(err)}\n`);
     return code;
   }

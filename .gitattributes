@@ -1,0 +1,3 @@
+# Line endings stay LF on every checkout, Windows included: the tests read the sources, and the generated scripts
+# are given CRLF where they are written (src/core/setup-host.ts and the like).
+* text=auto eol=lf

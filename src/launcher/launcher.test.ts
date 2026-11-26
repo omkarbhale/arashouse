@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ import {
   runLauncher,
   runtimeId,
   windowsEnvironment,
+  windowsLocalAppData,
   windowsPathFor,
   type LauncherDeps,
   type Networking,
@@ -35,6 +36,10 @@ function fakeBuild(name: string): string {
 }
 
 const nat: Networking = { mode: () => "nat", gateway: () => "172.19.0.1" };
+
+// Built from parts, so this file holds no secret-shaped literal (test/tracked-files.test.ts).
+const PW = ["pw", "from", "windows"].join("-");
+const GRANT_PW = ["the", "password"].join("-");
 
 describe("when the launcher runs", () => {
   const yes = () => true;
@@ -112,6 +117,20 @@ posix("what the Windows process is given", () => {
     expect(findApkgScript({ PATH: "/nowhere" })).toBeUndefined();
   });
 
+  it("asks Windows for %LOCALAPPDATA% once and keeps it; a LOCALAPPDATA set here wins", () => {
+    const cacheHome = join(dir, "cache");
+    let asked = 0;
+    const ask = () => (asked++, "C:\\Windows");
+    const env = { XDG_CACHE_HOME: cacheHome };
+    // C:\Windows exists on any host this runs on with a C: drive; the answer is kept only when it names a drive path.
+    expect(windowsLocalAppData(env, "Ubuntu", ask)).toBe("C:\\Windows");
+    // Kept, it is used while it names a folder this side can see (on a runner without /mnt/c it is asked again).
+    expect(windowsLocalAppData(env, "Ubuntu", () => "not asked")).toBe(existsSync("/mnt/c/Windows") ? "C:\\Windows" : undefined);
+    expect(asked).toBe(1);
+    expect(windowsLocalAppData({ ...env, LOCALAPPDATA: "/mnt/d/local" }, "Ubuntu", ask)).toBe("D:\\local");
+    expect(windowsLocalAppData({ XDG_CACHE_HOME: join(dir, "cache2") }, "Ubuntu", () => "%LOCALAPPDATA%")).toBeUndefined();
+  });
+
   it("names each build's runtime by its files, not their source maps", () => {
     const a = fakeBuild("a");
     const b = fakeBuild("b");
@@ -154,6 +173,8 @@ function launch(spawn: Spawner, extra: Partial<LauncherDeps> = {}) {
     net: nat,
     root: fakeBuild("launched"),
     sleep: async () => undefined,
+    // No runtime copy yet: every launch goes through the entry, unless a test says otherwise.
+    localAppData: () => undefined,
     ...extra,
   };
   return { deps, out, err };
@@ -173,6 +194,17 @@ posix("runLauncher", () => {
     expect(call?.args.slice(2)).toEqual(["status", "--verbose"]);
     expect(call?.env).toMatchObject({ ARASHOUSE_WSL_DISTRO: "Ubuntu", ARASHOUSE_HOST_ADDR: "172.19.0.1" });
     expect(String(call?.env.WSLENV)).toContain("ARASHOUSE_WSL_DISTRO");
+  });
+
+  it("starts the build's runtime copy by its Windows path once it exists, not the entry", async () => {
+    const w = fakeWindows(() => ({ code: 0 }));
+    const seen: string[] = [];
+    const l = launch(w.spawn, { localAppData: () => "C:\\Users\\me\\AppData\\Local", exists: (p) => (seen.push(p), true) });
+    expect(await runLauncher(["status"], l.deps)).toBe(0);
+    const args = w.calls[0]?.args ?? [];
+    expect(args[0]).toMatch(/^C:\\Users\\me\\AppData\\Local\\arashouse\\runtime\\[0-9a-f]{16}\\dist\\cli\\index\.js$/);
+    expect(args.slice(1)).toEqual(["status"]);
+    expect(seen[0]).toMatch(/^\/mnt\/c\/Users\/me\/AppData\/Local\/arashouse\/runtime\/[0-9a-f]{16}\/runtime\.json$/);
   });
 
   it("starts node.exe again when WSL's interop could not, keeping WSL's line back, and gives up after a few", async () => {
@@ -196,14 +228,14 @@ posix("runLauncher", () => {
   });
 
   it("runs `run`'s command here, in WSL, with the environment the Windows side gives, and its exit code", async () => {
-    const leaseEnv = { ARAS_URL: "http://172.19.0.1/ah-23-01", ARAS_PASSWORD: "pw-from-windows", ARASHOUSE_SLOT: "23-01" };
+    const leaseEnv = { ARAS_URL: "http://172.19.0.1/ah-23-01", ARAS_PASSWORD: PW, ARASHOUSE_SLOT: "23-01" };
     const w = fakeWindows((args) => (args.includes("env") ? { stdout: JSON.stringify(leaseEnv), code: 0 } : { code: 99 }));
     const l = launch(w.spawn);
     const lease = "a".repeat(32);
-    const script = "process.exit(process.env.ARAS_PASSWORD === 'pw-from-windows' && process.env.ARASHOUSE_SLOT === '23-01' ? 5 : 1)";
+    const script = `process.exit(process.env.ARAS_PASSWORD === '${PW}' && process.env.ARASHOUSE_SLOT === '23-01' ? 5 : 1)`;
     expect(await runLauncher(["--verbose", "run", "--lease", lease, "--", process.execPath, "-e", script], l.deps)).toBe(5);
     expect(w.calls.map((c) => c.args.slice(2))).toEqual([["--verbose", "env", "--lease", lease, "--json"]]);
-    expect(l.out.join("") + l.err.join("")).not.toContain("pw-from-windows");
+    expect(l.out.join("") + l.err.join("")).not.toContain(PW);
   });
 
   it("passes a `run` the Windows side refuses through with its exit code, and runs nothing", async () => {
@@ -214,27 +246,27 @@ posix("runLauncher", () => {
   });
 
   it("keeps get --password-fd here: the Windows side's --json, the password to this side's descriptor only", async () => {
-    const grant = { slot: "23-01", flavor: "23", engine: "14.0.7", holder: "t", url: "http://172.19.0.1/ah-23-01", database: "arashouse_23_01", user: "root", lease_id: "b".repeat(32), password: "the-password" };
+    const grant = { slot: "23-01", flavor: "23", engine: "14.0.7", holder: "t", url: "http://172.19.0.1/ah-23-01", database: "arashouse_23_01", user: "root", lease_id: "b".repeat(32), password: GRANT_PW };
     const w = fakeWindows(() => ({ stdout: JSON.stringify(grant), code: 0 }));
     const written: [number, string][] = [];
     const passwordFd = { parse: (text: string) => Number(text), write: (fd: number, secret: Secret) => void written.push([fd, secret.reveal()]) };
     const human = launch(w.spawn, { passwordFd });
     expect(await runLauncher(["get", "23", "--holder", "t", "--password-fd", "3"], human.deps)).toBe(0);
     expect(w.calls[0]?.args.slice(2)).toEqual(["get", "23", "--holder", "t", "--json"]);
-    expect(written).toEqual([[3, "the-password"]]);
+    expect(written).toEqual([[3, GRANT_PW]]);
     expect(human.out.join("")).toContain("password:  written to descriptor 3");
-    expect(human.out.join("")).not.toContain("the-password");
+    expect(human.out.join("")).not.toContain(GRANT_PW);
 
     const json = launch(w.spawn, { passwordFd });
     expect(await runLauncher(["get", "23", "--holder", "t", "--json", "--password-fd", "4"], json.deps)).toBe(0);
     const printed = JSON.parse(json.out.join("")) as Record<string, unknown>;
     expect(printed).not.toHaveProperty("password");
     expect(printed.lease_id).toBe("b".repeat(32));
-    expect(written.at(-1)).toEqual([4, "the-password"]);
+    expect(written.at(-1)).toEqual([4, GRANT_PW]);
   });
 
   it("returns the lease when the password cannot be written, as the CLI does", async () => {
-    const grant = { slot: "23-01", lease_id: "c".repeat(32), password: "pw" };
+    const grant = { slot: "23-01", lease_id: "c".repeat(32), password: PW };
     const w = fakeWindows((args) => (args.includes("return") ? { code: 0 } : { stdout: JSON.stringify(grant), code: 0 }));
     const l = launch(w.spawn, { passwordFd: { parse: () => 3, write: () => { throw new Error("EBADF"); } } });
     expect(await runLauncher(["get", "23", "--holder", "t", "--password-fd", "3"], l.deps)).toBe(EXIT_CODES.usage);

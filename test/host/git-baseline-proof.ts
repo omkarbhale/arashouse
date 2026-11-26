@@ -22,13 +22,13 @@ import type { FlavorKey } from "../../src/core/flavors.js";
 import { GIT_IDENTITY, isNeverCommitted } from "../../src/core/git-baseline.js";
 import { redact } from "../../src/core/redact.js";
 import { Secret } from "../../src/core/secret.js";
-import { DEFAULT_WINDOWS_GIT } from "../../src/cli/git.js";
+import { defaultWindowsGit } from "../../src/cli/git.js";
 import { repoRoot } from "../helpers.js";
 import { ArasClient } from "./aras-client.js";
 import { denyListPrints, runProcess } from "./e2e-cycle.js";
+import { ROOT_LOCAL, SIDE } from "./local.js";
 
 const CLI = join(repoRoot, "dist/cli/index.js");
-const ROOT_WSL = "/mnt/c/aras_installations";
 
 export interface ProofRecord {
   readonly step: string;
@@ -99,7 +99,7 @@ export async function runGitProof(out: string, flavors: readonly FlavorKey[]): P
       });
     });
   const oneLine = (run: CliRun) => `exit ${run.code}: ${`${run.stdout} ${run.stderr}`.replace(/\s+/g, " ").trim()}`.slice(0, 600);
-  const windowsGit = process.env.ARASHOUSE_WINDOWS_GIT?.trim() || DEFAULT_WINDOWS_GIT;
+  const windowsGit = process.env.ARASHOUSE_WINDOWS_GIT?.trim() || defaultWindowsGit(process.env);
   /** Git for Windows in the slot's tree, as the worker; the repository is the broker's, so its owner is not the worker. */
   const gitWin = async (worktree: string, ...args: string[]) => {
     const started = Date.now();
@@ -149,7 +149,7 @@ export async function runGitProof(out: string, flavors: readonly FlavorKey[]): P
     passwords.push(password);
     const leaseId = grant.lease_id;
     const winTree = grant.bootstrap.git.path;
-    const wslTree = join(ROOT_WSL, "slots", flavor, grant.slot.slice(-2), "Innovator");
+    const wslTree = join(ROOT_LOCAL, "slots", flavor, grant.slot.slice(-2), "Innovator");
     let held = true;
     try {
       record(`${flavor}: get --code --git`, grant.bootstrap.code.every((c) => c.ok) && grant.bootstrap.git.ok, `${grant.slot}: code ${grant.bootstrap.code.map((c) => c.detail).join(" | ")}; git ${grant.bootstrap.git.detail}`, got.ms);
@@ -174,7 +174,7 @@ export async function runGitProof(out: string, flavors: readonly FlavorKey[]): P
       };
       await statusAll("after get");
       const wsl = await gitWsl(wslTree, "status", "--porcelain");
-      record(`${flavor}: git status (WSL git, read-only, through /mnt/c) after get`, wsl.code === 0 && wsl.stdout.trim() === "", `${wsl.stdout.trim().split("\n").slice(0, 5).join("; ") || "clean"} ${wsl.stderr.trim()}`, wsl.ms);
+      record(`${flavor}: git status (${SIDE === "wsl" ? "WSL git, read-only, through /mnt/c" : "this side's git, read-only"}) after get`, wsl.code === 0 && wsl.stdout.trim() === "", `${wsl.stdout.trim().split("\n").slice(0, 5).join("; ") || "clean"} ${wsl.stderr.trim()}`, wsl.ms);
 
       // ---- 2. exercised, recycled, restarted -------------------------------------------------------------------
       const before = snapshot(wslTree);

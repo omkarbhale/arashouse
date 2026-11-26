@@ -159,7 +159,7 @@ export function windowsBatchScript(program: string, env: NodeJS.ProcessEnv): str
   const dirs = /[\\/]/.test(program) ? [""] : ["", ...variable(env, "PATH").split(";")];
   for (const dir of dirs) {
     for (const ext of exts) {
-      const path = dir === "" ? `${program}${ext}` : win32.join(dir, `${program}${ext}`);
+      const path = dir === "" ? `${program}${ext.toLowerCase()}` : win32.join(dir, `${program}${ext.toLowerCase()}`);
       if (isFile(path)) return batch(path) ? path : undefined;
     }
   }

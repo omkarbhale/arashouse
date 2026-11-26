@@ -88,7 +88,7 @@ export function listPipes(): Set<string> {
 /** Where the beacons are looked up and this process's beacon is started; replaced in tests. */
 export interface BeaconSystem {
   readonly listPipes: () => Set<string>;
-  /** Starts listening on `\\.\pipe\<name>` for the rest of the process, without keeping it alive. */
+  /** Starts listening on `\\.\pipe\<name>` for the rest of the process, without keeping it alive; throws when it cannot. */
   readonly listen: (name: string) => void;
 }
 
@@ -98,6 +98,9 @@ const nativeBeacons: BeaconSystem = {
     const server = createServer((socket) => socket.destroy());
     server.on("error", () => undefined);
     server.listen(`${PIPE_DIR}${name}`);
+    // Binding a pipe is synchronous: a server not listening now never will be. The listing of `\\.\pipe\` is how
+    // others find the beacon, but it is not trusted to confirm our own, because it can come back short.
+    if (!server.listening) throw new Error(`cannot start this process's liveness beacon (${PIPE_DIR}${name})`);
     server.unref();
   },
 };
@@ -113,9 +116,6 @@ export function startBeacon(system: BeaconSystem = nativeBeacons, pid: number = 
   const token = randomBytes(8).toString("hex");
   const name = beaconName(pid, token);
   system.listen(name);
-  // Windows lists a pipe a moment after it is bound, and a listing can come back short while others are being made.
-  for (let attempt = 0; attempt < 10 && !system.listPipes().has(name); attempt++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
-  if (!system.listPipes().has(name)) throw new Error(`cannot start this process's liveness beacon (\\\\.\\pipe\\${name})`);
   if (system === nativeBeacons && pid === process.pid) ownBeacon = token;
   return token;
 }

@@ -26,4 +26,16 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+      # The setup-host dry run refuses a node.exe that non-administrators can change, and the hosted tool cache is writable
+      # by Authenticated Users; a copy under Program Files (administrators only) is the node it finds first on PATH.
+      - if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:ProgramFiles 'arashouse-ci-node'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination $dir -Force
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+      # Windows PowerShell (not pwsh) so the powershell.exe the tests start does not inherit PowerShell 7's PSModulePath,
+      # which it cannot load its own modules (Get-Acl, Get-FileHash) from.
       - run: npm test
+        shell: ${{ runner.os == 'Windows' && 'powershell' || 'bash' }}

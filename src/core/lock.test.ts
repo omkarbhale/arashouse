@@ -42,7 +42,10 @@ describe("liveness on Windows: the beacon", () => {
   });
 
   it("refuses to go on when the pipe does not start, so this process never holds a lock it cannot be told alive by", () => {
-    expect(() => startBeacon({ listPipes: () => new Set(), listen: () => undefined }, 1234)).toThrow(/liveness beacon/);
+    const listen = () => {
+      throw new Error("cannot start this process's liveness beacon");
+    };
+    expect(() => startBeacon({ listPipes: () => new Set(), listen }, 1234)).toThrow(/liveness beacon/);
   });
 
   it("reads another process's beacon from the listing, or null when it has none", () => {

@@ -37,5 +37,8 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $dir
       # Windows PowerShell (not pwsh) so the powershell.exe the tests start does not inherit PowerShell 7's PSModulePath,
       # which it cannot load its own modules (Get-Acl, Get-FileHash) from.
-      - run: npm test
-        shell: ${{ runner.os == 'Windows' && 'powershell' || 'bash' }}
+      - if: runner.os == 'Windows'
+        shell: powershell
+        run: npm test
+      - if: runner.os != 'Windows'
+        run: npm test

@@ -122,7 +122,9 @@ describe("the core verbs", () => {
     root.slot(s1);
     root.slot(s2, null);
     root.slot({ flavor: "35", slot: 3 }, "{");
-    for (const odd of ["slots\\olm\\01", "slots\\12SP9\\02", "slots\\12sp9\\00", "slots\\12sp9\\xx", "slots\\12sp9\\100"]) {
+    // A folder named in another case is another folder only where names have case: on NTFS, 12SP9 is 12sp9.
+    const caseVariant = process.platform === "win32" ? [] : ["slots\\12SP9\\02"];
+    for (const odd of ["slots\\olm\\01", ...caseVariant, "slots\\12sp9\\00", "slots\\12sp9\\xx", "slots\\12sp9\\100"]) {
       mkdirSync(root.local(`${ROOT}\\${odd}`), { recursive: true });
     }
     root.linkSlot({ flavor: "12sp9", slot: 5 }, root.local(`${ROOT}\\slots\\23\\02`));

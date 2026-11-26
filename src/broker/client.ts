@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// The broker's Windows-side client. WSL runs it through interop (`node.exe <root>\broker\app\broker\client.js`,
-// no `cmd.exe` and no PowerShell: ticket 09 measured about 0.1 s against 0.15 s and 0.45 s): it reads one
-// request from stdin, adds the token from `<root>\broker\client.token`, sends it down the pipe and
-// prints the response line on stdout (a Windows process cannot write to `\\wsl.localhost\` paths).
+// The broker's Windows-side client. `callBroker` is one call: it adds the token from `<root>\broker\client.token`
+// to the request, sends it down the pipe and returns the response line; the native CLI calls it in-process
+// (the pipe transport, src/host/broker-transport.ts). The script around it serves callers outside Windows Node
+// and the setup scripts: WSL runs it through interop (`node.exe <root>\broker\app\broker\client.js`, no
+// `cmd.exe` and no PowerShell: ticket 09 measured about 0.1 s against 0.15 s and 0.45 s), and it reads one
+// request from stdin and prints the response line on stdout.
 //
 // Exit codes: 0 the broker answered (the answer may be an error); 6 the broker could not be reached
 // (the printed response is `Unreachable`, with a hint on stderr); 2 the request on stdin was unusable.
@@ -61,6 +63,31 @@ function timeoutArg(args: readonly string[]): number {
   return ms;
 }
 
+/** One call's outcome: the broker's response line, or why the broker could not be reached (no secret in it). */
+export type BrokerCall = { readonly ok: true; readonly response: string } | { readonly ok: false; readonly unreachable: string };
+
+/**
+ * Sends one request to the broker and returns its response line: reads the token, wraps the request in its envelope
+ * and writes it down the pipe. A token file that cannot be read, or a pipe that does not answer, is `unreachable`;
+ * nothing is known then about the request's effect. Throws when the request cannot be sent at all (too large).
+ */
+export async function callBroker(request: unknown, timeoutMs: number, options: ClientOptions = {}): Promise<BrokerCall> {
+  const pipePath = options.pipePath ?? PIPE_PATH;
+  let token: Secret;
+  try {
+    token = await (options.readToken ?? readTokenFile)(options.tokenFile ?? brokerTokenFile(DEFAULT_INSTALL_ROOT));
+  } catch (err) {
+    return { ok: false, unreachable: `its token file is unreadable (${(err as NodeJS.ErrnoException).code ?? (err as Error).message}); is the broker running, and is this the worker user?` };
+  }
+  const line = envelopeLine(token, request, MAX_REQUEST_BYTES);
+  try {
+    return { ok: true, response: await callPipe(pipePath, line, { responseTimeoutMs: timeoutMs + RESPONSE_MARGIN_MS }) };
+  } catch (err) {
+    if (err instanceof PipeUnreachableError) return { ok: false, unreachable: err.message };
+    throw err;
+  }
+}
+
 /** Runs the client once and returns its exit code. */
 export async function runClient(args: readonly string[], io: ClientIo, options: ClientOptions = {}): Promise<number> {
   let request: unknown;
@@ -80,27 +107,17 @@ export async function runClient(args: readonly string[], io: ClientIo, options: 
     io.stderr(`arashouse-broker client: ${message}\nhint: ${UNREACHABLE_HINT}\n`);
     return EXIT_CODES.hostUnreachable;
   };
-  let token: Secret;
+  let call: BrokerCall;
   try {
-    token = await (options.readToken ?? readTokenFile)(options.tokenFile ?? brokerTokenFile(DEFAULT_INSTALL_ROOT));
+    call = await callBroker(request, timeoutMs, options);
   } catch (err) {
-    return unreachable(`its token file is unreadable (${(err as NodeJS.ErrnoException).code ?? (err as Error).message}); is the broker running?`);
-  }
-  let line: string;
-  try {
-    line = envelopeLine(token, request, MAX_REQUEST_BYTES);
-  } catch (err) {
+    // The request could not be wrapped (it is too large): nothing was sent.
     io.stderr(`arashouse-broker client: ${redact((err as Error).message)}\n`);
     return EXIT_CODES.usage;
   }
-  try {
-    const response = await callPipe(pipePath, line, { responseTimeoutMs: timeoutMs + RESPONSE_MARGIN_MS });
-    io.stdout(`${response}\n`);
-    return EXIT_CODES.ok;
-  } catch (err) {
-    if (err instanceof PipeUnreachableError) return unreachable(err.message);
-    throw err;
-  }
+  if (!call.ok) return unreachable(call.unreachable);
+  io.stdout(`${call.response}\n`);
+  return EXIT_CODES.ok;
 }
 
 function isMain(): boolean {

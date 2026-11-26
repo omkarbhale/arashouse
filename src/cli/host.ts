@@ -1,6 +1,7 @@
 // Which host driver the CLI talks to. `ARASHOUSE_HOST=fake` selects the fake host (the CLI tests use
-// it); otherwise `BrokerHost`, which reaches the broker on Windows through the Windows `node.exe`
-// (`ARASHOUSE_WINDOWS_NODE` overrides where it is). Until the broker is installed (ticket 21) every
+// it); otherwise `BrokerHost`, which reaches the broker's named pipe: in this process on Windows (the
+// pipe transport), or from WSL through the Windows `node.exe` and the broker's client (the interop
+// transport; `ARASHOUSE_WINDOWS_NODE` overrides where it is). Until the broker is installed (ticket 21) every
 // host call fails as unreachable with a hint, and so do the verbs it does not have yet. Commands that
 // need no host (`status`, `return`, `run`) work either way; a reset and the operator commands need it
 // (with the broker missing, a slot stays dirty until it is there).
@@ -16,14 +17,14 @@ import type { GoldenSet } from "../core/reset.js";
 import { StateCorruptError } from "../core/state.js";
 import type { StateStore } from "../core/store.js";
 import { BrokerHost } from "../host/broker-host.js";
-import { DEFAULT_WINDOWS_NODE, WINDOWS_NODE_ENV, interopTransport } from "../host/broker-transport.js";
+import { brokerTransport } from "../host/broker-transport.js";
 import type { HostDriver } from "../host/driver.js";
 import { HostError } from "../host/errors.js";
 import { LiveClock } from "../host/clock.js";
 import { FakeHost, type Fault } from "../host/fake.js";
 import { probeSlot } from "../host/probe.js";
+import { toLocal } from "../host/platform.js";
 import { HOST_ADDR_ENV, hostAddress, slotUrl } from "../host/url.js";
-import { wslPathOf } from "./setup.js";
 
 export const HOST_ENV = "ARASHOUSE_HOST";
 
@@ -39,15 +40,15 @@ export type CliHost = LeaseHost & OperatorHost & Pick<HostDriver, "backupDatabas
 export interface SelectedHost {
   readonly kind: "fake" | "broker";
   readonly host: CliHost;
-  /** The URL of a slot as seen from WSL, from its web alias. */
+  /** The URL of a slot as seen from this process, from its web alias. */
   readonly resolveUrl: (alias: string) => Promise<string>;
   /** The flavor's golden tree and backup, for a reset (tickets 28, 30 and 31). */
   readonly golden: (flavor: FlavorKey) => Promise<GoldenSet>;
   /** The install root, as a Windows path. */
   readonly root: string;
-  /** The path this process opens for a Windows path under the root (`/mnt/c/...` on the host), for `extract` (ticket 43). */
+  /** The path this process opens for a Windows path under the root (the path itself natively), for `extract` (ticket 43). */
   readonly toLocal: (windowsPath: string) => string;
-  /** Whether a lease's slot serves at its URL, from WSL (a bootstrap recipe's health step, ticket 42). Never throws. */
+  /** Whether a lease's slot serves at its URL (a bootstrap recipe's health step, ticket 42). Never throws. */
   readonly probe: (url: string, database: string) => Promise<LeaseProbe>;
 }
 
@@ -58,7 +59,7 @@ export interface LeaseProbe {
   readonly detail: string;
 }
 
-/** `probeSlot` from WSL, cold (the bootstrap steps recycled the slot's pools), as one line. */
+/** `probeSlot` from this process, cold (the bootstrap steps recycled the slot's pools), as one line. */
 async function probeLease(url: string, database: string): Promise<LeaseProbe> {
   try {
     const p = await probeSlot(url, database, { warm: false });
@@ -159,16 +160,15 @@ async function brokerGolden(host: BrokerHost, flavor: FlavorKey): Promise<Golden
 
 export async function selectHost(env: NodeJS.ProcessEnv, store: StateStore): Promise<SelectedHost> {
   if (hostKind(env) === "fake") return fakeHost(env, store);
-  const node = env[WINDOWS_NODE_ENV]?.trim() || DEFAULT_WINDOWS_NODE;
   // The lease's password is looked up in the lease-file store by its handle and sent to the broker (ticket 34).
-  const host = new BrokerHost(interopTransport({ node }), { secrets: new LeaseFileStore(store.paths.home) });
+  const host = new BrokerHost(brokerTransport(env), { secrets: new LeaseFileStore(store.paths.home) });
   return {
     kind: "broker",
     host,
     resolveUrl: async (alias) => slotUrl(await hostAddress(alias, { env }), alias),
     golden: (flavor) => brokerGolden(host, flavor),
     root: DEFAULT_INSTALL_ROOT,
-    toLocal: wslPathOf,
+    toLocal: (windowsPath) => toLocal(windowsPath),
     probe: probeLease,
   };
 }

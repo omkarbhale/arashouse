@@ -575,8 +575,11 @@ describe("the lease's password file, with FakeHost (ticket 34)", () => {
     const grant = await getLease(p.deps, { flavor: "23", holder: "t" });
     const file = fileOf(grant.lease_id);
     expect(await readFile(file, "utf8")).toBe(grant.password.reveal());
-    expect((await stat(file)).mode & 0o777).toBe(0o600);
-    expect((await stat(join(home, "leases"))).mode & 0o777).toBe(0o700);
+    // On Windows a mode is not access: the home's ACL (the worker user's profile) keeps the file private.
+    if (process.platform !== "win32") {
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+      expect((await stat(join(home, "leases"))).mode & 0o777).toBe(0o700);
+    }
     expect(p.host.inspect(ref("23", 1))?.credentials).toEqual({ secretRef: leaseSecretName(grant.lease_id) });
     expect(JSON.stringify(p.host.calls)).not.toContain(grant.password.reveal());
 

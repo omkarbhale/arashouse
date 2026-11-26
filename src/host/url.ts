@@ -1,10 +1,12 @@
-// The slot URL as seen from WSL. Aras runs on the Windows host; WSL reaches it at the default
-// gateway (`http://172.19.0.1/12sp9` today) or, in mirrored networking mode, at `localhost`. The
+// The slot URL as this process reaches it. Aras runs on the Windows host: natively that is
+// `localhost` (`http://localhost/ah-23-01`), with nothing to find. From WSL it is the default
+// gateway (`http://172.19.0.1/ah-23-01` today) or, in mirrored networking mode, `localhost`; that
 // address changes when WSL restarts, so it is found once per process and never stored in the state
-// file. Pure HTTP from WSL: no broker.
+// file. Pure HTTP: no broker.
 
 import { execFile } from "node:child_process";
 import { assertOwned } from "../core/guards.js";
+import { SIDE, type Side } from "./platform.js";
 import { HostError } from "./errors.js";
 import { COLD_TIMEOUT_MS, anonymousGet } from "./http.js";
 import { guarded } from "./owned.js";
@@ -55,6 +57,8 @@ export interface HostAddressOptions {
   loopback?: string;
   /** How long each candidate may take to answer; defaults to the cold-start timeout. */
   timeoutMs?: number;
+  /** Which side this process is; defaults to this process's. Natively the host is `localhost`, unprobed. */
+  side?: Side;
 }
 
 let cached: string | undefined;
@@ -65,7 +69,8 @@ export function resetHostAddressCache(): void {
 }
 
 /**
- * The address WSL uses for the Windows host. `ARASHOUSE_HOST_ADDR` wins and is not probed. Otherwise
+ * The address this process uses for the Windows host. `ARASHOUSE_HOST_ADDR` wins and is not probed. Natively it is
+ * `localhost`, also unprobed: the host is this machine. From WSL,
  * the default gateway is tried first, then `localhost`, each with an anonymous `GET /<alias>/Client/`;
  * the first that answers (Client/ not 404, and `Server/DBList.aspx` 200 with a `<DBList>` document, so a LAN
  * router answering 302/401/403 is not mistaken for the host) is kept for the rest of the process. `alias` is the web alias of any slot the tool owns.
@@ -79,6 +84,7 @@ export async function hostAddress(alias: string, options: HostAddressOptions = {
     }
     return override;
   }
+  if ((options.side ?? SIDE) === "windows") return options.loopback ?? LOOPBACK_ADDRESS;
   if (cached !== undefined) return cached;
 
   const gateway = await (options.gateway ?? readDefaultGateway)();

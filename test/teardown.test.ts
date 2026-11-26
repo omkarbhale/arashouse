@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { renderSetupHostScript } from "../src/core/setup-host.js";
 import { renderSetupSqlScript } from "../src/core/setup-sql.js";
 import { writeTeardownBundle } from "../src/cli/teardown.js";
 import { repoRoot } from "./helpers.js";
+import { describeOnWindowsHost, elevated, onWindowsHost, ps, psCwd, runPs as runHostPs, toHostPath, toLocalPath } from "./powershell.js";
 
 const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
 const WORKER = { name: "sg\\worker", sid: "S-1-5-21-1111111111-2222222222-3333333333-1001" };
@@ -51,26 +52,8 @@ describe("the teardown bundle", () => {
   });
 });
 
-/** As in test/setup-host.test.ts: SPIKE_POWERSHELL, else Windows PowerShell 5.1 from WSL. */
-function findPowerShell(): string | undefined {
-  const candidates = [process.env.SPIKE_POWERSHELL, "powershell.exe"].filter((c): c is string => Boolean(c));
-  for (const c of candidates) {
-    const probe = spawnSync(c, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
-    if (probe.status === 0) return c;
-  }
-  return undefined;
-}
-
-const ps = findPowerShell();
-const windows = ps?.toLowerCase().endsWith(".exe") ?? false;
-const toHostPath = (p: string) => (windows ? execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim() : p);
-const cwd = windows && existsSync("/mnt/c") ? "/mnt/c" : undefined;
-const describeWithPs = ps && windows ? describe : describe.skip;
-
-function runPs(args: string[], timeout = 180_000) {
-  const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args], { encoding: "utf8", cwd, timeout });
-  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
-}
+// A run gets three minutes unless a case says otherwise.
+const runPs = (args: string[], timeout = 180_000) => runHostPs(args, { timeout });
 
 const result = (out: string) => JSON.parse(out.slice(out.indexOf("result:") + "result:".length)) as Record<string, any>;
 
@@ -100,11 +83,8 @@ function bundle(at: string, root: string, dataSource?: string): string {
   return script;
 }
 
-const elevated = (): boolean =>
-  runPs(["-Command", "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')"]).out.trim() === "True";
-
 // Each case stops before it reads the host: the arguments and the children's hashes are checked first.
-describeWithPs(`teardown.ps1 under ${ps}`, { timeout: 90_000 }, () => {
+describeOnWindowsHost(`teardown.ps1 under ${ps}`, { timeout: 90_000 }, () => {
   const script = bundle(join(dir, "ps"), `C:\\arashouse_teardown_test_${process.pid}`);
   const run = (args: string[]) => runPs(["-File", toHostPath(script), ...args]);
 
@@ -121,7 +101,7 @@ describeWithPs(`teardown.ps1 under ${ps}`, { timeout: 90_000 }, () => {
     expect(b.err).toContain("it cannot go with -KeepSql");
   });
 
-  it.runIf(Boolean(ps && windows) && !elevated())("refuses -Apply when not elevated (exit 4)", () => {
+  it.runIf(onWindowsHost && !elevated())("refuses -Apply when not elevated (exit 4)", () => {
     const r = run(["-Apply"]);
     expect(r.code).toBe(4);
     expect(r.out).not.toContain("do: ");
@@ -140,25 +120,25 @@ describeWithPs(`teardown.ps1 under ${ps}`, { timeout: 90_000 }, () => {
 // The dry run end to end, against a throw-away LocalDB instance of the test's own (its SQL reads and its SQL child go there,
 // never to the host's SQL Server) and a scratch root under staging\. Opt-in, as in test/setup-sql.test.ts. Not elevated, so
 // IIS and the deny-list are reported unread; the host child plans the uninstall of the host's real broker but changes nothing.
-const localDb = windows && process.env.ARASHOUSE_TEST_LOCALDB === "1" && spawnSync("sqllocaldb.exe", ["info"], { cwd }).status === 0;
+const localDb = onWindowsHost && process.env.ARASHOUSE_TEST_LOCALDB === "1" && spawnSync("sqllocaldb.exe", ["info"], { cwd: psCwd }).status === 0;
 const describeWithLocalDb = localDb ? describe : describe.skip;
 
 describeWithLocalDb("teardown.ps1 dry run on a scratch root and a throw-away LocalDB instance", { timeout: 600_000 }, () => {
   const instance = `ahtdtest${process.pid}`;
   const root = `C:\\aras_installations\\staging\\arashouse-tdtest-${process.pid}`;
-  const rootOnWsl = `/mnt/c/aras_installations/staging/arashouse-tdtest-${process.pid}`;
+  const localRoot = toLocalPath(root);
   const dataSource = `(localdb)\\${instance}`;
   afterAll(() => {
-    spawnSync("sqllocaldb.exe", ["stop", instance, "-k"], { cwd });
-    spawnSync("sqllocaldb.exe", ["delete", instance], { cwd });
-    rmSync(rootOnWsl, { recursive: true, force: true });
+    spawnSync("sqllocaldb.exe", ["stop", instance, "-k"], { cwd: psCwd });
+    spawnSync("sqllocaldb.exe", ["delete", instance], { cwd: psCwd });
+    rmSync(localRoot, { recursive: true, force: true });
   });
 
   it("refuses while a slot's folder is left, then plans the SQL drop and the broker's uninstall and changes nothing", () => {
-    mkdirSync(join(rootOnWsl, "sqldata"), { recursive: true });
-    mkdirSync(join(rootOnWsl, "slots", "12sp9", "05"), { recursive: true });
-    mkdirSync(join(rootOnWsl, "golden", "23"), { recursive: true });
-    expect(spawnSync("sqllocaldb.exe", ["create", instance, "-s"], { cwd, encoding: "utf8" }).status).toBe(0);
+    mkdirSync(join(localRoot, "sqldata"), { recursive: true });
+    mkdirSync(join(localRoot, "slots", "12sp9", "05"), { recursive: true });
+    mkdirSync(join(localRoot, "golden", "23"), { recursive: true });
+    expect(spawnSync("sqllocaldb.exe", ["create", instance, "-s"], { cwd: psCwd, encoding: "utf8" }).status).toBe(0);
     const at = join(dir, "localdb");
     const script = bundle(at, root, dataSource);
     expect(runPs(["-File", toHostPath(join(at, "sql", "setup-sql.ps1")), "-Apply"], 300_000).code).toBe(0);
@@ -171,7 +151,7 @@ describeWithLocalDb("teardown.ps1 dry run on a scratch root and a throw-away Loc
     expect(r1.before.setupSql).toEqual(["arashouse_admin", "arashouse_admin_adopter", "arashouse_admin_signer", "NT SERVICE\\ArasHouseBroker"]);
     expect(r1.notes.join(" ")).toContain("the deny-list cannot be fingerprinted here");
 
-    rmSync(join(rootOnWsl, "slots", "12sp9", "05"), { recursive: true });
+    rmSync(join(localRoot, "slots", "12sp9", "05"), { recursive: true });
     const plan = runPs(["-File", toHostPath(script), "-Goldens"]);
     expect(plan.err).toBe("");
     expect(plan.code).toBe(0);
@@ -183,7 +163,7 @@ describeWithLocalDb("teardown.ps1 dry run on a scratch root and a throw-away Loc
     expect(plan.out).toMatch(/^ {2}sql: would do: drop the login \[NT SERVICE\\ArasHouseBroker\]\r?$/m);
     expect(plan.out).toMatch(/^run: setup-host\.ps1 -Uninstall\r?$/m);
     // Nothing changed: the golden is there, and so is every SQL object.
-    expect(existsSync(join(rootOnWsl, "golden", "23"))).toBe(true);
+    expect(existsSync(join(localRoot, "golden", "23"))).toBe(true);
     expect(r2.after.setupSql).toEqual(r2.before.setupSql);
     expect(r2.left).toEqual(expect.arrayContaining(["golden\\23", "arashouse_admin"]));
   });

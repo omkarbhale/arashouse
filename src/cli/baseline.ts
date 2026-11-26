@@ -21,7 +21,8 @@ import { STEPS_SCRIPT_NAME, renderBuildStepsScript } from "../broker/baseline-st
 import type { HostDriver } from "../host/driver.js";
 import { HostError, isHostError } from "../host/errors.js";
 import { parseArgs, type ParsedArgs } from "./args.js";
-import { collectAppFiles, wslPathOf } from "./setup.js";
+import { toLocal } from "../host/platform.js";
+import { collectAppFiles } from "./setup.js";
 
 /** The names a baseline bundle holds; anything else in the folder means it is not ours, and it is left alone. */
 const BUNDLE_ENTRIES = new Set([BUILD_SCRIPT_NAME, STEPS_SCRIPT_NAME, PLAN_FILE, RESULT_FILE, "package.json", "app", "media", ENGINE_BUNDLE_DIR]);
@@ -125,7 +126,7 @@ export async function writeBaselineBundle(options: BaselineBundleOptions): Promi
   const refusal = mediaRefusal(options.media, options.flavor);
   if (refusal) throw new UsageError(refusal);
   const scratch = buildScratch(options.flavor);
-  const outDir = options.outDir ?? wslPathOf(scratch.bundleDir);
+  const outDir = options.outDir ?? toLocal(scratch.bundleDir);
   if (existsSync(outDir)) {
     const foreign = (await readdir(outDir)).filter((name) => !BUNDLE_ENTRIES.has(name));
     if (foreign.length > 0) throw new UsageError(`${outDir} holds ${foreign.slice(0, 3).join(", ")}, which a baseline bundle does not; move it away first`);

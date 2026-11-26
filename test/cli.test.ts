@@ -42,7 +42,7 @@ function cli(args: readonly string[], env: NodeJS.ProcessEnv = {}): Promise<Resu
       [BIN, ...args],
       {
         // No detached reset worker unless a test asks for one, so none outlives its test's home.
-        env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ARASHOUSE_RESET_WORKER: "off", ARASHOUSE_WINDOWS_NODE: join(home, "no-node.exe"), ...env },
+        env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: media, ARASHOUSE_RESET_WORKER: "off", ARASHOUSE_WINDOWS_NODE: join(home, "no-node.exe"), ARASHOUSE_BROKER_TOKEN_FILE: join(home, "no-broker.token"), ...env },
         encoding: "utf8",
         timeout: 30_000,
       },
@@ -187,7 +187,9 @@ describe("get --password-fd", () => {
     });
   }
 
-  it("writes the password to the descriptor, and --json leaves it out", async () => {
+  const posixOnly = it.skipIf(process.platform === "win32");
+
+  posixOnly("writes the password to the descriptor, and --json leaves it out", async () => {
     await seed({ "23": 1 });
     const r = await cliFd3(["get", "23", "--holder", "task-a", "--json", "--password-fd", "3"]);
     expect(r.code, r.stderr).toBe(0);
@@ -201,7 +203,7 @@ describe("get --password-fd", () => {
     expect(r.stdout + r.stderr).not.toContain(password);
   });
 
-  it("says where the password went without --json", async () => {
+  posixOnly("says where the password went without --json", async () => {
     await seed({ "23": 1 });
     const r = await cliFd3(["get", "23", "--holder", "task-a", "--password-fd", "3"]);
     expect(r.code, r.stderr).toBe(0);
@@ -216,11 +218,12 @@ describe("get --password-fd", () => {
       expect(r.code, fd).toBe(EXIT_CODES.usage);
       expect(r.stderr).toContain("--password-fd must be a descriptor from 3 to 1023");
     }
-    // Without a descriptor 3 from the caller, 3 and up are Node's own (its event loop's): never written to.
+    // Without a descriptor 3 from the caller, 3 and up are Node's own (its event loop's): never written to. On Windows,
+    // where no descriptor can be told inherited, the option is refused altogether.
     for (const fd of ["3", "9"]) {
       const closed = await cli(["get", "23", "--holder", "task-a", "--password-fd", fd]);
       expect(closed.code, fd).toBe(EXIT_CODES.usage);
-      expect(closed.stderr).toContain(`--password-fd ${fd} is not open`);
+      expect(closed.stderr).toContain(process.platform === "win32" ? "--password-fd is not available on Windows" : `--password-fd ${fd} is not open`);
     }
     expect((await new StateStore({ home }).read()).slots["23-01"]?.status).toBe("free");
   });
@@ -428,12 +431,43 @@ describe("get --git and git-baseline (ticket 53)", () => {
   });
 });
 
+describe("env --lease", () => {
+  it("prints the environment run gives, as JSON valid against its schema, only with --json", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    const r = await cli(["env", "--lease", grant.lease_id, "--json"]);
+    expect(r.code, r.stderr).toBe(0);
+    const env = JSON.parse(r.stdout) as Record<string, string>;
+    const validate = await validator("env.schema.json");
+    expect(validate(env), JSON.stringify(validate.errors)).toBe(true);
+    expect(env).toEqual({
+      ARAS_URL: "http://127.0.0.1/ah-23-01",
+      ARAS_DATABASE: "arashouse_23_01",
+      ARAS_USER: "root",
+      ARAS_PASSWORD: grant.password,
+      ARASHOUSE_SLOT: "23-01",
+      ARASHOUSE_FLAVOR: "23",
+      ARAS_PKG_ENGINE: "14.0.7",
+    });
+    expect(r.stderr).not.toContain(grant.password);
+
+    const bare = await cli(["env", "--lease", grant.lease_id]);
+    expect(bare.code).toBe(EXIT_CODES.usage);
+    expect(bare.stdout + bare.stderr).not.toContain(grant.password);
+    expect(bare.stderr).toContain("it prints only with --json");
+    expect((await cli(["env", "--json"])).code).toBe(EXIT_CODES.usage);
+    expect((await cli(["return", grant.lease_id])).code).toBe(0);
+    expect((await cli(["env", "--lease", grant.lease_id, "--json"])).code).toBe(EXIT_CODES.leaseMismatch);
+  });
+});
+
 describe("run --lease", () => {
   it("gives the password to the child's environment and to nothing else", async () => {
     await seed({ "23": 2 });
     const grant = await lease("23");
     const envFile = join(home, "child-env.txt");
-    const r = await cli(["--verbose", "run", "--lease", grant.lease_id, "--", "sh", "-c", 'env > "$1"', "sh", envFile], { ARASHOUSE_DEBUG: "1" });
+    const dump = 'require("node:fs").writeFileSync(process.argv[1], Object.entries(process.env).map(([k, v]) => `${k}=${v}`).join("\\n"))';
+    const r = await cli(["--verbose", "run", "--lease", grant.lease_id, "--", process.execPath, "-e", dump, envFile], { ARASHOUSE_DEBUG: "1" });
     expect(r.code, r.stderr).toBe(0);
     const childEnv = Object.fromEntries(
       (await readFile(envFile, "utf8"))
@@ -457,10 +491,10 @@ describe("run --lease", () => {
     await cli(["--verbose", "flavors"]);
     await cli(["flavors", "--json"]);
     await cli(["get", "23", "--holder", "task-b", "--verbose"]);
-    await cli(["run", "--lease", grant.lease_id, "--", "sh", "-c", "exit 3"]);
+    await cli(["run", "--lease", grant.lease_id, "--", process.execPath, "-e", "process.exit(3)"]);
     await cli(["return", "23-01", "--if-lease-id", "0".repeat(32)], { ARASHOUSE_DEBUG: "1" });
     await cli(["--verbose", "return", grant.lease_id]);
-    await cli(["run", "--lease", grant.lease_id, "--", "true"], { ARASHOUSE_DEBUG: "1" });
+    await cli(["run", "--lease", grant.lease_id, "--", process.execPath, "-e", "0"], { ARASHOUSE_DEBUG: "1" });
     // printed[0] is the get --json that is allowed to show it, once.
     expect(printed[0]).toContain(grant.password);
     for (const text of printed.slice(1)) expect(text).not.toContain(grant.password);
@@ -472,8 +506,10 @@ describe("run --lease", () => {
     await seed({ "23": 1 });
     const grant = await lease("23");
     const file = join(home, "leases", grant.lease_id);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
-    expect(statSync(join(home, "leases")).mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") {
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(statSync(join(home, "leases")).mode & 0o777).toBe(0o700);
+    }
     expect((await cli(["return", grant.lease_id])).code).toBe(0);
     expect(existsSync(file)).toBe(false);
     expect(await readdir(join(home, "leases"))).toEqual([]);
@@ -482,11 +518,23 @@ describe("run --lease", () => {
   it("passes the command's exit code through, and 127 when it cannot start", async () => {
     await seed({ "23": 1 });
     const grant = await lease("23");
-    expect((await cli(["run", "--lease", grant.lease_id, "--", "sh", "-c", "exit 9"])).code).toBe(9);
-    expect((await cli(["run", "--lease", grant.lease_id, "--", "sh", "-c", "exit 0"])).code).toBe(0);
+    expect((await cli(["run", "--lease", grant.lease_id, "--", process.execPath, "-e", "process.exit(9)"])).code).toBe(9);
+    expect((await cli(["run", "--lease", grant.lease_id, "--", process.execPath, "-e", "process.exit(0)"])).code).toBe(0);
     const missing = await cli(["run", "--lease", grant.lease_id, "--", "no-such-command-arashouse"]);
     expect(missing.code).toBe(127);
     expect(missing.stderr).toContain("cannot run");
+  });
+
+  it.skipIf(process.platform !== "win32")("on Windows refuses a batch script before it starts anything, with how to run it", async () => {
+    await seed({ "23": 1 });
+    const grant = await lease("23");
+    const bin = join(home, "bin");
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "shim-tool.cmd"), "@echo off\r\nexit /b 0\r\n");
+    const r = await cli(["run", "--lease", grant.lease_id, "--", "shim-tool"], { PATH: `${bin};${process.env.PATH ?? ""}` });
+    expect(r.code).toBe(EXIT_CODES.usage);
+    expect(r.stderr).toMatch(/"shim-tool" is a batch script .*shim-tool\.cmd.*cmd\.exe/);
+    expect((await cli(["run", "--lease", grant.lease_id, "--", join(bin, "shim-tool.cmd")])).code).toBe(EXIT_CODES.usage);
   });
 
   it("refuses a lease that is not leased, and one whose password is gone, with exit 4", async () => {
@@ -726,7 +774,7 @@ describe("get --bootstrap and bootstrap --lease (ticket 42)", () => {
       expect(log).toMatch(/ restore ok in \d+ ms: /);
       expect(log).toMatch(/ health ok in \d+ ms: /);
       for (const name of await readdir(logs)) expect(await readFile(join(logs, name), "utf8")).not.toContain(grant.password);
-      expect(statSync(join(logs, `${grant.lease_id}-bootstrap.log`)).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") expect(statSync(join(logs, `${grant.lease_id}-bootstrap.log`)).mode & 0o777).toBe(0o600);
       expect(await readFile(join(home, "state.json"), "utf8")).not.toContain(grant.password);
       expect(r.stderr).not.toContain(grant.password);
     });
@@ -932,7 +980,7 @@ describe("get --import and import (ticket 41)", () => {
       { manifest: first, exit_code: 0, log: join(logs, `${grant.lease_id}-import-1.log`) },
       { manifest: second, exit_code: 0, log: join(logs, `${grant.lease_id}-import-2.log`) },
     ]);
-    expect(statSync(logs).mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") expect(statSync(logs).mode & 0o777).toBe(0o700);
 
     const runs = await apkgRuns();
     const connection = ["--url", "http://127.0.0.1/ah-23-01", "--database", "arashouse_23_01", "--user", "root"];

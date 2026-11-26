@@ -59,6 +59,13 @@ describe("hostAddress", () => {
     expect(gateway.requests).toEqual([]);
   });
 
+  it("natively is localhost, unprobed; the override still wins", async () => {
+    const gateway = await slotServer();
+    expect(await hostAddress(alias, { env: {}, side: "windows", gateway: () => gateway.address })).toBe("localhost");
+    expect(await hostAddress(alias, { env: { [HOST_ADDR_ENV]: "10.9.8.7" }, side: "windows" })).toBe("10.9.8.7");
+    expect(gateway.requests).toEqual([]);
+  });
+
   it("refuses an override that is not a host address", async () => {
     const err = await hostAddress(alias, { env: { [HOST_ADDR_ENV]: "http://evil/x" } }).catch((e: unknown) => e);
     expect(isHostError(err, "Refused")).toBe(true);
@@ -67,7 +74,7 @@ describe("hostAddress", () => {
   it("prefers the gateway when it answers, and does not try localhost", async () => {
     const gateway = await slotServer();
     const loopback = await slotServer();
-    const address = await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address });
+    const address = await hostAddress(alias, { env: {}, side: "wsl", gateway: () => gateway.address, loopback: loopback.address });
     expect(address).toBe(gateway.address);
     expect(gateway.requests).toEqual([`/${alias}/Client/`, `/${alias}/Server/DBList.aspx`]);
     expect(loopback.requests).toEqual([]);
@@ -75,14 +82,14 @@ describe("hostAddress", () => {
 
   it("falls back to localhost when the gateway refuses the connection", async () => {
     const loopback = await slotServer();
-    const address = await hostAddress(alias, { env: {}, gateway: closedAddress, loopback: loopback.address });
+    const address = await hostAddress(alias, { env: {}, side: "wsl", gateway: closedAddress, loopback: loopback.address });
     expect(address).toBe(loopback.address);
   });
 
   it("falls back to localhost when the gateway answers 404 for the alias", async () => {
     const gateway = await slotServer({ alias: "someone-else" });
     const loopback = await slotServer();
-    const address = await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address });
+    const address = await hostAddress(alias, { env: {}, side: "wsl", gateway: () => gateway.address, loopback: loopback.address });
     expect(address).toBe(loopback.address);
     expect(gateway.requests).toEqual([`/${alias}/Client/`]);
   });
@@ -92,6 +99,7 @@ describe("hostAddress", () => {
     const loopback = await slotServer();
     const address = await hostAddress(alias, {
       env: {},
+      side: "wsl",
       gateway: () => gateway.address,
       loopback: loopback.address,
       timeoutMs: 100,
@@ -101,7 +109,7 @@ describe("hostAddress", () => {
 
   it("tries only localhost when no gateway can be read", async () => {
     const loopback = await slotServer();
-    const address = await hostAddress(alias, { env: {}, gateway: () => undefined, loopback: loopback.address });
+    const address = await hostAddress(alias, { env: {}, side: "wsl", gateway: () => undefined, loopback: loopback.address });
     expect(address).toBe(loopback.address);
   });
 
@@ -109,21 +117,21 @@ describe("hostAddress", () => {
     const gateway = await new FakeSlotServer({ alias, status: 302 }).start();
     servers.push(gateway);
     const loopback = await slotServer();
-    const address = await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address });
+    const address = await hostAddress(alias, { env: {}, side: "wsl", gateway: () => gateway.address, loopback: loopback.address });
     expect(address).toBe(loopback.address);
-    expect(await hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: loopback.address })).toBe(loopback.address);
+    expect(await hostAddress(alias, { env: {}, side: "wsl", gateway: () => gateway.address, loopback: loopback.address })).toBe(loopback.address);
   });
 
   it("does not find a slot that answers 500 on every path", async () => {
     const gateway = await slotServer({ status: 500 });
     await expect(
-      hostAddress(alias, { env: {}, gateway: () => gateway.address, loopback: await closedAddress() }),
+      hostAddress(alias, { env: {}, side: "wsl", gateway: () => gateway.address, loopback: await closedAddress() }),
     ).rejects.toThrow(/no host address/);
   });
 
   it("is Unreachable when no candidate answers, naming what it tried", async () => {
     const dead = await closedAddress();
-    const err = await hostAddress(alias, { env: {}, gateway: () => dead, loopback: "127.0.0.1:1" }).catch((e: unknown) => e);
+    const err = await hostAddress(alias, { env: {}, side: "wsl", gateway: () => dead, loopback: "127.0.0.1:1" }).catch((e: unknown) => e);
     expect(isHostError(err, "Unreachable")).toBe(true);
     expect(String(err)).toContain(dead);
     expect(String(err)).toContain("127.0.0.1:1");
@@ -131,12 +139,12 @@ describe("hostAddress", () => {
 
   it("caches the answer for the process, and a failure is not cached", async () => {
     const dead = await closedAddress();
-    await expect(hostAddress(alias, { env: {}, gateway: () => dead, loopback: dead })).rejects.toThrow(/no host address/);
+    await expect(hostAddress(alias, { env: {}, side: "wsl", gateway: () => dead, loopback: dead })).rejects.toThrow(/no host address/);
 
     const first = await slotServer();
-    expect(await hostAddress(alias, { env: {}, gateway: () => first.address, loopback: dead })).toBe(first.address);
+    expect(await hostAddress(alias, { env: {}, side: "wsl", gateway: () => first.address, loopback: dead })).toBe(first.address);
     const second = await slotServer();
-    expect(await hostAddress(alias, { env: {}, gateway: () => second.address, loopback: dead })).toBe(first.address);
+    expect(await hostAddress(alias, { env: {}, side: "wsl", gateway: () => second.address, loopback: dead })).toBe(first.address);
     expect(second.requests).toEqual([]);
   });
 

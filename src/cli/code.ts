@@ -1,5 +1,5 @@
 // Code-tree deployment from the CLI (ticket 40, docs/code-deploy.md): `get --code` and `deploy-code`. A source (a
-// folder or a zip, a WSL or Windows path) is read and planned before anything else happens, so a refused deploy
+// folder or a zip, a local or Windows drive path) is read and planned before anything else happens, so a refused deploy
 // costs no lease; then it is staged into `<root>\staging\<lease_id>\code\<n>` (the worker may change `staging\`,
 // ticket 21), the broker's `deployCode` applies it, the lease record gets the deploy's file count and manifest hash
 // (never a file's contents), and the staged copy is removed, whatever happened.
@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, win32 } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import {
@@ -33,13 +33,13 @@ import type { StateStore } from "../core/store.js";
 import { ZipError, extractZipEntry, listZip, type ZipEntry, type ZipListing } from "../core/zip.js";
 import type { HostDriver } from "../host/driver.js";
 import { isHostError } from "../host/errors.js";
-import { wslPathOf } from "./setup.js";
+import { callerPath, toLocal } from "../host/platform.js";
 
-/** The install root as this process opens it; the default is its WSL path (`/mnt/c/aras_installations`). Tests map it to a folder. */
+/** The install root as this process opens it: `C:\aras_installations` natively (`/mnt/c/...` from WSL). Tests map it to a folder. */
 export const LOCAL_ROOT_ENV = "ARASHOUSE_LOCAL_ROOT";
 
 export function localInstallRoot(env: NodeJS.ProcessEnv): string {
-  return env[LOCAL_ROOT_ENV]?.trim() || wslPathOf(DEFAULT_INSTALL_ROOT);
+  return env[LOCAL_ROOT_ENV]?.trim() || toLocal(DEFAULT_INSTALL_ROOT);
 }
 
 export interface CodeRules {
@@ -63,9 +63,9 @@ function refuse(subject: string, detail: string): GuardError {
   return new GuardError("bad-path", "path", subject.slice(0, 200), detail);
 }
 
-/** The local path of a source: a Windows drive path through its WSL mount, anything else from the working folder. */
-export function localSourcePath(source: string, cwd: string = process.cwd()): string {
-  return /^[A-Za-z]:[\\/]/.test(source) ? wslPathOf(source) : resolve(cwd, source);
+/** The local path of a source: a Windows drive path as such (through its mount from WSL), anything else from the working folder. */
+export function localSourcePath(source: string, cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
+  return callerPath(source, { cwd, env });
 }
 
 /** Every plain file under `dir`, relative and `/`-separated; a symbolic link (a junction, seen from WSL) or a device is refused. */

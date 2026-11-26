@@ -1,12 +1,18 @@
-// `arashouse run --lease <lease_id> -- <command ...>`: runs a command in WSL with the lease's
-// connection in its environment, and nowhere else. The password reaches the child only as
+// `arashouse run --lease <lease_id> -- <command ...>`: runs a command with the lease's
+// connection in its environment, and nowhere else (from WSL, the launcher runs it in WSL). The password reaches the child only as
 // `ARAS_PASSWORD` (libs-js's rule: "The password reaches tools only through the environment
 // (`ARAS_PASSWORD`) or stdin, never through a flag or a file"), so
 // `arashouse run --lease L -- aras-pkg export ./out Item:id` needs no glue. The child's exit code is
 // passed through.
+//
+// Without a shell, Windows starts only `.exe` and `.com` programs; Node refuses a `.cmd` or `.bat` (an npm shim,
+// for example) without one. `run` refuses such a program up front with how to run it instead, rather than quote a
+// command line for `cmd.exe`, whose rules are its own.
 
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { constants } from "node:os";
+import { extname, win32 } from "node:path";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import { getFlavor } from "../core/flavors.js";
 import { LEASE_USER, LeaseError, UsageError, leaseRef, leaseSecretName } from "../core/lease.js";
@@ -128,6 +134,48 @@ export function runChild(program: string, args: readonly string[], options: Chil
   });
 }
 
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** A variable of `env` whatever its case, as Windows reads it (`Path`, `PATHEXT`). */
+function variable(env: NodeJS.ProcessEnv, name: string): string {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === name);
+  return key === undefined ? "" : (env[key] ?? "");
+}
+
+/**
+ * On Windows, the batch script `program` would start (a `.cmd` or `.bat`, named or found first on the PATH as cmd.exe
+ * would find it), or undefined: an `.exe`, or nothing found (the start then fails as usual, exit 127).
+ */
+export function windowsBatchScript(program: string, env: NodeJS.ProcessEnv): string | undefined {
+  const batch = (path: string) => /^\.(cmd|bat)$/i.test(extname(path));
+  if (extname(program) !== "") return batch(program) ? program : undefined;
+  const exts = (variable(env, "PATHEXT") || ".COM;.EXE;.BAT;.CMD").split(";").filter((e) => e.startsWith("."));
+  const dirs = /[\\/]/.test(program) ? [""] : ["", ...variable(env, "PATH").split(";")];
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const path = dir === "" ? `${program}${ext}` : win32.join(dir, `${program}${ext}`);
+      if (isFile(path)) return batch(path) ? path : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Refuses, on Windows, a command that is a batch script (exit 2), with how to run it instead. */
+export function assertRunnable(program: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): void {
+  if (platform !== "win32") return;
+  const script = windowsBatchScript(program, env);
+  if (script === undefined) return;
+  throw new UsageError(
+    `"${program}" is a batch script (${script}), which Windows starts only through cmd.exe: run its program directly (for an npm shim, \`node <its .js>\`), or \`powershell.exe -File <script.ps1>\``,
+  );
+}
+
 /** Starts the command with the lease's environment and resolves with its exit code. */
 export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<number> {
   const { leaseId, command } = request;
@@ -135,6 +183,8 @@ export async function runWithLease(deps: RunDeps, request: RunRequest): Promise<
   if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
   const [program, ...args] = command;
   if (program === undefined || program === "") throw new UsageError("run needs a command after --");
-  const env = { ...(deps.env ?? process.env), ...(await leaseEnvironment(deps, leaseId)) };
+  const base = deps.env ?? process.env;
+  assertRunnable(program, base);
+  const env = { ...base, ...(await leaseEnvironment(deps, leaseId)) };
   return runChild(program, args, { env, err: deps.err });
 }

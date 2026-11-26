@@ -1,6 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
 import { X509Certificate, randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,6 +9,7 @@ import { RESERVED_AGENT_PORTS, SECRET_STEPS, SLOT_STEPS, renderSlotStepsScript }
 import { FLAVORS, FLAVOR_KEYS } from "../src/core/flavors.js";
 import { APP_POOL_ROLES, agentPort } from "../src/core/names.js";
 import { repoRoot } from "./helpers.js";
+import { describeOnWindowsHost, runPs, runPsFile, toHostPath } from "./powershell.js";
 
 const steps = renderSlotStepsScript();
 
@@ -219,25 +219,14 @@ describe("slot-steps.ps1 (static)", () => {
   });
 });
 
-/** Windows PowerShell 5.1 from WSL, when it is there: the script targets it. */
-function findPowerShell(): string | undefined {
-  const probe = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
-  return probe.status === 0 ? "powershell.exe" : undefined;
-}
-const ps = findPowerShell();
-const describeWithPs = ps ? describe : describe.skip;
-
-describeWithPs("slot-steps.ps1 under Windows PowerShell", () => {
+// The script targets Windows PowerShell 5.1. Each case starts it (about 1 to 5 s).
+describeOnWindowsHost("slot-steps.ps1 under Windows PowerShell", { timeout: 60_000 }, () => {
   it("parses without a syntax error", () => {
     const dir = mkdtempSync(join(tmpdir(), "arashouse-slot-steps-"));
     try {
       writeFileSync(join(dir, "slot-steps.ps1"), steps.replace(/\n/g, "\r\n"), "ascii");
-      const win = (p: string) => execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim();
-      const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", win(join(repoRoot, "test/spike-parse.ps1")), win(join(dir, "slot-steps.ps1"))], {
-        encoding: "utf8",
-        cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
-      });
-      expect(r.stdout.trim()).toBe("errors=0");
+      const r = runPsFile(join(repoRoot, "test/spike-parse.ps1"), [toHostPath(join(dir, "slot-steps.ps1"))]);
+      expect(r.out.trim()).toBe("errors=0");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -247,17 +236,11 @@ describeWithPs("slot-steps.ps1 under Windows PowerShell", () => {
     const dir = mkdtempSync(join(tmpdir(), "arashouse-slot-steps-"));
     try {
       writeFileSync(join(dir, "slot-steps.ps1"), steps.replace(/\n/g, "\r\n"), "ascii");
-      const win = (p: string) => execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim();
-      const cwd = existsSync("/mnt/c") ? "/mnt/c" : undefined;
       const password = randomBytes(16).toString("hex");
-      const made = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", win(join(dir, "slot-steps.ps1")), "-Step", "signing-cert"], {
-        encoding: "utf8",
-        cwd,
-        input: JSON.stringify({ flavor: "23", slot: 1, secrets: { password } }),
-      });
-      expect(made.status).toBe(0);
-      expect(made.stdout + made.stderr).not.toContain(password);
-      const line = made.stdout.split(/\r?\n/).find((l) => l.startsWith(RESULT_MARKER))!;
+      const made = runPsFile(join(dir, "slot-steps.ps1"), ["-Step", "signing-cert"], { input: JSON.stringify({ flavor: "23", slot: 1, secrets: { password } }) });
+      expect(made.code).toBe(0);
+      expect(made.out + made.err).not.toContain(password);
+      const line = made.out.split(/\r?\n/).find((l) => l.startsWith(RESULT_MARKER))!;
       const result = JSON.parse(line.slice(RESULT_MARKER.length)) as { pfx: string; cer: string };
 
       const cer = new X509Certificate(Buffer.from(result.cer, "base64"));
@@ -270,14 +253,14 @@ describeWithPs("slot-steps.ps1 under Windows PowerShell", () => {
       writeFileSync(join(dir, "OAuthServer.pfx"), Buffer.from(result.pfx, "base64"));
       const open = [
         "$pw = [Console]::In.ReadLine()",
-        `try { [void](New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList '${win(join(dir, "OAuthServer.pfx"))}', 'wrong'); 'wrong=opened' } catch { 'wrong=refused' }`,
-        `$c = New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList '${win(join(dir, "OAuthServer.pfx"))}', $pw`,
+        `try { [void](New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList '${toHostPath(join(dir, "OAuthServer.pfx"))}', 'wrong'); 'wrong=opened' } catch { 'wrong=refused' }`,
+        `$c = New-Object Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList '${toHostPath(join(dir, "OAuthServer.pfx"))}', $pw`,
         "$k = $c.PrivateKey",
         "'{0}|{1}|{2}|{3}' -f $c.Thumbprint, $k.GetType().Name, $k.CspKeyContainerInfo.ProviderName, $k.CspKeyContainerInfo.KeyNumber",
         "$k.PersistKeyInCsp = $false; $k.Clear()",
       ].join("; ");
-      const opened = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-Command", open], { encoding: "utf8", cwd, input: `${password}\n` });
-      const lines = opened.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const opened = runPs(["-Command", open], { input: `${password}\n` });
+      const lines = opened.out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       expect(lines).toEqual(["wrong=refused", `${cer.fingerprint.replace(/:/g, "")}|RSACryptoServiceProvider|Microsoft Enhanced Cryptographic Provider v1.0|Exchange`]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -288,17 +271,12 @@ describeWithPs("slot-steps.ps1 under Windows PowerShell", () => {
     const dir = mkdtempSync(join(tmpdir(), "arashouse-slot-steps-"));
     try {
       writeFileSync(join(dir, "slot-steps.ps1"), steps.replace(/\n/g, "\r\n"), "ascii");
-      const win = (p: string) => execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim();
       const command = [
-        `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${win(join(dir, "slot-steps.ps1"))}', [ref]$null, [ref]$null)`,
+        `$ast = [System.Management.Automation.Language.Parser]::ParseFile('${toHostPath(join(dir, "slot-steps.ps1"))}', [ref]$null, [ref]$null)`,
         "$sw = $ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.SwitchStatementAst] -and $_.Condition.Extent.Text -eq '$Step' }",
         "$sw.Clauses | ForEach-Object { $_.Item1.Value }",
       ].join("; ");
-      const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-Command", command], {
-        encoding: "utf8",
-        cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
-      });
-      const clauses = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const clauses = runPs(["-Command", command]).out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
       expect([...clauses].sort()).toEqual([...SLOT_STEPS].sort());
     } finally {
       rmSync(dir, { recursive: true, force: true });

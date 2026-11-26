@@ -1,8 +1,8 @@
-// The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `extract` (ticket 43), `help`, `version`
+// The worker-facing command surface: `get`, `return`, `status`, `flavors`, `run`, `env`, `extract` (ticket 43), `help`, `version`
 // (and `get --import` and `import`, ticket 41, `media check`, ticket 18, `baseline verify`, ticket 28, and `reset-worker`, ticket 14), thin
 // over the lease core, and the operator commands (`doctor`, `repair`, `destroy`, `prune`,
 // `force-return`, `disable`, `enable`, ticket 16; `baseline build`, ticket 24; `teardown`, ticket 49), thin over
-// operator.ts. Output rules: no command prints a password except `get --json`, once; `--verbose`
+// operator.ts. Output rules: no command prints a password except `get --json`, once, and `env --json`, which asks for it; `--verbose`
 // never adds a secret; an error is one line plus a hint, with the stack only under `ARASHOUSE_DEBUG=1`. The exit codes are docs/cli.md's table.
 
 import { spawn } from "node:child_process";
@@ -49,7 +49,8 @@ import { type ResetDeps, describeOutcome, resetHooks, runResetWorker } from "../
 import { redactError } from "../core/redact.js";
 import { StateStore } from "../core/store.js";
 import { isLeaseId } from "../core/state.js";
-import { createMsiReader, windowsTempDir } from "../host/msi.js";
+import { createMsiReader } from "../host/msi.js";
+import { callerPath, tempDir, windowsPathOf } from "../host/platform.js";
 import { parseArgs, parseSeconds, stringOption, type ParsedArgs } from "./args.js";
 import { buildFlavors, formatFlavors, mediaPresent } from "./flavors.js";
 import { selectHost, type CliHost, type SelectedHost } from "./host.js";
@@ -57,12 +58,12 @@ import { deployCodeOnLease, formatOutcomes, localInstallRoot, planSource, refuse
 import { assertNoGitTargets, checkGitTool, formatGitOutcome, gitBaselineOnLease, refusedBaseline, selectGitTool, type GitReport } from "./git.js";
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { parsePasswordFd, writePasswordFd } from "./password-fd.js";
-import { runWithLease } from "./run.js";
+import { leaseEnvironment, runWithLease } from "./run.js";
 import { EXTRACT_HELP, runExtract } from "./extract.js";
 import { describeArasPkg, prepareImports, requireArasPkg, runImports, splitImports, leaseFlavor, type ImportDeps, type ImportResult } from "./import.js";
 import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
 import { checkMedia } from "../core/media-check.js";
-import { DIST_DIR, PACKAGE_JSON, defaultRun, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
+import { DIST_DIR, PACKAGE_JSON, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
 import { folderStaging, hostStaging, resolveRestoreSource } from "./restore.js";
 import { teardownPool, teardownSwitches, type TeardownRequest } from "../core/teardown.js";
 import { writeTeardownBundle } from "./teardown.js";
@@ -96,7 +97,7 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "--password-fd <n> writes the password and a newline to descriptor <n> (3 or more, opened for the",
     "command, for example `3>file`) instead, and --json then leaves it out.",
     "--restore restores a SQL Server backup over the lease's database before it is handed over: a",
-    "file (a WSL or Windows path), or a profile, media/<flavor>/profiles/<name>.bak. A backup taken of a",
+    "file (a local or Windows drive path), or a profile, media/<flavor>/profiles/<name>.bak. A backup taken of a",
     "deny-listed database (OLM_Local, ...) is refused unless --allow-foreign-origin; a database of another",
     "flavor fails with the flavor to use unless --skip-version-check. If the restore fails, the lease is",
     "given back. The return resets the slot as always (docs/restore.md). A --skip-version-check before",
@@ -195,6 +196,13 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
     "ARASHOUSE_FLAVOR, ARAS_PKG_ENGINE) in its environment only. Its exit code is passed through.",
     "Example: arashouse run --lease <lease_id> -- aras-pkg export ./out Item:<id>",
   ],
+  env: [
+    "usage: arashouse env --lease <lease_id> --json",
+    "",
+    "Prints the environment `run` gives its command, as one JSON object (docs/schemas/env.schema.json): ARAS_URL,",
+    "ARAS_DATABASE, ARAS_USER, ARAS_PASSWORD, ARASHOUSE_SLOT, ARASHOUSE_FLAVOR and ARAS_PKG_ENGINE, for a caller that",
+    "starts its own processes. It holds the lease's password, so it needs --json to print anything.",
+  ],
   extract: EXTRACT_HELP,
   media: [MEDIA_USAGE, "", "Are a flavor's installers there, intact and the right version? (docs/media-check.md)"],
   baseline: [
@@ -274,7 +282,7 @@ const COMMAND_HELP: Readonly<Record<string, readonly string[]>> = {
   teardown: [
     "usage: arashouse teardown [--goldens] [--keep-sql] [--remove-root] [--include-leased <slot>...] [--yes] [--out <dir>]",
     "",
-    "Removes the whole pool. A dry run without --yes. From WSL it destroys every slot (as `destroy` does)",
+    "Removes the whole pool. A dry run without --yes. Unelevated, it destroys every slot (as `destroy` does)",
     "and writes teardown.ps1 to <dir> (default: arashouse-teardown in the Windows temp folder), which the",
     "captain then runs elevated: it drops the SQL objects of setup-sql (not with --keep-sql), uninstalls the",
     "broker service, and with --goldens first removes golden\\<flavor>, with --remove-root last the install",
@@ -320,6 +328,7 @@ const OVERVIEW: readonly string[] = [
   "  flavors [--json]                                           flavors, engines, free slots, media, baselines",
   "  import --lease <lease_id> <manifest|folder> [...]           import packages onto a held lease (aras-pkg)",
   "  run --lease <lease_id> -- <command ...>                    run a command with the lease's ARAS_* environment",
+  "  env --lease <lease_id> --json                              that environment as JSON (it holds the password)",
   "  extract code --lease <lease_id> <path> --to <dir>          copy code out of a lease before returning it",
   "  extract db --lease <lease_id> --to <file.bak>              ... or a COPY_ONLY backup of its database",
   "  media check [<flavor>...] [--json] [--write-sums]          check the installers",
@@ -412,7 +421,8 @@ const CLI_ENTRY = fileURLToPath(new URL("./index.js", import.meta.url));
 /** Starts `arashouse reset-worker --slot <slot>` detached, with no output, and does not wait for it. */
 function spawnResetWorker(env: NodeJS.ProcessEnv, slot: string): void {
   if (env[RESET_WORKER_ENV] === "off" || !existsSync(CLI_ENTRY)) return;
-  const child = spawn(process.execPath, [CLI_ENTRY, "reset-worker", "--slot", slot], { detached: true, stdio: "ignore", env });
+  // windowsHide: a detached child on Windows would otherwise open a console window of its own.
+  const child = spawn(process.execPath, [CLI_ENTRY, "reset-worker", "--slot", slot], { detached: true, stdio: "ignore", env, windowsHide: true });
   child.on("error", () => undefined);
   child.unref();
 }
@@ -457,6 +467,11 @@ async function operatorDeps(ctx: Context): Promise<OperatorDeps> {
 /** The WSL VM's memory in MB (inside WSL, MemTotal is the VM's cap), or undefined outside WSL. */
 function wslMemoryMb(): number | undefined {
   return /microsoft/i.test(release()) ? Math.floor(totalmem() / (1024 * 1024)) : undefined;
+}
+
+/** An `--out <dir>` the caller gave, as this process opens it (relative to the working folder; from WSL through the launcher). */
+function callerOut(ctx: Context, given: string | undefined): string | undefined {
+  return given === undefined ? undefined : callerPath(given, { env: ctx.env });
 }
 
 function noPositionals(parsed: ParsedArgs, command: string): void {
@@ -542,7 +557,7 @@ async function cmdGet(ctx: Context, args: readonly string[]): Promise<number> {
     restoreValue === undefined
       ? undefined
       : isFlavorKey(flavor)
-        ? await resolveRestoreSource(flavor, restoreValue, { allowForeignOrigin, skipVersionCheck, media: { env: ctx.env } })
+        ? await resolveRestoreSource(flavor, restoreValue, { allowForeignOrigin, skipVersionCheck, env: ctx.env, media: { env: ctx.env } })
         : undefined;
   // So are the code deploys: each source read and planned, so one a guard refuses costs no slot (ticket 40).
   const rules = codeRules(parsed);
@@ -952,10 +967,22 @@ async function cmdRun(ctx: Context, args: readonly string[]): Promise<number> {
   );
 }
 
+async function cmdEnv(ctx: Context, args: readonly string[]): Promise<number> {
+  const parsed = parseArgs(args, { lease: "value", json: "flag" });
+  noPositionals(parsed, "env");
+  const leaseId = stringOption(parsed, "lease");
+  if (leaseId === undefined) throw new UsageError("env needs --lease <lease_id>");
+  if (!isLeaseId(leaseId)) throw new UsageError("--lease must be a lease id (32 lower-case hex characters)");
+  if (parsed.options.json !== true) throw new UsageError("env prints the lease's password, so it prints only with --json (docs/schemas/env.schema.json)");
+  const selected = await host(ctx);
+  printJson(ctx.io, await leaseEnvironment({ store: ctx.store, secrets: new LeaseFileStore(ctx.store.paths.home), resolveUrl: selected.resolveUrl }, leaseId));
+  return EXIT_CODES.ok;
+}
+
 async function cmdExtract(ctx: Context, args: readonly string[]): Promise<number> {
   const selected = await host(ctx);
   return runExtract(
-    { store: ctx.store, host: selected.host, root: selected.root, toLocal: selected.toLocal, out: ctx.io.out, err: ctx.io.err, verbose: ctx.verbose },
+    { store: ctx.store, host: selected.host, root: selected.root, toLocal: selected.toLocal, env: ctx.env, out: ctx.io.out, err: ctx.io.err, verbose: ctx.verbose },
     args,
   );
 }
@@ -964,7 +991,7 @@ async function cmdMedia(ctx: Context, args: readonly string[]): Promise<number> 
   const [command, ...rest] = args;
   if (command !== "check") throw new UsageError(command === undefined ? `media needs a command: ${MEDIA_USAGE}` : `unknown command "media ${command}"`);
   // An MSI unpacked from a zip must land where Windows Installer can open it: a Windows drive.
-  const scratchDir = await windowsTempDir().catch(() => undefined);
+  const scratchDir = await tempDir().catch(() => undefined);
   return runMediaCheck(rest, { readMsi: createMsiReader(), scratchDir }, ctx.io);
 }
 
@@ -975,7 +1002,7 @@ async function cmdBaseline(ctx: Context, args: readonly string[]): Promise<numbe
     {
       host: selected.host,
       store: ctx.store,
-      checkMedia: async (flavor) => checkMedia(flavor, { env: ctx.env, readMsi: createMsiReader(), scratchDir: await windowsTempDir().catch(() => undefined) }),
+      checkMedia: async (flavor) => checkMedia(flavor, { env: ctx.env, readMsi: createMsiReader(), scratchDir: await tempDir().catch(() => undefined) }),
       writeBundle: (flavor, media, engineDir) =>
         writeBaselineBundle({
           flavor,
@@ -1039,7 +1066,7 @@ async function cmdDoctor(ctx: Context, args: readonly string[]): Promise<number>
 async function cmdSetup(ctx: Context, args: readonly string[]): Promise<number> {
   const parsed = parseArgs(args, { out: "value" });
   noPositionals(parsed, "setup");
-  const outDir = stringOption(parsed, "out") ?? join(await windowsTempDir(), "arashouse-setup");
+  const outDir = callerOut(ctx, stringOption(parsed, "out")) ?? join(await tempDir(), "arashouse-setup");
   const flavors = await flavorsToCheck((flavor) => mediaPresent(flavor, { env: ctx.env }));
   const bundle = await writeSetupBundle({
     outDir,
@@ -1049,14 +1076,14 @@ async function cmdSetup(ctx: Context, args: readonly string[]): Promise<number> 
     worker: await workerIdentity(),
     flavors,
   });
-  const script = (await defaultRun("wslpath", ["-w", bundle.script]).catch(() => bundle.script)).trim();
+  const script = (await windowsPathOf(bundle.script).catch(() => bundle.script)).trim();
   for (const line of [
     `wrote ${script} and the broker build it installs (${bundle.files} files, each pinned by SHA-256)`,
     `it checks the prerequisites of ${flavors.join(", ")} and changes nothing without -Apply`,
     "in an elevated Windows PowerShell (Run as administrator):",
     `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}"           # the plan`,
     `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}" -Apply    # make the changes`,
-    "then, from WSL: arashouse doctor (docs/setup.md)",
+    "then, unelevated: arashouse doctor (docs/setup.md)",
   ]) {
     ctx.io.out(line);
   }
@@ -1067,9 +1094,9 @@ async function cmdSetup(ctx: Context, args: readonly string[]): Promise<number> 
 async function cmdSetupSql(ctx: Context, args: readonly string[]): Promise<number> {
   const parsed = parseArgs(args, { out: "value" });
   noPositionals(parsed, "setup-sql");
-  const outDir = stringOption(parsed, "out") ?? join(await windowsTempDir(), "arashouse-setup-sql");
+  const outDir = callerOut(ctx, stringOption(parsed, "out")) ?? join(await tempDir(), "arashouse-setup-sql");
   const written = await writeSetupSqlScript({ outDir, version: version() });
-  const script = (await defaultRun("wslpath", ["-w", written]).catch(() => written)).trim();
+  const script = (await windowsPathOf(written).catch(() => written)).trim();
   for (const line of [
     `wrote ${script}`,
     "it connects to the default SQL Server instance by shared memory with your Windows login, which must be a sysadmin",
@@ -1077,7 +1104,7 @@ async function cmdSetupSql(ctx: Context, args: readonly string[]): Promise<numbe
     `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}"                     # the facts and the plan`,
     `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}" -Apply              # make the changes, then check them`,
     `  powershell -NoProfile -ExecutionPolicy Bypass -File "${script}" -Apply -SelfTest    # ... and a round trip as the broker`,
-    "then, from WSL: arashouse doctor (docs/setup-sql.md)",
+    "then: arashouse doctor (docs/setup-sql.md)",
   ]) {
     ctx.io.out(line);
   }
@@ -1130,18 +1157,18 @@ async function cmdTeardown(ctx: Context, args: readonly string[]): Promise<numbe
   const request: TeardownRequest = { yes: o.yes === true, includeLeased: parsed.positionals, goldens: o.goldens === true, keepSql: o["keep-sql"] === true, removeRoot: o["remove-root"] === true };
   const switches = teardownSwitches(request);
   const deps = await operatorDeps(ctx);
-  const out = stringOption(parsed, "out");
+  const out = callerOut(ctx, stringOption(parsed, "out"));
   let script = "";
   const writeBundle = async () => {
     const written = await writeTeardownBundle({
-      outDir: out ?? join(await windowsTempDir(), "arashouse-teardown"),
+      outDir: out ?? join(await tempDir(), "arashouse-teardown"),
       distDir: DIST_DIR,
       packageJson: PACKAGE_JSON,
       version: version(),
       worker: await workerIdentity(),
       flavors: await flavorsToCheck((flavor) => mediaPresent(flavor, { env: ctx.env })),
     });
-    script = (await defaultRun("wslpath", ["-w", written]).catch(() => written)).trim();
+    script = (await windowsPathOf(written).catch(() => written)).trim();
   };
   const result = await teardownPool(deps, request, writeBundle);
   for (const line of result.lines) ctx.io.out(line);
@@ -1190,6 +1217,7 @@ const COMMANDS: Readonly<Record<string, (ctx: Context, args: readonly string[]) 
   status: cmdStatus,
   flavors: cmdFlavors,
   run: cmdRun,
+  env: cmdEnv,
   extract: cmdExtract,
   import: cmdImport,
   media: cmdMedia,

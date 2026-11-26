@@ -1,5 +1,6 @@
-// The WSL side's one persisted secret: a lease's password, at `<home>/leases/<lease_id>` (mode 0600,
-// in a 0700 folder), so `arashouse run --lease` in a later process can hand it to its child. `get`
+// The CLI side's one persisted secret: a lease's password, at `<home>/leases/<lease_id>` (mode 0600,
+// in a 0700 folder; on Windows the modes do nothing, and the home's ACL, the worker user's profile, keeps it
+// private), so `arashouse run --lease` in a later process can hand it to its child. `get`
 // writes it and `return` deletes it; nothing else is kept. Ticket 34 owns the host side of the
 // per-lease password (setting it in the slot's database and forgetting it at reset).
 
@@ -7,6 +8,7 @@ import { chmod, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { assertSecretName, type SecretStore } from "./secret-store.js";
 import { Secret } from "./secret.js";
+import { retryBusy } from "./lock.js";
 import { writeFileAtomic } from "./store.js";
 
 const LEASE_SECRET = /^lease-([0-9a-f]{32})$/;
@@ -61,7 +63,7 @@ export class LeaseFileStore implements SecretStore {
 
   async delete(name: string): Promise<boolean> {
     try {
-      await unlink(this.pathOf(name));
+      await retryBusy(() => unlink(this.pathOf(name)));
       return true;
     } catch (err) {
       if (isMissing(err)) return false;

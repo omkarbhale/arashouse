@@ -27,8 +27,11 @@ describe("LeaseFileStore", () => {
 
     await store.put(name, Secret.of("pw-for-the-lease", "lease-password"));
     const file = join(home, "leases", LEASE);
-    expect((await stat(file)).mode & 0o777).toBe(0o600);
-    expect((await stat(join(home, "leases"))).mode & 0o777).toBe(0o700);
+    // On Windows a mode is not access: the home's ACL (the worker user's profile) keeps the file private.
+    if (process.platform !== "win32") {
+      expect((await stat(file)).mode & 0o777).toBe(0o600);
+      expect((await stat(join(home, "leases"))).mode & 0o777).toBe(0o700);
+    }
     expect(await store.has(name)).toBe(true);
     expect((await store.get(name))?.reveal()).toBe("pw-for-the-lease");
     expect(await readFile(file, "utf8")).toBe("pw-for-the-lease");

@@ -58,6 +58,7 @@ describe("the MSI reader", () => {
   it("passes a Windows-drive path straight to powershell.exe, with the script encoded", async () => {
     const calls: [string, string[]][] = [];
     const reader = createMsiReader({
+      side: "wsl",
       run: async (file, args) => {
         calls.push([file, args]);
         return file === "wslpath" ? "C:\\Temp\\a.msi\n" : probeOut;
@@ -81,6 +82,7 @@ describe("the MSI reader", () => {
     const wslpathArgs: string[] = [];
     let stagedDuringProbe: string | undefined;
     const reader = createMsiReader({
+      side: "wsl",
       windowsTemp: winTemp,
       run: async (file, args) => {
         if (file === "wslpath") {
@@ -102,6 +104,7 @@ describe("the MSI reader", () => {
 
   it("explains a powershell failure without echoing the command line", async () => {
     const reader = createMsiReader({
+      side: "wsl",
       run: async (file) => {
         if (file === "wslpath") return "C:\\a.msi";
         throw Object.assign(new Error("Command failed: powershell.exe ... ENCODEDSCRIPT"), { stderr: "COMException: bad database\nmore" });
@@ -120,7 +123,22 @@ describe("the MSI reader", () => {
   });
 
   it("says so when wslpath is unavailable", async () => {
-    const reader = createMsiReader({ run: async () => Promise.reject(new Error("spawn wslpath ENOENT")) });
+    const reader = createMsiReader({ side: "wsl", run: async () => Promise.reject(new Error("spawn wslpath ENOENT")) });
     await expect(reader("/x/a.msi")).rejects.toThrow(/wslpath.*is this WSL/);
+  });
+
+  it("natively, hands the path itself to powershell.exe, with no wslpath and no copy", async () => {
+    const calls: [string, string[]][] = [];
+    const reader = createMsiReader({
+      side: "windows",
+      run: async (file, args) => {
+        calls.push([file, args]);
+        return probeOut;
+      },
+    });
+    expect(await reader("C:\\Temp\\a.msi")).toMatchObject({ productVersion: "14.0.9" });
+    expect(calls.map(([f]) => f)).toEqual(["powershell.exe"]);
+    const script = Buffer.from(calls[0]![1].at(-1)!, "base64").toString("utf16le");
+    expect(script).toContain("$path = 'C:\\Temp\\a.msi'");
   });
 });

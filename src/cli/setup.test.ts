@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { allowRead, denyRead } from "../core/deny-read.fixture.js";
 import { ROOT_FOLDERS } from "../core/setup-host.js";
-import { collectAppFiles, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript, wslPathOf } from "./setup.js";
+import { collectAppFiles, flavorsToCheck, observeSetup, workerIdentity, writeSetupBundle, writeSetupSqlScript } from "./setup.js";
 
 const dir = await mkdtemp(join(tmpdir(), "arashouse-setup-"));
 afterAll(() => rm(dir, { recursive: true, force: true }));
@@ -29,7 +30,7 @@ describe("arashouse setup: the bundle", () => {
     };
     expect(await workerIdentity(run)).toEqual(worker);
     await expect(workerIdentity(async () => '"NT AUTHORITY\\SYSTEM","S-1-5-18"\r\n')).rejects.toThrow(/account SID/);
-    await expect(workerIdentity(async () => Promise.reject(new Error("not WSL")))).rejects.toThrow(/WSL interop/);
+    await expect(workerIdentity(async () => Promise.reject(new Error("not WSL")))).rejects.toThrow(/whoami.exe/);
   });
 
   it("lists the build with each file's SHA-256, relative and with backslashes", async () => {
@@ -80,12 +81,6 @@ describe("arashouse setup: the bundle", () => {
     expect(await flavorsToCheck(async () => null)).toEqual(["12sp9", "23", "35"]);
     expect(await flavorsToCheck(async () => Promise.reject(new Error("x")))).toEqual(["12sp9", "23", "35"]);
   });
-
-  it("maps a Windows drive path to its WSL path", () => {
-    expect(wslPathOf("C:\\aras_installations")).toBe("/mnt/c/aras_installations");
-    expect(wslPathOf("D:\\a\\b\\")).toBe("/mnt/d/a/b");
-    expect(() => wslPathOf("\\\\server\\share")).toThrow(/not a Windows drive path/);
-  });
 });
 
 describe("arashouse setup-sql: the script", () => {
@@ -115,7 +110,7 @@ describe("arashouse doctor: what it sees of the setup", () => {
     const toLocal = (p: string) => join(local, ...p.slice(root.length).split("\\").filter(Boolean));
     for (const folder of ROOT_FOLDERS.filter((f) => f !== "vaults")) await mkdir(join(local, folder), { recursive: true });
     await writeFile(join(local, "broker", "setup-host.json"), JSON.stringify({ ok: true }));
-    await chmod(join(local, "secrets"), 0o000);
+    denyRead(join(local, "secrets"));
     try {
       const seen = await observeSetup({ root, toLocal });
       expect(seen.rootExists).toBe(true);
@@ -129,7 +124,7 @@ describe("arashouse doctor: what it sees of the setup", () => {
       await rm(join(local, "broker", "setup-host.json"));
       expect((await observeSetup({ root, toLocal })).record).toBeNull();
     } finally {
-      await chmod(join(local, "secrets"), 0o755);
+      allowRead(join(local, "secrets"), 0o755);
     }
     expect((await observeSetup({ root, toLocal: () => join(dir, "absent") })).rootExists).toBe(false);
   });

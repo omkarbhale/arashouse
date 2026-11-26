@@ -8,7 +8,11 @@ import { Secret } from "../core/secret.js";
 import { MemoryAudit } from "./audit.js";
 import { Broker } from "./broker.js";
 import { runClient } from "./client.js";
+import { HostError } from "../host/errors.js";
+import { BrokerHost } from "../host/broker-host.js";
+import { pipeTransport } from "../host/broker-transport.js";
 import { mappedRoot, type MappedRoot } from "./mapped-fs.fixture.js";
+import { testPipePath } from "./pipe-path.fixture.js";
 import { PipeUnreachableError, callPipe, servePipe } from "./pipe.js";
 import { startBroker, type RunningBroker } from "./service.js";
 import { envelopeLine, newToken, readTokenFile, tokenMatches } from "./token.js";
@@ -25,7 +29,7 @@ let running: RunningBroker | undefined;
 
 beforeEach(() => {
   root = mappedRoot(ROOT);
-  socket = join(root.dir, "broker.sock");
+  socket = testPipePath(root.dir, "broker.sock");
   token = newToken();
   audit = new MemoryAudit();
 });
@@ -125,7 +129,7 @@ describe("the pipe server", () => {
   });
 
   it("is not reachable once closed: the caller gets PipeUnreachableError", async () => {
-    await expect(callPipe(join(root.dir, "nobody.sock"), "x\n", { responseTimeoutMs: 100 })).rejects.toBeInstanceOf(PipeUnreachableError);
+    await expect(callPipe(testPipePath(root.dir, "nobody.sock"), "x\n", { responseTimeoutMs: 100 })).rejects.toBeInstanceOf(PipeUnreachableError);
   });
 });
 
@@ -183,9 +187,34 @@ describe("startBroker", () => {
     const tokenPath = join(root.dir, "client.token");
     running = await startBroker({ root: ROOT, pipePath: socket, fs: root.fs, tokenPath, audit, system: { sqlLogin: async () => null } });
     expect(readFileSync(tokenPath, "utf8")).toMatch(/^[0-9a-f]{64}$/);
-    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
-    await expect(startBroker({ root: "C:\\Program Files\\Aras", pipePath: join(root.dir, "b.sock"), fs: root.fs, tokenPath })).rejects.toMatchObject({
+    // On Windows a file's mode is not its access: the folder's ACL (ticket 21) keeps the token to its readers.
+    if (process.platform !== "win32") expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
+    await expect(startBroker({ root: "C:\\Program Files\\Aras", pipePath: testPipePath(root.dir, "b.sock"), fs: root.fs, tokenPath })).rejects.toMatchObject({
       kind: "Refused",
     });
+  });
+});
+
+describe("the native transport: BrokerHost over the pipe, in this process", () => {
+  it("adds the token from its file and returns the broker's answer, with no process started", async () => {
+    const tokenPath = join(root.dir, "client.token");
+    running = await startBroker({ root: ROOT, pipePath: socket, fs: root.fs, tokenPath, audit, system: { brokerVersion: "7.8.9", sqlLogin: async () => null } });
+    const host = new BrokerHost(pipeTransport({ pipePath: socket, tokenFile: tokenPath }));
+    expect(await host.ping()).toMatchObject({ ok: true, detail: "arashouse-broker 7.8.9" });
+  });
+
+  it("is Unreachable when the token file cannot be read (another account, or no broker), and never sends the request", async () => {
+    await serve();
+    const host = new BrokerHost(pipeTransport({ pipePath: socket, tokenFile: join(root.dir, "missing.token") }));
+    const err = await host.ping().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HostError);
+    expect(err).toMatchObject({ kind: "Unreachable" });
+    expect((err as Error).message).toMatch(/token file is unreadable \(ENOENT\).*worker user/);
+    expect(audit.lines).toEqual([]);
+  });
+
+  it("is Unreachable when nothing listens on the pipe", async () => {
+    const host = new BrokerHost(pipeTransport({ pipePath: socket, readToken: async () => token }));
+    await expect(host.ping()).rejects.toMatchObject({ kind: "Unreachable" });
   });
 });

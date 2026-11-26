@@ -3,7 +3,7 @@
 // arashouse keeps nothing of a returned lease, so the leaseholder copies out what it needs:
 //
 // - `extract code --lease <id> <subpath> --to <dir>` copies a file or folder of the slot's tree, read through the
-//   worker's read grant on `slots\` (ticket 21; `/mnt/c/aras_installations/slots/...` from WSL). Only under the slot
+//   worker's read grant on `slots\` (ticket 21; `C:\aras_installations\slots\...`). Only under the slot
 //   folder, never through a link or junction, and none of the slot's config and key files without `--allow-config`.
 // - `extract db --lease <id> --to <file>` has the broker take a `COPY_ONLY` backup of the slot's database into
 //   `staging\<lease_id>\`, copies it to `<file>` and deletes the staged copy.
@@ -13,7 +13,7 @@
 
 import { constants, type Dirent, type Stats } from "node:fs";
 import { copyFile, lstat, mkdir, readdir, rename, rm, rmdir, stat, utimes } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import { ExtractPathError, isProtectedFile, parseSlotSubpath, stagedBackupName, stagedBackupPath } from "../core/extract.js";
 import { LeaseError, UsageError } from "../core/lease.js";
@@ -22,6 +22,7 @@ import type { Slot } from "../core/state.js";
 import { isLeaseId } from "../core/state.js";
 import type { StateStore } from "../core/store.js";
 import type { HostDriver } from "../host/driver.js";
+import { callerPath } from "../host/platform.js";
 import { parseArgs, stringOption } from "./args.js";
 import { heldSlot } from "./run.js";
 
@@ -51,6 +52,8 @@ export interface ExtractDeps {
   readonly toLocal: (windowsPath: string) => string;
   /** Where a relative `--to` is resolved from; defaults to `process.cwd()`. */
   readonly cwd?: string;
+  /** Where the WSL launcher's distribution is named (`callerPath`); defaults to the process's. */
+  readonly env?: NodeJS.ProcessEnv;
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
   /** Also print the broker's own line (the backup's size and times) on stderr. */
@@ -161,7 +164,7 @@ async function extractCode(deps: ExtractDeps, args: readonly string[]): Promise<
     throw refused(`${shown} holds the slot's config or key files (${named}${more}); narrow the path, or pass --allow-config to copy them`);
   }
 
-  const destDir = resolve(deps.cwd ?? process.cwd(), to);
+  const destDir = callerPath(to, { cwd: deps.cwd, env: deps.env });
   const target = join(destDir, segments.at(-1) ?? slot.id);
   if (await exists(target)) throw refused(`${target} exists; extract never replaces a file: remove it or choose another --to`);
   await mkdir(destDir, { recursive: true });
@@ -197,7 +200,7 @@ async function extractDb(deps: ExtractDeps, args: readonly string[]): Promise<nu
   if (parsed.positionals.length > 0) throw new UsageError(`extract db takes no argument "${parsed.positionals[0]}"`);
   const to = stringOption(parsed, "to");
   if (to === undefined) throw new UsageError("extract db needs --to <file.bak>");
-  const dest = resolve(deps.cwd ?? process.cwd(), to);
+  const dest = callerPath(to, { cwd: deps.cwd, env: deps.env });
   if (await exists(dest)) throw refused(`${dest} exists; extract never replaces a file: remove it or choose another --to`);
   try {
     if (!(await stat(dirname(dest))).isDirectory()) throw new Error();

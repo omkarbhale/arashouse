@@ -72,7 +72,7 @@ async function seed(spec: Readonly<Partial<Record<FlavorKey, number>>>): Promise
 /** One process of the CLI; reset workers on unless `env` turns them off. `pid` is known at once, `done` at its end. */
 function start(args: readonly string[], env: NodeJS.ProcessEnv = {}): { pid: number; done: Promise<Result> } {
   const child = spawn(process.execPath, [BIN, ...args], {
-    env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: join(home, "media"), ARASHOUSE_WINDOWS_NODE: join(home, "no-node.exe"), ...env },
+    env: { PATH: process.env.PATH, HOME: home, ARASHOUSE_HOME: home, ARASHOUSE_HOST: "fake", ARASHOUSE_MEDIA: join(home, "media"), ARASHOUSE_WINDOWS_NODE: join(home, "no-node.exe"), ARASHOUSE_BROKER_TOKEN_FILE: join(home, "no-broker.token"), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";

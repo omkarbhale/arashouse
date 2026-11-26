@@ -1,9 +1,9 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { repoRoot } from "./helpers.js";
+import { describeWithPs, ps, runPs, runPsFile, toHostPath } from "./powershell.js";
 
 const spikeDir = join(repoRoot, "spike");
 const scripts = readdirSync(spikeDir)
@@ -11,33 +11,9 @@ const scripts = readdirSync(spikeDir)
   .sort();
 const libFiles = readdirSync(join(spikeDir, "lib")).map((f) => `lib/${f}`);
 
-/** The PowerShell to test with: SPIKE_POWERSHELL, else Windows PowerShell 5.1 from WSL; undefined when neither is available. The scripts target C: paths, so a Linux pwsh cannot run them. */
-function findPowerShell(): string | undefined {
-  const candidates = [process.env.SPIKE_POWERSHELL, "powershell.exe"].filter((c): c is string => Boolean(c));
-  for (const c of candidates) {
-    const probe = spawnSync(c, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
-    if (probe.status === 0) return c;
-  }
-  return undefined;
-}
-
-const ps = findPowerShell();
-const windows = ps?.toLowerCase().endsWith(".exe") ?? false;
-const toHostPath = (p: string) => (windows ? execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim() : p);
-// A WSL cwd reaches powershell.exe as a UNC path, which Windows PowerShell dislikes; start from the C: drive.
-const cwd = windows && existsSync("/mnt/c") ? "/mnt/c" : undefined;
-
-function run(script: string, args: string[] = []) {
-  const r = spawnSync(
-    ps as string,
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", toHostPath(script), ...args],
-    { encoding: "utf8", cwd, timeout: 120_000 },
-  );
-  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
-}
+const run = runPsFile;
 
 const spikeScript = (name: string) => join(spikeDir, name);
-const describeWithPs = ps ? describe : describe.skip;
 
 describe("spike scripts (static)", () => {
   it("has the eight scripts of the ticket, the folder initialiser and the product-code step", () => {
@@ -69,15 +45,11 @@ describe("spike scripts (static)", () => {
   });
 });
 
-describeWithPs(`spike scripts under ${ps}`, () => {
+// Each run starts Windows PowerShell (about 1 to 5 s).
+describeWithPs(`spike scripts under ${ps}`, { timeout: 60_000 }, () => {
   it("parse without a syntax error", () => {
     const files = [...scripts, ...libFiles].map((f) => toHostPath(join(spikeDir, f)));
-    const r = spawnSync(
-      ps as string,
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", toHostPath(join(repoRoot, "test/spike-parse.ps1")), ...files],
-      { encoding: "utf8", cwd },
-    );
-    expect(r.stdout.trim()).toBe("errors=0");
+    expect(runPsFile(join(repoRoot, "test/spike-parse.ps1"), files).out.trim()).toBe("errors=0");
   });
 
   // 00-preflight reads the Windows registry and prints the inventory even in a dry run, so it is not in this list.
@@ -218,9 +190,9 @@ describeWithPs(`spike scripts under ${ps}`, () => {
     it("refuses a secret passed as a property", () => {
       // A hashtable cannot be bound from -File, so call the script from a command.
       const command = `& '${toHostPath(spikeScript("10-baseline-install.ps1"))}' -MsiProperty @{ SQL_PWD = 'x' }; exit $LASTEXITCODE`;
-      const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { encoding: "utf8", cwd });
-      expect(r.status).toBe(2);
-      expect(r.stderr).toMatch(/secret properties/);
+      const r = runPs(["-Command", command]);
+      expect(r.code).toBe(2);
+      expect(r.err).toMatch(/secret properties/);
     });
 
     it("reads a licence only from an install's InnovatorServerConfig.xml, each of several '|'-separated sources checked", () => {

@@ -7,13 +7,15 @@ help (ticket 55, `docs/host-tuning.md`).
 
 ## Running it
 
-1. From WSL, in the arashouse checkout, after `npm run build`:
+1. As the worker user, unelevated, with an arashouse build (`npm run build`), natively from a PowerShell or from WSL
+   (where `arashouse` is the launcher of the same build, `docs/windows-native.md`):
 
    ```
-   node dist/cli/index.js setup            # or `arashouse setup`; --out <dir> writes elsewhere
+   node <arashouse>\dist\cli\index.js setup     # or `arashouse setup` from WSL; --out <dir> writes elsewhere
    ```
 
-   It writes a bundle to `%TEMP%\arashouse-setup\` on Windows (`--out` takes a WSL path to another empty folder):
+   It writes a bundle to `%TEMP%\arashouse-setup\` on Windows (`--out` names another empty folder: a Windows path,
+   or from WSL a WSL path; a bundle that does not end up on a Windows drive is reported, to be copied to one):
    `setup-host.ps1`, `package.json` and `app\` (a copy of `dist\`). It prints the two commands below.
 2. The captain, in an **elevated** Windows PowerShell (Run as administrator):
 
@@ -22,12 +24,13 @@ help (ticket 55, `docs/host-tuning.md`).
    powershell -NoProfile -ExecutionPolicy Bypass -File "<bundle>\setup-host.ps1" -Apply   # makes the changes
    ```
 
-3. From WSL: `arashouse doctor` (or `doctor --json`). The `setup`, `prerequisites`, `setup acl` and `broker` checks
-   should pass. The `sql` check fails until `arashouse setup-sql` creates the broker's SQL login (ticket 22,
+3. Unelevated again: `arashouse doctor` (or `doctor --json`). The `setup`, `prerequisites`, `setup acl` and `broker`
+   checks should pass. The `sql` check fails until `arashouse setup-sql` creates the broker's SQL login (ticket 22,
    `docs/setup-sql.md`).
 
-`arashouse setup` must run as the worker user, the Windows user WSL interop runs as. It reads that user's name and
-SID with `whoami.exe /user` and writes them into the script, so the ACLs name the user whose workers lease slots.
+`arashouse setup` must run as the worker user: the Windows user arashouse runs as, natively or through WSL interop. It
+reads that user's name and SID with `whoami.exe /user` and writes them into the script, so the ACLs name the user whose
+workers lease slots.
 
 ## What the script does
 
@@ -41,7 +44,7 @@ plain ASCII.
 - **Idempotent.** It compares the host with the plan and changes only what differs. A second run repairs an ACL
   that drifted and starts a stopped service, and nothing else.
 - **Last, `result:` and the result as JSON**, also written (with `-Apply`) to `<root>\broker\setup-host.json`, where
-  `arashouse doctor` reads it from WSL. The JSON holds names and SIDs, no secret.
+  `arashouse doctor` reads it as the worker. The JSON holds names and SIDs, no secret.
 - **Exit codes:** 0 ok; 1 a step failed, or after `-Apply` the result is not ok; 2 refused arguments; 4 not
   elevated.
 
@@ -101,7 +104,8 @@ The steps, in order:
      (it creates IIS applications, pools and services; ticket 03), and starts it. The membership is not permanent:
      a domain Group Policy that sets the group's members removes it, and the broker notices at its next restart
      (`doctor`'s `broker token` check; `docs/runbook.md`, "The IIS configuration is not readable");
-   - pings it through the same client a worker uses (`node.exe <root>\broker\app\broker\client.js`).
+   - pings it through the broker's client script (`node.exe <root>\broker\app\broker\client.js`), the one a caller
+     outside Windows Node uses; the native CLI calls the same client code in its own process (`docs/broker.md`).
 
    An installed broker is left as it is on a second run. `-UpdateBroker` installs the bundle's build over it,
    recompiles the wrapper and restarts the service: the way a later ticket ships new verbs.

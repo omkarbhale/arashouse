@@ -46,8 +46,9 @@ Copies a file or folder of the slot's tree to `<dir>/<its name>` (`<dir>/<slot i
 creating `<dir>`. The path is relative to the slot folder, `/` or `\` separated: `Innovator/Client/javascript`,
 `Innovator/Server/bin/MyLib.dll`. File times are kept.
 
-It reads the tree from WSL through the worker's read grant on `slots\` (ticket 21,
-`/mnt/c/aras_installations/slots/<key>/<NN>/...`); no broker verb is involved. The rules:
+The CLI's Windows process reads the tree through the worker's read grant on `slots\` (ticket 21,
+`C:\aras_installations\slots\<key>\<NN>\...`); no broker verb is involved. `--to` is a Windows or relative path, or from
+WSL a WSL path, which the Windows process writes through `\\wsl.localhost\<distro>\` as the worker user. The rules:
 
 - **Only under the slot's own folder.** An absolute path, a drive, a UNC path, `..`, or a name Windows does not allow
   is refused (exit 7).
@@ -88,7 +89,7 @@ anywhere, or give it to `get --restore` (ticket 39, `docs/restore.md`) on a late
 
 - a slot whose stamp names no lease: **only a leased slot's database is backed up**, never a free, dirty or
   quarantined one, and never any database the slot's name does not derive (`OLM_Local`, `olm`, prod and every other
-  name are refused by the slot-record guards before anything is read, on the WSL side and again in the broker);
+  name are refused by the slot-record guards before anything is read, in the CLI's process and again in the broker);
 - a path that is not a `.bak` inside `staging\<the lease the stamp names>\`, or that has a junction in it. The path is
   checked again just before the copy, since the worker may change `staging\` while the backup runs;
 - a file that exists there: the copy never replaces one.

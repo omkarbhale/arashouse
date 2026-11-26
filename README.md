@@ -1,13 +1,18 @@
 # arashouse
 
 A pool of disposable Aras Innovator instances (code tree, IIS application and SQL database), one pool per Aras version,
-on one Windows laptop, leased from WSL the way `treehouse` leases worktrees.
+on one Windows laptop, leased the way `treehouse` leases worktrees.
 `arashouse get 23 --holder my-task` hands you a clean instance; `arashouse return <lease_id>` gives it back, and it is
 reset to out of the box before anyone gets it again. Take out what you want to keep first: returning discards everything.
+
+arashouse runs on Windows Node: from a PowerShell, as the worker user, unelevated, run
+`node <arashouse>\dist\cli\index.js <command>` after `npm ci && npm run build`. In WSL, `arashouse <command>` works as
+before: it is a launcher that runs the same build on Windows (`docs/windows-native.md`).
 
 - **Using a lease** (a worker): [`docs/using-a-lease.md`](docs/using-a-lease.md).
 - **Operating the pool** (setup, repairs, uninstall): [`docs/runbook.md`](docs/runbook.md).
 - **Every command and exit code**: [`docs/cli.md`](docs/cli.md).
+- **On Windows natively, and the WSL launcher**: [`docs/windows-native.md`](docs/windows-native.md).
 - **Contributing**: [`AGENTS.md`](AGENTS.md) (the rules, the layout, the commands).
 
 Flavors: `12sp9` (12.0 SP9), `23` (Release 23, 14.0 SP9), `35` (Release 35, 14.35).
@@ -33,7 +38,7 @@ Flavors: `12sp9` (12.0 SP9), `23` (Release 23, 14.0 SP9), `35` (Release 35, 14.3
 | 24, 26, 27, 33b | the goldens: build and verify | [`docs/baselines.md`](docs/baselines.md) |
 | 25 | provisioning a slot | [`docs/provision.md`](docs/provision.md) |
 | 28 | the golden manifest | [`docs/manifest.md`](docs/manifest.md) |
-| 29 | the slot URL from WSL | [`docs/slot-url.md`](docs/slot-url.md) |
+| 29 | the slot URL, natively and from WSL | [`docs/slot-url.md`](docs/slot-url.md) |
 | 31 | the reset's database step | [`docs/reset-database.md`](docs/reset-database.md) |
 | 32 | the health check and dirty detection | [`docs/health.md`](docs/health.md) |
 | 33 | starting and stopping a slot, the agent | [`docs/start-stop.md`](docs/start-stop.md) |
@@ -51,5 +56,6 @@ Flavors: `12sp9` (12.0 SP9), `23` (Release 23, 14.0 SP9), `35` (Release 35, 14.3
 | 49 | teardown and uninstall | [`docs/teardown.md`](docs/teardown.md) |
 | 51 | the v1 sign-off record: what exists, the evidence, what is left out | [`docs/v1-readiness.md`](docs/v1-readiness.md) |
 | 53 | bootstrap: a git baseline of the tree | [`docs/git-baseline.md`](docs/git-baseline.md) |
+| ahwin | arashouse on Windows natively, the WSL launcher, build ids, a vendored copy, moving the state to Windows | [`docs/windows-native.md`](docs/windows-native.md) |
 
 Tickets 45 to 47 (libs-js on leases) live in the import-export-libs-js repo.

@@ -30,9 +30,17 @@ Returning slot 23-02. Its state will be discarded; anything you want to keep mus
 
 ## Getting the command
 
-The pool is shared by every checkout on the machine: the state is `~/.arashouse/`, whichever checkout's build you run.
-If `arashouse` is not on your `PATH`, use an arashouse checkout's built CLI, `<checkout>/dist/cli/index.js`, with
-Node 20 or newer. If that file is not there, build the checkout first (`npm ci && npm run build` in it).
+arashouse runs on Windows, and the pool is shared by every copy of it on the machine: the state is
+`%LOCALAPPDATA%\arashouse\` on Windows, whichever checkout's build you run, natively or from WSL. Each build has an id
+(`arashouse version` prints `arashouse 0.0.0 (build <12 hex>)`), and `arashouse doctor` warns (`build`) when the CLI
+and the installed broker are different builds; the operator updates the broker (`docs/runbook.md`).
+
+- **From WSL**, `arashouse` (or an arashouse checkout's built `<checkout>/dist/cli/index.js`, with Node 20 or newer) is a
+  launcher: it runs the same build on the Windows Node, and passes your paths, output and exit code through
+  (`docs/windows-native.md`).
+- **On Windows**, run `node <checkout>\dist\cli\index.js` from a PowerShell, as the worker user, unelevated.
+
+If the file is not there, build the checkout first (`npm ci && npm run build` in it).
 
 An alias works only in an interactive shell, and an agent's tool often starts a fresh shell for every command, so name
 the file each time, or keep it in a variable within one command:
@@ -43,6 +51,7 @@ A="node <checkout>/dist/cli/index.js"; $A get 23 --holder my-task ...
 ```
 
 This guide writes `arashouse` for it. `arashouse help` lists the commands; `arashouse help <command>` explains one.
+Where the two sides differ, it says so.
 
 ## Pick a flavor
 
@@ -87,19 +96,27 @@ stdout is the lease, as JSON (`docs/schemas/get.schema.json`); for example:
 }
 ```
 
+The `url` is the slot as seen from where you run: from WSL (NAT networking) the address WSL reaches Windows at, as
+above; natively on Windows `http://localhost/ah-23-01` (`docs/slot-url.md`).
+
 Keep the `lease_id`: every later command needs it, and `status` shows only its first 8 characters. Save the JSON to a
 file of your own (`> lease.json`; with `--password-fd` it holds no password) rather than only reading it. stderr says
 `leased 23-01 to <holder>; return it with: arashouse return <lease_id>`. If you lose the id anyway: find your row in
-`arashouse status` (your holder, the `LEASE` column's 8 characters) and the file in `~/.arashouse/leases/` whose name
-starts with them; the name is the whole lease id. Read the name only: the file holds the password.
+`arashouse status` (your holder, the `LEASE` column's 8 characters) and the file in `%LOCALAPPDATA%\arashouse\leases\`
+(`/mnt/c/Users/<you>/AppData/Local/arashouse/leases/` from WSL) whose name starts with them; the name is the whole
+lease id. Read the name only: the file holds the password.
 
 **The password.** Each lease gets its own password for `root` (and `admin`), made at `get` and dead at `return`. You
-rarely need to see it: `arashouse run` (below) hands it to your tools, reading it from the lease's file in
-`~/.arashouse/leases/` (mode 0600), which `return` deletes. `--password-fd 3 3>/dev/null` writes it to descriptor 3,
-here thrown away, so it lands in no transcript or log. Without `--password-fd`, `get --json` prints it
-once in the JSON as `password`. Without `--json`, `get` prints the slot, URL, database, user and lease id, and no
-password. If you must log in by hand (a browser), take it from that one `get --json` and keep it out of commits, files
-and logs.
+rarely need to see it: `arashouse run` (below) hands it to your tools, reading it from the lease's file in the state's
+`leases\` folder, which only your Windows user (and SYSTEM and the administrators) can open, and which `return`
+deletes. `--password-fd 3 3>/dev/null` writes it to descriptor 3, here thrown away, so it lands in no transcript or
+log. Without `--password-fd`, `get --json` prints it once in the JSON as `password`. Without `--json`, `get` prints the
+slot, URL, database, user and lease id, and no password. If you must log in by hand (a browser), take it from that one
+`get --json` and keep it out of commits, files and logs.
+
+**Natively on Windows** `--password-fd` is refused (exit 2): drop it, and `get --json` holds the password as
+`password`. Then do not save that JSON whole: keep the `lease_id` and the fields you need, and let `run` or `env` (below)
+hand the password on. From WSL, `--password-fd` works as shown.
 
 **When none is free.** `get` exits 3 at once (`no 23 slot is free: ...`, or `max_active 3 reached`). Add
 `--wait <seconds>` to queue for one; a slot being reset is usually free within one to three minutes.
@@ -111,11 +128,11 @@ arashouse run --lease <lease_id> -- <command> [args...]
 ```
 
 Runs the command (no shell, in your current folder, so relative paths are yours) with the lease's connection in its
-environment, and only in its environment:
+environment, and only in its environment. From WSL the command runs in WSL; natively it runs on Windows.
 
 | variable | value |
 |---|---|
-| `ARAS_URL` | the slot's URL as seen from WSL, such as `http://172.19.0.1/ah-23-01` |
+| `ARAS_URL` | the slot's URL as seen from where the command runs: from WSL such as `http://172.19.0.1/ah-23-01`, natively `http://localhost/ah-23-01` |
 | `ARAS_DATABASE` | `arashouse_<flavor>_<NN>` |
 | `ARAS_USER` | `root` |
 | `ARAS_PASSWORD` | the lease's password |
@@ -139,10 +156,18 @@ checkout (`npm ci && npm run build`) and run its `dist/cli.js` with `node`, as o
 command without a shell, so an alias does not reach it; name the file. aras-pkg writes its log,
 `aras-pkg-<command>-<time>.log`, into the current folder.
 
+Natively, Windows starts a `.cmd` or `.bat` only through `cmd.exe`, so `run` refuses one (exit 2) and says what to run
+instead. On Windows `aras-pkg` on the `PATH` is npm's shim `aras-pkg.cmd`: use the second line's form,
+`node <libs-js checkout>\dist\cli.js ...`, and for a PowerShell script `powershell.exe -File <script.ps1>`.
+
+**A tool that starts its own processes** (a test runner, another tool's own launcher) can take the same variables once
+instead: `arashouse env --lease <lease_id> --json` prints them as one JSON object (`docs/schemas/env.schema.json`). It
+holds the password, so it prints only with `--json`; hand it to the processes' environment, never to a log or a file.
+
 A tool of your own should read `ARAS_PASSWORD` from its environment, never take it as a flag or from a file; it logs
 in as `ARAS_USER` to `ARAS_DATABASE` at `ARAS_URL` as any Aras client does (an OAuth password grant through the
-server's `OAuthServerDiscovery.aspx`). For a shell, quote it so the variable is expanded inside the child, not by your
-shell:
+server's `OAuthServerDiscovery.aspx`). For a shell (here from WSL), quote it so the variable is expanded inside the
+child, not by your shell:
 
 ```
 arashouse run --lease <lease_id> -- sh -c 'printenv ARASHOUSE_SLOT ARAS_URL ARAS_DATABASE'
@@ -233,9 +258,9 @@ From `src/core/exit-codes.ts` (the full table, with every command's cases, is in
 |---|---|---|
 | 0 | ok (including `already returned`) | |
 | 1 | any other failure | read the message |
-| 2 | usage: unknown command, option or flavor; `return` by slot name without `--if-lease-id`; a bad recipe | fix the command |
+| 2 | usage: unknown command, option or flavor; `return` by slot name without `--if-lease-id`; a bad recipe; natively, `--password-fd` or `run` of a `.cmd` or `.bat` | fix the command |
 | 3 | no slot available (none free, or `max_active` / the RAM gate) | `--wait <seconds>`, or try later |
-| 4 | the lease is not held (returned, or someone else's), or its password file in `~/.arashouse/leases/` is gone | `arashouse status`; take a new lease |
+| 4 | the lease is not held (returned, or someone else's), or its password file in the state's `leases\` is gone | `arashouse status`; take a new lease |
 | 5 | a reset failed: the slot is quarantined, or `return --wait` timed out | nothing for you; the operator repairs it |
 | 6 | the host or broker did not answer | try again; if it persists, tell the operator |
 | 7 | refused by a guard (a name arashouse does not own, a path outside the slot, a config file) | the message says which |
@@ -268,6 +293,7 @@ Use an `arashouse` lease: a disposable, clean Aras instance of one version, leas
 Worker guide: `docs/using-a-lease.md` in the arashouse repo.
 
 - Take: `arashouse get <12sp9|23|35> --holder <task> --json --password-fd 3 3>/dev/null`; keep the `lease_id`.
+  (Natively on Windows, leave out `--password-fd 3 3>/dev/null`: the JSON then holds the password; keep it out of files.)
 - Use: `arashouse run --lease <lease_id> -- <command>`; the connection is in `ARAS_URL`, `ARAS_DATABASE`, `ARAS_USER`,
   `ARAS_PASSWORD` and `ARAS_PKG_ENGINE`, for that command only.
 - Take out what you want to keep before returning: `arashouse run --lease <id> -- aras-pkg export <dir> ...`,

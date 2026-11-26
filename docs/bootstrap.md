@@ -14,7 +14,7 @@ arashouse get [<flavor>] --bootstrap <recipe.json | @name> --holder <task> [--wa
 arashouse bootstrap --lease <lease_id> <recipe.json | @name> [--yes] [--json]
 ```
 
-`@name` is `$ARASHOUSE_HOME/recipes/<name>.json` (`~/.arashouse/recipes/` by default). A name is letters, digits, `.`, `_`
+`@name` is `$ARASHOUSE_HOME/recipes/<name>.json` (`%LOCALAPPDATA%\arashouse\recipes\` by default). A name is letters, digits, `.`, `_`
 and `-`.
 
 ## A worked example
@@ -103,7 +103,7 @@ Fixed, because each step assumes the ones before it:
 4. **import**: the packages, into the restored database, with the deployed code in place (`docs/import.md`).
 5. **git**: the baseline commits the tree as handed over, with the code deployed (`docs/git-baseline.md`). It recycles the
    slot's pools.
-6. **health**: last, so it sees the slot as it is handed over: from WSL, the slot's `Client/`, its OAuth server's discovery
+6. **health**: last, so it sees the slot as it is handed over: from the CLI's process, the slot's `Client/`, its OAuth server's discovery
    document and `DBList.aspx` (exactly the lease's database) must answer at the lease's URL (`probeSlot`,
    `docs/slot-url.md`), with the cold-start timeout.
 7. **hand out**.

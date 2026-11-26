@@ -4,16 +4,24 @@ For the captain, or firstmate, operating the pool on the laptop. A worker who on
 `docs/using-a-lease.md`. Every option is in `docs/cli.md`; each section here points to the page that records the
 command being run on the host.
 
-Commands are run from WSL in an arashouse checkout after `npm ci && npm run build`, as `arashouse` (or
-`node dist/cli/index.js`). A step marked **elevated** is a Windows PowerShell script the captain runs with Run as
-administrator, or firstmate runs through its elevated gate. Every such script is a dry run without `-Apply`: run it
-once without, read the plan, then with `-Apply`.
+arashouse runs on Windows (`docs/windows-native.md`). Commands are run from a Windows PowerShell with an arashouse
+checkout's build (`npm ci && npm run build` in it), as `node <arashouse>\dist\cli\index.js <command>`. In WSL,
+`arashouse` (or `node dist/cli/index.js` in a WSL checkout) is a launcher that runs the same build on Windows, so the
+commands below can be typed there too. This page writes `arashouse` for either; in a PowerShell,
+`function arashouse { node <arashouse>\dist\cli\index.js @args }` makes that name work for the session. arashouse
+itself runs as the worker user `arashouse setup` recorded, unelevated: another account cannot read the broker's token
+(exit 6), and an elevated process can read every folder, which `doctor`'s `setup acl` check then reports.
+
+A step marked **elevated** is a Windows PowerShell script the captain runs with Run as administrator, or firstmate runs
+through its elevated gate. Every such script is a dry run without `-Apply`: run it once without, read the plan, then
+with `-Apply`.
 
 ## Where things are
 
 | what | where |
 |---|---|
-| the pool's state, events and config (WSL) | `~/.arashouse/` (`$ARASHOUSE_HOME`): `state.json`, `events.log`, `config.json`, `leases/` (one 0600 password file per lease), `logs/` (import and bootstrap logs), `recipes/` |
+| the pool's state, events and config | `%LOCALAPPDATA%\arashouse\` (`$ARASHOUSE_HOME`; `/mnt/c/Users/<you>/AppData/Local/arashouse/` from WSL): `state.json`, `events.log`, `config.json`, `leases\` (one password file per lease; the home's ACL keeps it the worker user's, `doctor`'s `state home` check), `logs\` (import and bootstrap logs), `recipes\`. One per machine, shared by every copy of arashouse there |
+| the launcher's runtime copies | `%LOCALAPPDATA%\arashouse\runtime\<build id>\`: the build each WSL `arashouse` runs, copied on its first launch; another build's copy older than 14 days is removed when a new one is made |
 | the install root (Windows) | `C:\aras_installations\` (`/mnt/c/aras_installations` from WSL) |
 | a slot | tree `slots\<flavor>\<NN>\`, vault `vaults\<flavor>-<NN>\`, IIS application `/ah-<flavor>-<NN>`, database `arashouse_<flavor>_<NN>`, agent service `ArasHouseAgent_<flavor>_<NN>` |
 | a flavor's golden | `golden\<flavor>\` (tree, `ootb.bak`, the shipped backups, `manifest.json`, `flavor.json`) |
@@ -21,7 +29,7 @@ once without, read the plan, then with `-Apply`.
 | the broker's audit log | `logs\broker-YYYYMMDD.log` (UTC day), one JSON line per request: time, verb, target, outcome, ms; never arguments. Readable elevated only (`docs/broker.md`) |
 | the broker's service output | `logs\broker-service.log` (elevated only) |
 | host-side secrets | `secrets\*.bin`, DPAPI, readable by the broker only (`docs/secrets.md`) |
-| installers | the main checkout's `media/<flavor>/`, ignored by git (`media/README.md`) |
+| installers | the folder `ARASHOUSE_MEDIA` names, else the one `config.json`'s `"media"` names, else the arashouse checkout's main `media/<flavor>/`, ignored by git (`media/README.md`). From WSL that is the checkout the launcher runs from, which it hands to the Windows build, so nothing needs setting there; a copy outside a checkout (vendored) needs one of the first two |
 
 `arashouse status` is the pool at a glance; `arashouse doctor` checks all of it against the host. Start with those two
 whatever the problem is.
@@ -33,8 +41,9 @@ The order the pool was set up in on 2026-10-27 and 28. Each step names the page 
 1. **The captain's sitting** (ticket 03). The captain's account is an administrator but workers run with a filtered
    token, so every elevated step below is the captain's or firstmate's gate. `sa` is not used: SQL setup runs under the
    captain's Windows login, a `sysadmin` (`docs/setup-sql.md`).
-2. **Installers** (ticket 02). The CD image zips go in the main checkout's `media/12sp9/`, `media/23/`, `media/35/`.
-   `arashouse media check` checks them (`docs/media-check.md`).
+2. **Installers** (ticket 02). The CD image zips go in the main checkout's `media/12sp9/`, `media/23/`, `media/35/`,
+   or under the folder `ARASHOUSE_MEDIA` or `config.json`'s `"media"` names (one of them is needed only by a copy
+   outside a checkout, such as a vendored one; "Where things are" above). `arashouse media check` checks them (`docs/media-check.md`).
 3. **Host setup** (ticket 21, `docs/setup.md`): folders, ACLs and the broker service.
 
    ```
@@ -88,7 +97,7 @@ are the operator's choice; `doctor` prints `advice` lines where one would help (
 For a flavor already in the registry (`arashouse flavors` lists it) that has no slots: put its media in `media/<flavor>/`,
 then steps 5 to 8 above for it (its licence line if not yet stored, its golden, its `root` password, `provision`). That
 is how `35` joined (`docs/baselines.md`, `docs/pool.md`). To change how many slots a flavor has, set
-`slots_per_flavor` in `~/.arashouse/config.json` and run `arashouse provision <flavor>`, or give the count
+`slots_per_flavor` in `%LOCALAPPDATA%\arashouse\config.json` and run `arashouse provision <flavor>`, or give the count
 (`arashouse provision 35 3`).
 
 A new Aras release is code first: a registry entry in `src/core/flavors.ts` (release, server build, engine, licence
@@ -124,9 +133,9 @@ and its verify found the file still there. None of the steps below needs `--yes`
 elevation (the broker does the work).
 
 1. **Read the reason.** It names the step and, for the tree, the file. A file held open is released when its process
-   ends (the e2e's ended after 150 s). From WSL you cannot see the process; you can only try step 2 again. On Windows,
-   the elevated Resource Monitor (CPU, Associated Handles, search for the file name) shows it, and ending it frees the
-   file; that has not been needed on the host.
+   ends (the e2e's ended after 150 s). As the worker, unelevated, you cannot see the process; you can only try step 2
+   again. The elevated Resource Monitor (CPU, Associated Handles, search for the file name) shows it, and ending it
+   frees the file; that has not been needed on the host.
 2. **`arashouse repair <slot>`** resets it from golden in the foreground (46 s in the e2e): it ends `free` (exit 0),
    or `quarantined` again with exit 5 and the new reason. Try again once the process has ended.
 3. **`arashouse repair <slot> --rebuild`** if the slot itself is damaged (its IIS application, database or folders):
@@ -153,7 +162,7 @@ elevation (the broker does the work).
 
 ## A lost or broken state file
 
-`~/.arashouse/state.json` is rebuilt from the slot stamps on the host (ticket 11):
+`%LOCALAPPDATA%\arashouse\state.json` is rebuilt from the slot stamps on the host (ticket 11):
 
 ```
 arashouse doctor --rebuild-state                  # says what the rebuilt state would hold; changes nothing
@@ -182,10 +191,13 @@ Every host call exits 6, and `doctor` fails `broker: did not answer`.
    recompiles the wrapper, checks every file against the hashes the bundle was generated with, and restarts the service.
 5. Then `arashouse doctor --fix`: resets that lost the broker left their slots `dirty`, and it starts them again.
 
-A broker outage loses no lease: leases live in WSL's state, and `run` still works once the broker is back.
+A broker outage loses no lease: leases live in the pool's state (`%LOCALAPPDATA%\arashouse`), and `run` still works
+once the broker is back.
 
-WSL itself can fail to start `node.exe` on a busy host (`UtilAcceptVsock ... accept4 failed 110`); the CLI retries that,
-and a call that still fails exits 6 with the broker untouched (`docs/broker.md`).
+Natively a host call is the pipe in the CLI's own process, with no process start to fail. From WSL, interop can fail to
+start the launcher's `node.exe` on a busy host (`UtilAcceptVsock ... accept4 failed 110`): the Windows process never
+ran, so the launcher starts it again, three times at most, and one that still fails exits 6 with nothing done
+(`docs/windows-native.md`).
 
 ## The IIS configuration is not readable
 
@@ -255,12 +267,15 @@ media 2.7 GB, about 12 GB in all. A reset brings a slot back to its size, so a s
 
 ## Change `max_active` and the other limits
 
-`~/.arashouse/config.json`, read by every command (no restart). Every key is optional; an unknown key is refused
-(`docs/governor.md`):
+`%LOCALAPPDATA%\arashouse\config.json`, read by every command (no restart). Every key is optional; an unknown key is
+refused (`docs/governor.md`):
 
 ```json
 { "max_active": 3, "max_resets": 2, "min_free_ram_mb": 2048, "min_free_disk_gb": 10, "slots_per_flavor": { "12sp9": 3, "23": 2, "35": 2 } }
 ```
+
+The one key that is not a limit, `"media"`, names the folder that holds the per-flavor media folders, as an absolute
+Windows path (`"media": "C:\\path\\to\\media"`, its backslashes doubled in JSON).
 
 `max_active` is leased slots at once across all flavors; lowering it below the leases held refuses new `get`s until
 enough are returned, and takes nothing away. Ticket 38 confirmed 3 on this laptop (`docs/capacity.md`).
@@ -268,32 +283,61 @@ enough are returned, and takes nothing away. Ticket 38 confirmed 3 on this lapto
 
 ## Restarting WSL
 
-`wsl --shutdown` ends every WSL session on the laptop, every worker and firstmate with them, so it is the captain's
-sitting (ticket 44). It is needed, for example, to apply a WSL memory cap (`docs/host-tuning.md`). The broker, IIS and
-SQL Server run on Windows and keep running; the pool's state is on WSL's disk and survives.
+`wsl --shutdown` ends every WSL session on the laptop, every WSL worker and firstmate with them, so it is the captain's
+sitting (ticket 44). It is needed, for example, to apply a WSL memory cap (`docs/host-tuning.md`).
 
-Before:
+It no longer touches the pool. The state is on Windows (`%LOCALAPPDATA%\arashouse`), the reset workers are detached
+Windows processes started from a copy of the build on Windows (never from `\\wsl.localhost`), and the broker, IIS and
+SQL Server run on Windows: all of them keep running. Only a WSL caller in the middle of a command is affected, because
+its session ends.
 
-1. `arashouse status`: ask each holder to take out what they need and return; note any lease still held.
-2. Wait until no slot is `resetting` (`status`): a reset worker runs in WSL and dies with it. A dead one is recovered,
-   so this only saves a reset.
+Before: `arashouse status`, and ask each holder working from WSL to take out what they need and return, or to expect
+to pick the lease up again.
 
 After:
 
-1. `arashouse doctor`: the broker answers, and any slot left `resetting` shows as a dead worker.
-2. `arashouse doctor --fix`: those slots go `dirty` and are reset.
-3. A lease held across the restart is still held, with the same id and password file. Its holder's session ended, so
-   return it (`force-return`) unless the holder will pick it up.
+1. `arashouse doctor` (natively, or from WSL once it is back).
+2. A lease held from WSL across the restart is still held, with the same id and password file. Its holder's session
+   ended, so return it (`force-return`) unless the holder will pick it up.
 
-That recovery (a dead reset worker, the broker gone and back, a lease kept) is what `docs/capacity.md` and
-`docs/e2e-12sp9.md` (step 7) exercise; a `wsl --shutdown` with the pool live has not been run.
+A `wsl --shutdown` with the pool live has not been run since the pool moved to Windows (`docs/windows-native.md`,
+"Verification record").
+
+## Moving the pool's state to Windows
+
+Before arashouse ran on Windows the pool's state was WSL's `~/.arashouse/`. A machine whose pool was set up then moves
+it once, to `%LOCALAPPDATA%\arashouse\`. The whole procedure, and why, is `docs/windows-native.md`, "Migrating a pool
+from WSL's state to Windows". Held leases carry over with their passwords, so the pool need not be empty, but it should
+be quiet (no slot `resetting`, no `get --wait` queued), and every WSL caller's `arashouse` must already be the new
+build.
+
+1. Put the new build where WSL's `arashouse` runs from (the launcher). From then on, while WSL's
+   `~/.arashouse/state.json` is there (and `ARASHOUSE_HOME` is not set), the launcher refuses every command but `help`
+   and `version` (exit 1) and names the migration: the Windows build would see an empty pool, every slot on the host an
+   orphan. So do the next step at once.
+2. In WSL (it is a WSL-only command):
+
+   ```
+   arashouse migrate-state                           # the dry run: the slots and leases it carries; changes nothing
+   arashouse migrate-state --yes                     # copies the state under its lock, then renames WSL's aside
+   ```
+
+   WSL's `state.json` and `leases/` become `*.moved-to-windows-<time>`, never deleted. It refuses a Windows home that
+   already holds a state, and a pool with a reset running or a `get --wait` queued unless `--busy-ok`.
+3. `arashouse doctor`, then `doctor --fix` for anything left dirty. Once the pool works from Windows, delete WSL's
+   `*.moved-to-windows-*` copies: the old leases' passwords are in them.
+4. Optionally, update the broker to the same build (`doctor`'s `build` line names the difference): `arashouse setup`,
+   then `setup-host.ps1 -Apply -UpdateBroker` (**elevated**), when no lane is mid-command.
+
+When in doubt, the fallback is the ticket 11 path ("A lost or broken state file" above), after draining the pool.
 
 ## Logs and audit
 
 | question | where |
 |---|---|
-| who leased, returned, reset what, and when | `~/.arashouse/events.log` (one JSON line per transition; lease ids as their first 8 characters) |
-| why an import or a bootstrap step failed | `~/.arashouse/logs/<lease_id>-import-<n>.log`, `<lease_id>-bootstrap.log` |
+| who leased, returned, reset what, and when | `%LOCALAPPDATA%\arashouse\events.log` (one JSON line per transition; lease ids as their first 8 characters) |
+| why an import or a bootstrap step failed | `%LOCALAPPDATA%\arashouse\logs\<lease_id>-import-<n>.log`, `<lease_id>-bootstrap.log` |
+| which build the CLI and the broker are | `arashouse version`; `arashouse doctor`'s `build` line |
 | what the broker was asked to do | `C:\aras_installations\logs\broker-YYYYMMDD.log` (elevated) |
 | why the broker stopped | `C:\aras_installations\logs\broker-service.log` (elevated) |
 | how the host was set up | `C:\aras_installations\broker\setup-host.json` |

@@ -2,8 +2,9 @@
 
 Ticket 41. The captain's ask: "Perhaps a optional database restore, followed by import/codetree deployments. This is
 similar to worktree in that sense." This step is the imports: a lease can be brought to a working state at checkout by
-importing package manifests onto it with import-export-libs-js (`aras-pkg`), which runs in WSL with Node 20 or newer and
-no .NET. Source: `src/cli/import.ts`; the CLI surface is in `docs/cli.md`.
+importing package manifests onto it with import-export-libs-js (`aras-pkg`), which needs Node 20 or newer and no .NET.
+It runs as a child of the CLI's Windows process, natively and from WSL alike. Source: `src/cli/import.ts`; the CLI
+surface is in `docs/cli.md`.
 
 > "The philosophy is that Aras are disposable, and anything durable should be taken out by whoever took the lease before
 > giving it back."
@@ -76,13 +77,19 @@ From the flavor registry (`src/core/flavors.ts`, `libsJsEngine`); `get` passes i
 executable), else `aras-pkg` on `PATH`. `arashouse doctor` reports which, and its `--version` (a `warn` when there is none:
 only `get --import` and `import` need it).
 
+Node starts no `.cmd` without a shell, so on Windows an npm shim is followed to its script, which this Node runs:
+`ARASHOUSE_APKG` may name libs-js's `aras-pkg.cmd`, and on `PATH` `aras-pkg.cmd` (then `aras-pkg.exe`) is what is
+looked for. From WSL the launcher passes `ARASHOUSE_APKG` on as its Windows path, and when it is not set, `aras-pkg` on
+WSL's `PATH` when that is a link to libs-js's `dist/cli.js`, which the Windows Node then runs from `\\wsl.localhost`
+(`docs/windows-native.md`).
+
 **Pinned:** import-export-libs-js commit `c920b429` ("allow the live test, the oracle and parity to run on an arashouse
 lease", #95; package version `0.0.0`), built with `npm ci && npm run build`. That is the commit this ticket was proven with
 on the host (below).
 
 ## Logs
 
-Each import's libs-js log goes to `$ARASHOUSE_HOME/logs/<lease_id>-import-<n>.log` (the folder is 0700), `n` counting on from
+Each import's libs-js log goes to `$ARASHOUSE_HOME/logs/<lease_id>-import-<n>.log` (in the state home, the worker user's; 0700 outside Windows), `n` counting on from
 the lease's earlier imports, so `arashouse import` after `get --import` does not overwrite a log. libs-js never writes the
 password to its log ("Connection and credentials" in its README). `get --json` lists each import as
 `{ manifest, exit_code, log }` under `imports` (`docs/schemas/get.schema.json`).

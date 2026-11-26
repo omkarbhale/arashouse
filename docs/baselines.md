@@ -8,11 +8,13 @@ and an administrator again.
 
 ## Running it
 
-1. From WSL, in the arashouse checkout, after `npm run build`:
+1. As the worker user, unelevated, with an arashouse build (`npm run build`), natively from a PowerShell or from WSL
+   (where `arashouse` is the launcher of the same build, `docs/windows-native.md`); it needs the media folder
+   (`docs/media-check.md`):
 
    ```
-   node dist/cli/index.js baseline build 12sp9          # or `arashouse baseline build 12sp9`
-   node dist/cli/index.js baseline build 23 --engine-check <a built import-export-libs-js checkout>
+   node <arashouse>\dist\cli\index.js baseline build 12sp9          # or `arashouse baseline build 12sp9` from WSL
+   node <arashouse>\dist\cli\index.js baseline build 23 --engine-check <a built import-export-libs-js checkout>
    ```
 
    It refuses a flavor whose golden already exists (it asks the broker's `baselineVerify`; a broker it cannot ask
@@ -29,7 +31,7 @@ and an administrator again.
    powershell -NoProfile -ExecutionPolicy Bypass -File "C:\aras_installations\staging\baseline-12sp9\baseline-build.ps1" -Apply   # builds the golden
    ```
 
-3. From WSL: `arashouse baseline verify 12sp9` (exit 0 when the golden matches its manifest; `--full` hashes every
+3. Unelevated again: `arashouse baseline verify 12sp9` (exit 0 when the golden matches its manifest; `--full` hashes every
    file; `--json` prints the diff).
 
 `baseline-build.ps1` switches: `-Apply` (without it the script only checks the bundle), `-Replace` (rebuild over an

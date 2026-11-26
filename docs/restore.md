@@ -14,10 +14,11 @@ arashouse get 12sp9 --holder <task> --restore <backup.bak | profile> [--allow-fo
 
 ## The source
 
-- **A file**: a SQL Server backup, by a WSL path, a relative path or a Windows drive path (`C:\Users\...\x.bak`). Any value
+- **A file**: a SQL Server backup, by a Windows drive path (`C:\Users\...\x.bak`), a relative path, or from WSL a WSL path. Any value
   with a `/` or `\`, or ending in `.bak`, is a file.
 - **A profile**: any other value is a name, `media/<flavor>/profiles/<name>.bak` in the main checkout (or under
-  `ARASHOUSE_MEDIA`), ignored by git like all media (`media/README.md`). Names are letters, digits, `.`, `_` and `-`.
+  `ARASHOUSE_MEDIA` or `config.json`'s `"media"`, one of which a vendored copy needs), ignored by git like all media
+  (`media/README.md`). Names are letters, digits, `.`, `_` and `-`.
 
 The CLI checks that the file exists before it leases a slot, so a missing file or profile costs no slot (exit 2). arashouse
 makes no backup of any existing database: the caller brings one (ticket 10's rule; ticket 43 backs up only a leased slot).

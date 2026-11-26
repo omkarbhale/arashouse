@@ -141,11 +141,11 @@ lease. A refused slot goes `dirty` with the reason in the event log, and is rese
 `get` with `--wait`, a worker otherwise). The tests dirty each of the three separately (`src/core/lease.test.ts`,
 `src/core/reset.test.ts`), and the times both ways.
 
-## The WSL side
+## The CLI's side
 
-`probeSlot` and `hostAddress` (`docs/slot-url.md`, ticket 29) are the anonymous checks from WSL. They asked
-`/<alias>/DBList.aspx`, which 404s on every flavor (`DBList.aspx` is in the `/Server` application, `docs/baselines.md`);
-they now ask `/<alias>/Server/DBList.aspx`.
+`probeSlot` and `hostAddress` (`docs/slot-url.md`, ticket 29) are the anonymous checks from the CLI's process (from WSL
+when ticket 29 built them). They asked `/<alias>/DBList.aspx`, which 404s on every flavor (`DBList.aspx` is in the
+`/Server` application, `docs/baselines.md`); they now ask `/<alias>/Server/DBList.aspx`.
 
 ## Measured on the host (2026-10-27, `12sp9`)
 

@@ -167,7 +167,8 @@ function launch(spawn: Spawner, extra: Partial<LauncherDeps> = {}) {
   const out: string[] = [];
   const err: string[] = [];
   const deps: LauncherDeps = {
-    env: { WSL_DISTRO_NAME: "Ubuntu", PATH: process.env.PATH, ARASHOUSE_WINDOWS_NODE: "/mnt/c/Program Files/nodejs/node.exe" },
+    // A HOME with no ~/.arashouse: the pool's state is not WSL's (assertStateMoved).
+    env: { WSL_DISTRO_NAME: "Ubuntu", PATH: process.env.PATH, HOME: join(dir, "wsl-home"), ARASHOUSE_WINDOWS_NODE: "/mnt/c/Program Files/nodejs/node.exe" },
     io: { stdout: (c) => void out.push(c), stderr: (c) => void err.push(c) },
     spawn,
     net: nat,
@@ -274,12 +275,29 @@ posix("runLauncher", () => {
     expect(l.err.join("")).toMatch(/could not be written to descriptor 3; the lease of 23-01 was returned/);
   });
 
+  it("refuses while the pool's state is still WSL's ~/.arashouse, unless ARASHOUSE_HOME names a state; help and version still run", async () => {
+    const home = join(dir, "unmoved");
+    mkdirSync(join(home, ".arashouse"), { recursive: true });
+    writeFileSync(join(home, ".arashouse", "state.json"), "{}");
+    const w = fakeWindows(() => ({ stdout: "ran\n", code: 0 }));
+    const env = { WSL_DISTRO_NAME: "Ubuntu", PATH: "", HOME: home, ARASHOUSE_WINDOWS_NODE: "/x/node.exe" };
+    const l = launch(w.spawn, { env });
+    expect(await runLauncher(["get", "23", "--holder", "t"], l.deps)).toBe(1);
+    expect(l.err.join("")).toMatch(/the pool's state is still WSL's \(.*unmoved\/\.arashouse\/state\.json\).*move it there first.*nothing was done/);
+    expect(w.calls).toEqual([]);
+    for (const args of [["version"], ["help", "get"], ["get", "--help"]]) expect(await runLauncher(args, launch(w.spawn, { env }).deps)).toBe(0);
+    expect(await runLauncher(["status"], launch(w.spawn, { env: { ...env, ARASHOUSE_HOME: "/mnt/c/state" } }).deps)).toBe(0);
+    // Moved (WSL's renamed out of the way): it runs.
+    rmSync(join(home, ".arashouse", "state.json"));
+    expect(await runLauncher(["status"], launch(w.spawn, { env }).deps)).toBe(0);
+  });
+
   it("says what to do when there is no Windows Node or no distribution name", async () => {
-    const l = launch(undefined as unknown as Spawner, { spawn: undefined, env: { WSL_DISTRO_NAME: "Ubuntu", ARASHOUSE_WINDOWS_NODE: join(dir, "no-node.exe") } });
+    const l = launch(undefined as unknown as Spawner, { spawn: undefined, env: { WSL_DISTRO_NAME: "Ubuntu", HOME: join(dir, "wsl-home"), ARASHOUSE_WINDOWS_NODE: join(dir, "no-node.exe") } });
     expect(await runLauncher(["status"], l.deps)).toBe(1);
     expect(l.err.join("")).toMatch(/arashouse runs on Windows, and there is no Windows Node at .*no-node\.exe: install Node 20/);
     const w = fakeWindows(() => ({ code: 0 }));
-    const n = launch(w.spawn, { env: { ARASHOUSE_WINDOWS_NODE: "/x/node.exe" } });
+    const n = launch(w.spawn, { env: { HOME: join(dir, "wsl-home"), ARASHOUSE_WINDOWS_NODE: "/x/node.exe" } });
     expect(await runLauncher(["status"], n.deps)).toBe(1);
     expect(n.err.join("")).toMatch(/WSL_DISTRO_NAME is not set/);
   });

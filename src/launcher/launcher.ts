@@ -55,6 +55,27 @@ const INTEROP_START_FAILURE = /^<\d+>WSL \(\d+[^)]*\) ERROR: Util\w*Vsock\w*:.*$
 export const LAUNCH_ATTEMPTS = 3;
 const LAUNCH_RETRY_MS = 1_000;
 
+/** Where the pool's state lived before arashouse ran on Windows: WSL's `~/.arashouse/state.json`. */
+export function wslStateFile(env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.HOME?.trim() || homedir(), ".arashouse", "state.json");
+}
+
+/**
+ * Refuses to launch while the pool's state is still WSL's (`~/.arashouse/state.json`, not moved to Windows): the Windows
+ * build would see an empty pool, every slot on the host an orphan, and the leases held in WSL's state not held at all.
+ * An `ARASHOUSE_HOME` set on purpose is that state, and is used.
+ */
+export function assertStateMoved(env: NodeJS.ProcessEnv, exists: (path: string) => boolean = existsSync): void {
+  if (env.ARASHOUSE_HOME?.trim()) return;
+  const legacy = wslStateFile(env);
+  if (!exists(legacy)) return;
+  throw new LaunchError(
+    1,
+    `the pool's state is still WSL's (${legacy}), and arashouse now keeps it on Windows (%LOCALAPPDATA%\\arashouse): ` +
+      "move it there first (docs/windows-native.md, \"Migrating a pool from WSL's state to Windows\"); nothing was done",
+  );
+}
+
 /** Whether `arashouse` in this process is the launcher (src/launcher/applies.ts). */
 export function launcherApplies(env: NodeJS.ProcessEnv, side: Side = SIDE, exists: (path: string) => boolean = existsSync): boolean {
   return applies(env, side, exists);
@@ -383,6 +404,7 @@ async function getWithFd(deps: LauncherDeps, command: string, args: readonly str
 export async function runLauncher(argv: readonly string[], deps: LauncherDeps): Promise<number> {
   try {
     const { command, args, globals, help } = commandOf(argv);
+    if (!help && command !== "help" && command !== "version" && command !== "--version") assertStateMoved(deps.env);
     if (!help && command === "run") return await runHere(deps, args, globals);
     if (!help && command === "get" && args.includes("--password-fd")) return await getWithFd(deps, command, args, globals);
     return (await runWindows(deps, argv, false)).code;

@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, win32 } from "node:path";
-import { acquireLock, isPidAlive, isProcessAlive, retryBusy, type LockEvent, type LockInfo } from "./lock.js";
+import { BUSY_SHORT_MS, acquireLock, isPidAlive, isProcessAlive, retryBusy, type LockEvent, type LockInfo } from "./lock.js";
 import type { SlotRef } from "./names.js";
 import {
   type BootstrapInfo,
@@ -104,7 +104,7 @@ export async function writeFileAtomic(
     await options.beforeRename?.(tmp);
     await retryBusy(() => rename(tmp, path));
   } catch (err) {
-    await retryBusy(() => unlink(tmp)).catch(() => undefined);
+    await retryBusy(() => unlink(tmp), { totalMs: BUSY_SHORT_MS }).catch(() => undefined);
     throw err;
   }
   // Make the rename itself durable; not every filesystem lets a directory be synced.
@@ -314,7 +314,7 @@ export class StateStore {
   async read(): Promise<State> {
     let text: string;
     try {
-      text = await retryBusy(() => readFile(this.paths.state, "utf8"));
+      text = await retryBusy(() => readFile(this.paths.state, "utf8"), { totalMs: BUSY_SHORT_MS });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyState(this.now());
       throw err;

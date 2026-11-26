@@ -10,7 +10,7 @@
 // record without a beacon (an older build's, or another OS's) is judged dead on Windows. Every lock, reset-worker
 // record and queue ticket goes through `processStartTime` and `isProcessAlive`.
 //
-// NTFS refuses to replace or link over a name another process has open or is deleting (EPERM, EBUSY, EACCES), and an
+// NTFS refuses to replace or link over a name another process has open or is deleting (EPERM, EBUSY), and an
 // antivirus scanner may hold a fresh file for a moment; `retryBusy` retries those for a bounded time on Windows.
 
 import { randomBytes } from "node:crypto";
@@ -186,11 +186,18 @@ export function isPidAlive(pid: number, options: LivenessOptions = {}): boolean 
 
 // ---- NTFS's busy names -----------------------------------------------------------------------------
 
-/** The codes NTFS gives for a name another process has open, is deleting, or (an antivirus scanner) holds for a moment. */
-const BUSY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+/**
+ * The codes NTFS gives for a name another process has open, is deleting, or (an antivirus scanner) holds for a moment.
+ * libuv maps ERROR_ACCESS_DENIED (a delete-pending name, and also a real ACL denial) to EPERM and ERROR_SHARING_VIOLATION
+ * to EBUSY, so the codes cannot tell a transient busy name from a real denial; what bounds a real denial is the window.
+ */
+const BUSY_CODES = new Set(["EPERM", "EBUSY"]);
 
-/** How long `retryBusy` keeps trying by default: readers polling the state (`get --wait`, `status`) only ever hold it briefly. */
+/** How long `retryBusy` waits where a writer must outlast readers (the renames of the state file): they only ever hold a name briefly. */
 export const BUSY_RETRY_MS = 15_000;
+
+/** The short window for reads and deletes, which need no reader to finish: a real denial fails within it. */
+export const BUSY_SHORT_MS = 2_000;
 
 export interface RetryBusyOptions {
   readonly platform?: NodeJS.Platform;
@@ -263,7 +270,7 @@ async function tryCreate(path: string, info: LockInfo): Promise<boolean> {
     if (errnoCode(err) === "EEXIST" || isBusy(err)) return false;
     throw err;
   } finally {
-    await retryBusy(() => unlink(tmp), { totalMs: 1_000 }).catch(() => undefined);
+    await retryBusy(() => unlink(tmp), { totalMs: BUSY_SHORT_MS }).catch(() => undefined);
   }
 }
 
@@ -302,7 +309,7 @@ async function steal(
     if (guard !== null && guard !== "busy" && (guard.info === null || !isAlive(guard.info))) {
       // A thief that died inside its guard; the guard only fences the moment of removal.
       const again = await readLockAt(guardPath);
-      if (again !== null && again !== "busy" && sameHolder(again.info, guard.info)) await retryBusy(() => unlink(guardPath)).catch(() => undefined);
+      if (again !== null && again !== "busy" && sameHolder(again.info, guard.info)) await retryBusy(() => unlink(guardPath), { totalMs: BUSY_SHORT_MS }).catch(() => undefined);
     }
     return false;
   }
@@ -316,11 +323,11 @@ async function steal(
       return true;
     }
     await options.onEvent?.({ event: "lock-stolen", ...event });
-    await retryBusy(() => unlink(path));
+    await retryBusy(() => unlink(path), { totalMs: BUSY_SHORT_MS });
     return true;
   } finally {
     const guard = await readLockAt(guardPath);
-    if (guard !== null && guard !== "busy" && guard.info?.token === self.token) await retryBusy(() => unlink(guardPath)).catch(() => undefined);
+    if (guard !== null && guard !== "busy" && guard.info?.token === self.token) await retryBusy(() => unlink(guardPath), { totalMs: BUSY_SHORT_MS }).catch(() => undefined);
   }
 }
 
@@ -345,8 +352,8 @@ export async function acquireLock(path: string, options: LockOptions = {}): Prom
         info,
         async release() {
           // Remove the lock only if it is still ours (it may have been judged stale and replaced).
-          const current = parseLockInfo(await retryBusy(() => readFile(path, "utf8")).catch(() => ""));
-          if (current?.token === info.token) await retryBusy(() => unlink(path)).catch(() => undefined);
+          const current = parseLockInfo(await retryBusy(() => readFile(path, "utf8"), { totalMs: BUSY_SHORT_MS }).catch(() => ""));
+          if (current?.token === info.token) await retryBusy(() => unlink(path), { totalMs: BUSY_SHORT_MS }).catch(() => undefined);
         },
       };
     }

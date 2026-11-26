@@ -48,8 +48,8 @@ opaque string. (`src/core/lock.ts`.)
 ### NTFS
 
 NTFS will not replace or link over a name another process has open or is deleting, and an antivirus scanner may hold a
-fresh file for a moment (`EPERM`, `EBUSY`, `EACCES`). The state file's rename, the lock's link and unlink, and the lease
-files are retried for a bounded time (15 s) on Windows. A `status` reading `state.json` while a writer replaces it is the
+fresh file for a moment (`EPERM`, `EBUSY`). The state file's rename is retried for up to 15 s on Windows; reads and deletes (the state
+read, the lock's release and unlink, the lease files) for up to about 2 s, so a real access denial fails fast. A `status` reading `state.json` while a writer replaces it is the
 common case. `test/races.test.ts` and the store's concurrency tests run on `windows-latest` in CI.
 
 ### The state home and its privacy

@@ -8,7 +8,7 @@ import { chmod, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { assertSecretName, type SecretStore } from "./secret-store.js";
 import { Secret } from "./secret.js";
-import { retryBusy } from "./lock.js";
+import { BUSY_SHORT_MS, retryBusy } from "./lock.js";
 import { writeFileAtomic } from "./store.js";
 
 const LEASE_SECRET = /^lease-([0-9a-f]{32})$/;
@@ -63,7 +63,7 @@ export class LeaseFileStore implements SecretStore {
 
   async delete(name: string): Promise<boolean> {
     try {
-      await retryBusy(() => unlink(this.pathOf(name)));
+      await retryBusy(() => unlink(this.pathOf(name)), { totalMs: BUSY_SHORT_MS });
       return true;
     } catch (err) {
       if (isMissing(err)) return false;

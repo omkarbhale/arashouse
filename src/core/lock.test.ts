@@ -108,7 +108,9 @@ describe("retryBusy", () => {
     calls = 0;
     await expect(retryBusy(async () => Promise.reject(busy((calls++, "ENOENT"))), { platform: "win32" })).rejects.toMatchObject({ code: "ENOENT" });
     expect(calls).toBe(1);
-    expect(isBusy(busy("EACCES"), "win32")).toBe(true);
+    expect(isBusy(busy("EACCES"), "win32")).toBe(false);
+    expect(isBusy(busy("EPERM"), "win32")).toBe(true);
+    expect(isBusy(busy("EBUSY"), "win32")).toBe(true);
     expect(isBusy(busy("EACCES"), "linux")).toBe(false);
   });
 });

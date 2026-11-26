@@ -60,6 +60,8 @@ export interface HostInfo {
   /** Free disk at the install root. */
   readonly freeDiskGb: number;
   readonly brokerVersion: string;
+  /** The broker's build id (src/core/build.ts); null for a broker run from source, absent from a broker older than it. */
+  readonly brokerBuild?: string | null;
   readonly sqlReachable: boolean;
   /** The broker's SQL login; null when it cannot connect, absent from a broker older than ticket 22. */
   readonly sqlLogin?: SqlLoginInfo | null;

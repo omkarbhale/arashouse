@@ -66,8 +66,18 @@ export interface OperatorDeps {
   readonly importTool?: () => Promise<{ readonly found: boolean; readonly detail: string }>;
   /** Held while `provision` runs, so two provisions never work on one slot (the CLI's `provision.lock`). Absent: none. */
   readonly provisionLock?: () => Promise<{ release(): Promise<void> }>;
+  /** This CLI's build id (core/build.ts), null when it runs from source; `doctor` compares it with the broker's. Absent: skipped. */
+  readonly build?: string | null;
+  /**
+   * Who besides the worker user can open the state home (its lease passwords): the identities, or none. Absent:
+   * `doctor` skips the check (the fake host).
+   */
+  readonly homeAccess?: () => Promise<{ readonly home: string; readonly others: readonly string[]; readonly missing?: boolean }>;
   readonly now?: () => Date;
 }
+
+/** How to put this build's broker in place: the setup bundle, then its script elevated (docs/setup.md). */
+const UPDATE_BROKER = "update it: `arashouse setup`, then the script it writes with -Apply -UpdateBroker in an elevated PowerShell";
 
 /** What an operator command did: the lines to print and the exit code. */
 export interface OperatorResult {
@@ -683,6 +693,17 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
     for (const f of checkSetup(await deps.setup())) add(f.level, f.check, f.message);
   }
 
+  if (deps.homeAccess) {
+    try {
+      const { home, others, missing } = await deps.homeAccess();
+      if (missing === true) add("ok", "state home", `${home} is made by the first lease`);
+      else if (others.length === 0) add("ok", "state home", `${home} is the worker user's only (and SYSTEM's and the administrators')`);
+      else add("warn", "state home", `${home} can also be opened by ${others.join(", ")}, and it holds the lease passwords: keep it under the worker user's profile (unset ARASHOUSE_HOME), or take those entries off its ACL`);
+    } catch (err) {
+      add("warn", "state home", `its access could not be read: ${errorText(err)}`);
+    }
+  }
+
   if (deps.importTool) {
     // Only `get --import` and `import` need it, so its absence is a warning.
     const tool = await deps.importTool();
@@ -710,6 +731,11 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
   try {
     const { info } = await host.hostInfo();
     hostLicences = info.licences;
+    if (deps.build !== undefined && deps.build !== null) {
+      if (info.brokerBuild === undefined) add("warn", "build", `this CLI is build ${deps.build}; the broker does not report its build, so it is older: ${UPDATE_BROKER}`);
+      else if (info.brokerBuild !== deps.build) add("warn", "build", `this CLI is build ${deps.build}, the broker build ${info.brokerBuild ?? "from source"}: ${UPDATE_BROKER}`);
+      else add("ok", "build", `the CLI and the broker are build ${deps.build}`);
+    }
     for (const f of checkSqlLogin(info)) add(f.level, f.check, f.message);
     if (info.freeDiskGb >= config.min_free_disk_gb) add("ok", "disk", `${info.freeDiskGb} GB free at the install root`);
     else add("warn", "disk", `${info.freeDiskGb} GB free at the install root, under min_free_disk_gb ${config.min_free_disk_gb}: no provision or baseline build starts`);

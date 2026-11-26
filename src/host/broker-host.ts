@@ -111,8 +111,17 @@ function parseHostInfo(value: unknown): HostInfo {
   // A broker older than ticket 22 sends no sqlLogin; the doctor says so instead of guessing.
   const sqlLogin = parseSqlLogin(value.sqlLogin);
   const licences = parseLicences(value.licences);
+  const { brokerBuild } = value;
+  if (brokerBuild !== undefined && brokerBuild !== null && (typeof brokerBuild !== "string" || !/^[0-9a-z-]{1,40}$/.test(brokerBuild))) {
+    throw new ProtocolError("brokerBuild is not a build id");
+  }
   const info: HostInfo = { os, freeRamMb: freeRamMb as number, freeDiskGb: freeDiskGb as number, brokerVersion, sqlReachable };
-  return { ...info, ...(sqlLogin === undefined ? {} : { sqlLogin }), ...(licences === undefined ? {} : { licences }) };
+  return {
+    ...info,
+    ...(brokerBuild === undefined ? {} : { brokerBuild }),
+    ...(sqlLogin === undefined ? {} : { sqlLogin }),
+    ...(licences === undefined ? {} : { licences }),
+  };
 }
 
 function parseLevel(value: unknown): VerifyLevel {

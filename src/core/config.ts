@@ -1,10 +1,11 @@
-// The pool's limits: `~/.arashouse/config.json` (next to the state file), every key optional, the
+// The pool's limits: `<home>/config.json` (next to the state file), every key optional, the
 // defaults below in code. The captain's answer 1 ("3 most I would guess") makes the governor, not
-// the slot count, what protects the laptop (ticket 17). The file holds limits only, never a secret:
-// an unknown key is refused, so nothing else can be put there.
+// the slot count, what protects the laptop (ticket 17). The file holds limits and where the media is, never a
+// secret: an unknown key is refused, so nothing else can be put there.
 
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { FLAVOR_KEYS, type FlavorKey, isFlavorKey } from "./flavors.js";
 import { MAX_SLOT } from "./names.js";
 import { resolveStorePaths } from "./store.js";
@@ -20,6 +21,11 @@ export interface ArashouseConfig {
   readonly min_free_disk_gb: number;
   /** How many slots of each flavor the pool is provisioned with (ticket 37). */
   readonly slots_per_flavor: Readonly<Record<FlavorKey, number>>;
+  /**
+   * The folder holding the per-flavor media folders (`media/README.md`), as an absolute path; absent, `ARASHOUSE_MEDIA`
+   * or the arashouse checkout's `media/` is used. A copy of arashouse outside its checkout (vendored) needs one of them.
+   */
+  readonly media?: string;
 }
 
 /**
@@ -47,7 +53,7 @@ export class ConfigError extends Error {
   }
 }
 
-const KEYS = ["max_active", "max_resets", "min_free_ram_mb", "min_free_disk_gb", "slots_per_flavor"] as const;
+const KEYS = ["max_active", "max_resets", "min_free_ram_mb", "min_free_disk_gb", "slots_per_flavor", "media"] as const;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -83,18 +89,35 @@ export function parseConfig(text: string, path = CONFIG_FILE): ArashouseConfig {
     }
     slots = counts;
   }
+  if (raw.media !== undefined && (typeof raw.media !== "string" || raw.media.trim() === "" || !isAbsolute(raw.media))) {
+    throw new ConfigError(path, "media must be the absolute path of the folder that holds the per-flavor media folders");
+  }
   return {
     max_active: raw.max_active === undefined ? d.max_active : integer(path, "max_active", raw.max_active, 1),
     max_resets: raw.max_resets === undefined ? d.max_resets : integer(path, "max_resets", raw.max_resets, 1),
     min_free_ram_mb: raw.min_free_ram_mb === undefined ? d.min_free_ram_mb : integer(path, "min_free_ram_mb", raw.min_free_ram_mb, 0),
     min_free_disk_gb: raw.min_free_disk_gb === undefined ? d.min_free_disk_gb : integer(path, "min_free_disk_gb", raw.min_free_disk_gb, 0),
     slots_per_flavor: slots,
+    ...(typeof raw.media === "string" ? { media: raw.media } : {}),
   };
 }
 
 /** The config file's path under the state home (`$ARASHOUSE_HOME`, else `~/.arashouse`). */
 export function configPath(options: { readonly home?: string; readonly env?: NodeJS.ProcessEnv } = {}): string {
   return join(options.home ?? resolveStorePaths(options.env).home, CONFIG_FILE);
+}
+
+/** The config read now, synchronously (the media resolver's, which runs where nothing waits); a missing file is the defaults. */
+export function loadConfigSync(options: { readonly home?: string; readonly env?: NodeJS.ProcessEnv } = {}): ArashouseConfig {
+  const path = configPath(options);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return DEFAULT_CONFIG;
+    throw err;
+  }
+  return parseConfig(text, path);
 }
 
 /** Reads the config; a missing file is the defaults. */

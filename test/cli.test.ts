@@ -17,6 +17,7 @@ import { SECRET_REQUIRED_EXIT_CODE } from "../src/core/licence.js";
 import { StateStore } from "../src/core/store.js";
 import { buildZip } from "../src/core/zip.fixture.js";
 import { fakeGoldenHash } from "../src/host/fake.js";
+import { versionLine } from "../src/cli/commands.js";
 import { repoRoot } from "./helpers.js";
 
 const BIN = join(repoRoot, "dist", "cli", "index.js");
@@ -1456,12 +1457,15 @@ describe("help and version", () => {
     }
   });
 
-  it("prints the package version", async () => {
+  it("prints the package version, and the build when dist/build.json names one", async () => {
     const pkg = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")) as { version: string };
     for (const args of [["version"], ["--version"]]) {
       const r = await cli(args);
       expect(r.code).toBe(0);
-      expect(r.stdout.trim()).toBe(`arashouse ${pkg.version}`);
+      // `npm run build` writes dist/build.json; the test's own tsc build does not.
+      expect(r.stdout.trim()).toMatch(new RegExp(`^arashouse ${pkg.version.replace(/\./g, "\\.")}(?: \\(build (?:[0-9a-f]{12}|unknown)(?:-dirty)?\\))?$`));
     }
+    expect(versionLine("1.2.3", "0123456789ab")).toBe("arashouse 1.2.3 (build 0123456789ab)");
+    expect(versionLine("1.2.3", null)).toBe("arashouse 1.2.3");
   });
 });

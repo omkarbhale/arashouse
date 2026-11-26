@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { release, totalmem } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ownBuildId } from "../core/build.js";
 import { EXIT_CODES } from "../core/exit-codes.js";
 import { FLAVOR_KEYS, getFlavor, isFlavorKey, type FlavorKey } from "../core/flavors.js";
 import { GuardError } from "../core/guards.js";
@@ -59,6 +60,7 @@ import { assertNoGitTargets, checkGitTool, formatGitOutcome, gitBaselineOnLease,
 import { MEDIA_USAGE, runMediaCheck } from "./media.js";
 import { parsePasswordFd, writePasswordFd } from "./password-fd.js";
 import { leaseEnvironment, runWithLease } from "./run.js";
+import { homeAccess } from "./home-access.js";
 import { EXTRACT_HELP, runExtract } from "./extract.js";
 import { describeArasPkg, prepareImports, requireArasPkg, runImports, splitImports, leaseFlavor, type ImportDeps, type ImportResult } from "./import.js";
 import { runBaselineCommand, writeBaselineBundle } from "./baseline.js";
@@ -377,6 +379,11 @@ export function version(): string {
   return typeof pkg.version === "string" ? pkg.version : "unknown";
 }
 
+/** What `arashouse version` prints: the package version, and the build id when this is a build (`dist/build.json`). */
+export function versionLine(packageVersion: string = version(), build: string | null = ownBuildId()): string {
+  return `arashouse ${packageVersion}${build === null ? "" : ` (build ${build})`}`;
+}
+
 function helpFor(topic: string | undefined): readonly string[] {
   if (topic === undefined) return OVERVIEW;
   const lines = COMMAND_HELP[topic];
@@ -461,6 +468,7 @@ async function operatorDeps(ctx: Context): Promise<OperatorDeps> {
     setup: selected.kind === "broker" ? () => observeSetup() : undefined,
     importTool: () => describeArasPkg(ctx.env),
     wslMemoryMb: selected.kind === "broker" ? wslMemoryMb : undefined,
+    ...(selected.kind === "broker" ? { build: ownBuildId(), homeAccess: () => homeAccess(ctx.store.paths.home) } : {}),
   };
 }
 
@@ -1250,7 +1258,7 @@ async function dispatch(argv: readonly string[], io: CliIo, env: NodeJS.ProcessE
   const [command, ...args] = words;
 
   if (command === "--version" || command === "version") {
-    io.out(`arashouse ${version()}`);
+    io.out(versionLine());
     return EXIT_CODES.ok;
   }
   if (command === "help") {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   type Slot,
@@ -6,6 +7,7 @@ import {
   type TransitionRequest,
   IllegalTransitionError,
   SLOT_STATUSES,
+  STATE_VERSION,
   StateCorruptError,
   TRANSITIONS,
   canTransition,
@@ -278,6 +280,11 @@ describe("parseState refuses a damaged file", () => {
     expect(() => parseState("{", "/h/state.json")).toThrow(/\/h\/state\.json.*doctor --rebuild-state/);
   });
 
+  it("refuses a state a newer arashouse wrote, saying so, rather than drop what it does not know", () => {
+    const newer = { ...good(), version: STATE_VERSION + 1 };
+    expect(() => parse(newer)).toThrow(new RegExp(`version ${STATE_VERSION + 1} was written by a newer arashouse`));
+  });
+
   it.each<[string, (s: Record<string, any>) => void]>([
     ["a wrong version", (s) => (s.version = 2)],
     ["a negative revision", (s) => (s.revision = -1)],
@@ -306,5 +313,14 @@ describe("parseState refuses a damaged file", () => {
 
   it("accepts the undamaged file", () => {
     expect(() => parse(good())).not.toThrow();
+  });
+});
+
+describe("the state file's format", () => {
+  // Copies of arashouse share one state, and each rewrites it with only the fields it knows. Changed what the serialiser
+  // writes? Bump STATE_VERSION (an older copy then refuses the file instead of dropping fields), then update both here.
+  it("is pinned to STATE_VERSION", () => {
+    const shape = createHash("sha256").update(serialiseState.toString().replace(/\s+/g, "")).digest("hex").slice(0, 16);
+    expect({ version: STATE_VERSION, shape }).toEqual({ version: 1, shape: "cabe3f65ff0869f1" });
   });
 });

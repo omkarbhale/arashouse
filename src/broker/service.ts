@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { freemem, release, type } from "node:os";
 import type { Server } from "node:net";
+import { ownBuildId } from "../core/build.js";
 import { assertValidRoot } from "../core/guards.js";
 import { licenceStatus } from "../core/licence.js";
 import { DEFAULT_INSTALL_ROOT, brokerTokenFile } from "../core/names.js";
@@ -65,6 +66,7 @@ export async function startBroker(options: StartOptions = {}): Promise<RunningBr
   const system: BrokerSystem = {
     fs,
     brokerVersion: options.system?.brokerVersion ?? packageVersion(),
+    brokerBuild: options.system?.brokerBuild !== undefined ? options.system.brokerBuild : ownBuildId(),
     os: options.system?.os ?? (() => `${type()} ${release()}`),
     freeRamBytes: options.system?.freeRamBytes ?? freemem,
     sqlLogin: options.system?.sqlLogin ?? powershellSqlProbe(),

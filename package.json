@@ -12,10 +12,11 @@
     "arashouse-broker": "dist/broker/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-info.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "npm run typecheck",
-    "test": "vitest run"
+    "test": "vitest run",
+    "vendor": "npm run build && node scripts/vendor.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.0",

@@ -7,6 +7,12 @@ import { randomBytes } from "node:crypto";
 import { type FlavorKey, isFlavorKey } from "./flavors.js";
 import { type SlotRef, parseSlotId, slotId } from "./names.js";
 
+/**
+ * The state file's format. Several copies of arashouse share one machine's state (a checkout's build, the WSL
+ * launcher's, a copy vendored into aras-mr-envs), and a copy rewrites the file with only the fields it knows: so any
+ * change to the fields `serialiseState` writes bumps this, and an older copy then refuses the file rather than drop
+ * what it does not know (state.test.ts pins the serialiser to this number).
+ */
 export const STATE_VERSION = 1;
 
 export const SLOT_STATUSES = [
@@ -448,6 +454,9 @@ export function parseState(text: string, path = "state.json"): State {
     return fail(path, "not valid JSON");
   }
   if (!isObject(raw)) return fail(path, "not a JSON object");
+  if (typeof raw.version === "number" && raw.version > STATE_VERSION) {
+    fail(path, `version ${raw.version} was written by a newer arashouse (this one reads version ${STATE_VERSION}); run that newer build, or update this one`);
+  }
   if (raw.version !== STATE_VERSION) fail(path, `version ${String(raw.version)} is not supported`);
   if (!Number.isInteger(raw.revision) || (raw.revision as number) < 0) fail(path, "revision is not a non-negative integer");
   if (!Array.isArray(raw.slots)) fail(path, "slots is not a list");

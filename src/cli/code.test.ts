@@ -37,12 +37,12 @@ async function refused(promise: Promise<unknown>, message: RegExp): Promise<void
 }
 
 describe("planSource", () => {
-  it("plans a folder under Innovator, and a Windows path through its WSL mount", async () => {
+  it("plans a folder under Innovator, and a Windows path as this process opens it", async () => {
     const planned = await planSource(src, rules);
     expect(planned.kind).toBe("dir");
     expect(planned.plan.copies).toEqual([{ source: "Client/scripts/fix.js", target: "Innovator/Client/scripts/fix.js" }]);
-    expect(localSourcePath("C:\\work\\out")).toBe("/mnt/c/work/out");
-    expect(localSourcePath("rel", "/base")).toBe("/base/rel");
+    expect(localSourcePath("C:\\work\\out")).toBe(process.platform === "win32" ? "C:\\work\\out" : "/mnt/c/work/out");
+    expect(localSourcePath("rel", join(dir, "base"))).toBe(join(dir, "base", "rel"));
   });
 
   it("plans a zip, with its deploy.json, at the subpath given", async () => {

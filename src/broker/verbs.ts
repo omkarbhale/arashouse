@@ -22,6 +22,8 @@ const SLOT_FOLDER = /^\d{2}$/;
 export interface BrokerSystem {
   readonly fs: BrokerFs;
   readonly brokerVersion: string;
+  /** The broker's build id (src/core/build.ts), null when it runs from source; absent, `hostInfo` reports none. */
+  readonly brokerBuild?: string | null;
   /** For example `Windows_NT 10.0.26100`. */
   os(): string;
   freeRamBytes(): number;
@@ -68,6 +70,7 @@ export function registerCoreVerbs(broker: Broker, system: BrokerSystem): Broker 
           freeRamMb: Math.floor(system.freeRamBytes() / MB),
           freeDiskGb: Math.floor((freeBytes / GB) * 10) / 10,
           brokerVersion: system.brokerVersion,
+          ...(system.brokerBuild !== undefined ? { brokerBuild: system.brokerBuild } : {}),
           sqlReachable: sqlLogin !== null,
           sqlLogin,
           ...(licences ? { licences: licences.map((l) => ({ line: l.line, present: l.present })) } : {}),

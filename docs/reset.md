@@ -62,7 +62,7 @@ promoted a new one), the slot goes back to `dirty`. Otherwise, under the lock, t
 `resetting -> free` with the golden hash and the reset's duration (`last_reset_ms`, shown by `status`).
 
 **Every step re-derives its target.** Before each attempt the worker re-reads the slot from the state
-file: it must still be `resetting` under this worker's pid and start time, and its id must parse to
+file: it must still be `resetting` under this worker's pid and liveness token, and its id must parse to
 the flavor and number the record carries (ticket 10). The host driver runs its own guards on the
 slot reference (`assertSlotOwned`). A worker that finds the slot is no longer its own (it was judged
 dead and the slot was recovered, or an operator moved it) stops with outcome `lost` and calls the
@@ -163,15 +163,18 @@ same sequence; `repair --rebuild` first recreates its application and database s
 
 ## Crash safety
 
-The worker records its pid and process start time on the slot (`reset` in the state file, with the
+The worker records its pid and a liveness token on the slot (`reset` in the state file, with the
 attempt number). Anything that finds a `resetting` slot whose worker has ended treats it as `dirty`
-(`recoverDeadResets`): a `get` that finds no free slot, and every worker before it starts. The start
-time keeps a reused pid (after a reboot, say) from being taken for the dead worker. The attempt
-number survives the recovery, so a reset that keeps dying is quarantined rather than retried forever.
+(`recoverDeadResets`): a `get` that finds no free slot, and every worker before it starts. The token
+keeps a reused pid (after a reboot, say) from being taken for the dead worker: on Linux it is the process's start time
+from `/proc`; on Windows, where reset workers are detached Windows processes and pids are reused quickly, it names the
+process's beacon, a named pipe it listens on while it runs and that is gone the moment it ends, whatever ends it
+(`src/core/lock.ts`, `docs/windows-native.md`). A record without a beacon (an older build's) is judged dead on Windows.
+The attempt number survives the recovery, so a reset that keeps dying is quarantined rather than retried forever.
 
 ## Concurrency: `max_resets`
 
-At most `max_resets` resets run at once (default 2, `~/.arashouse/config.json`; `docs/governor.md`),
+At most `max_resets` resets run at once (default 2, `config.json` in the state home; `docs/governor.md`),
 because a reset is I/O-bound on this laptop. Every reset starts through `beginReset`, which counts
 the `resetting` slots with a live worker under the state lock. A refused worker exits; the running
 ones drain the remaining dirty slots.

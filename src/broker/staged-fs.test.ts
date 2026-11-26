@@ -1,9 +1,10 @@
 // The staged-folder reads on a real filesystem (Linux in CI; Node reports a Windows junction as a symbolic link too).
 
-import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { allowRead, denyRead } from "../core/deny-read.fixture.js";
 import { HostError } from "../host/errors.js";
 import { copyStaged, entryKind, listStaged, readStaged, removeFile, removeStaged } from "./staged-fs.js";
 
@@ -47,13 +48,13 @@ describe("listStaged", () => {
   it.skipIf(process.getuid?.() === 0)("refuses what it cannot look at, rather than failing", async () => {
     await mkdir(join(staged, "locked"));
     await writeFile(join(staged, "locked", "x.js"), "x");
-    await chmod(join(staged, "locked"), 0o000);
+    denyRead(join(staged, "locked"));
     try {
       const listing = await listStaged(staged);
       expect(listing.refused).toEqual(["locked"]);
       expect(listing.files).toEqual([{ path: "Client/a.js", size: 1 }]);
     } finally {
-      await chmod(join(staged, "locked"), 0o700);
+      allowRead(join(staged, "locked"));
     }
   });
 

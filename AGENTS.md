@@ -24,7 +24,7 @@ So a reset may run at return time, in the background, or lazily before the next 
 - `src/core/`: flavors, names, guards, state, lease logic. Pure; no I/O to Windows.
 - `src/host/`: the host-driver contract, the fake driver, the broker client.
 - `src/broker/`: the Windows side (`arashouse-broker`, the admin service).
-- `src/cli/`: the WSL CLI (`arashouse`).
+- `src/cli/`: the CLI (`arashouse`), which runs on Windows; in WSL, `arashouse` is the launcher in `src/launcher/`.
 - `spike/`: PowerShell scripts for the captain-assisted slice 0 sittings.
 - `docs/`: design notes, spike record, runbook.
 - `test/`: vitest tests (`src/**/*.test.ts` also run).

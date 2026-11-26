@@ -15,10 +15,11 @@ in SQL Server.
 
 ## Running it
 
-1. From WSL, in the arashouse checkout, after `npm run build`:
+1. With an arashouse build (`npm run build`), natively from a PowerShell or from WSL (where `arashouse` is the
+   launcher of the same build, `docs/windows-native.md`):
 
    ```
-   node dist/cli/index.js setup-sql            # or `arashouse setup-sql`; --out <dir> writes elsewhere
+   node <arashouse>\dist\cli\index.js setup-sql     # or `arashouse setup-sql` from WSL; --out <dir> writes elsewhere
    ```
 
    It writes `setup-sql.ps1` to `%TEMP%\arashouse-setup-sql\` on Windows and prints the commands below.
@@ -31,7 +32,7 @@ in SQL Server.
    powershell -NoProfile -ExecutionPolicy Bypass -File "<dir>\setup-sql.ps1" -Uninstall [-Apply] # drop it all again (below)
    ```
 
-3. From WSL: `arashouse doctor`. The `sql` and `sql login` checks should pass. `sql login` needs a broker built
+3. As the worker, unelevated: `arashouse doctor`. The `sql` and `sql login` checks should pass. `sql login` needs a broker built
    from ticket 22 or later (`setup-host.ps1 -UpdateBroker`, `docs/setup.md`): an older broker does not report its
    login's roles, and the check warns.
 

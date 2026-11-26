@@ -6,7 +6,8 @@ config files and its stamp. Destroying a slot removes exactly what its names der
 
 ## Running it
 
-From WSL, with the broker installed (`docs/setup.md`), SQL set up (`docs/setup-sql.md`) and the flavor's golden built:
+As the worker user, unelevated (natively, or from WSL through the launcher, `docs/windows-native.md`), with the broker
+installed (`docs/setup.md`), SQL set up (`docs/setup-sql.md`) and the flavor's golden built:
 
 ```
 arashouse provision 12sp9 3      # the pool holds 12sp9-01 to 12sp9-03 afterwards

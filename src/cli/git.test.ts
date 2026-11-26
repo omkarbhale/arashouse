@@ -80,7 +80,7 @@ function deps(store: StateStore, host: GitDeps["host"]): GitDeps {
 
 /** git in the slot's tree, as a holder runs it. */
 function git(...args: string[]): string {
-  return execFileSync("git", ["-C", tree, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+  return execFileSync("git", ["-C", tree, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" } });
 }
 
 describe("gitBaselineOnLease", () => {
@@ -160,7 +160,8 @@ describe("gitBaselineOnLease", () => {
   });
 });
 
-describe("WSL interop failing to start git", () => {
+// Interop exists only from WSL; natively nothing fails that way (and a sh stub does not run on Windows).
+describe.skipIf(process.platform === "win32")("WSL interop failing to start git", () => {
   it("runs git again, as git never ran", async () => {
     const { store, target } = await leased();
     // Fails the first time as interop does on a busy host, then is git.
@@ -175,14 +176,24 @@ describe("WSL interop failing to start git", () => {
 
 describe("selectGitTool", () => {
   it("runs Git for Windows on Windows paths on the host, with the worker's config kept out across interop", () => {
-    const tool = selectGitTool("broker", { WSLENV: "FOO/p" }, "/mnt/c/aras_installations");
+    const tool = selectGitTool("broker", { WSLENV: "FOO/p" }, "/mnt/c/aras_installations", ROOT, "wsl");
     expect(tool.exe).toBe("/mnt/c/Program Files/Git/cmd/git.exe");
     expect(tool.path(`${ROOT}\\slots\\23\\01\\Innovator`)).toBe(`${ROOT}\\slots\\23\\01\\Innovator`);
     expect(tool.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "NUL", WSLENV: "FOO/p:GIT_CONFIG_NOSYSTEM:GIT_CONFIG_GLOBAL:GIT_TERMINAL_PROMPT" });
-    expect(selectGitTool("broker", { ARASHOUSE_WINDOWS_GIT: "/x/git.exe" }, "/r").exe).toBe("/x/git.exe");
-    const fake = selectGitTool("fake", {}, "/r");
-    expect(fake.path(`${ROOT}\\slots\\23\\01`)).toBe("/r/slots/23/01");
+    expect(selectGitTool("broker", { ARASHOUSE_WINDOWS_GIT: "/x/git.exe" }, "/r", ROOT, "wsl").exe).toBe("/x/git.exe");
+    const fake = selectGitTool("fake", {}, join(dir, "r"));
+    expect(fake.path(`${ROOT}\\slots\\23\\01`)).toBe(join(dir, "r", "slots", "23", "01"));
     expect(() => fake.path("D:\\elsewhere")).toThrow(/not under/);
+  });
+
+  it("natively runs git.exe from the PATH, else its install folder, with no WSLENV", () => {
+    const tool = selectGitTool("broker", { WSLENV: "FOO/p", PATH: "" }, "C:\\aras_installations", ROOT, "windows");
+    expect(tool.exe).toBe("C:\\Program Files\\Git\\cmd\\git.exe");
+    expect(tool.env).toEqual({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "NUL", GIT_TERMINAL_PROMPT: "0" });
+    // A git.exe the WSL launcher named through its mount is the drive path itself.
+    expect(selectGitTool("broker", { ARASHOUSE_WINDOWS_GIT: "/mnt/d/tools/git.exe", ARASHOUSE_WSL_DISTRO: "Ubuntu" }, "C:\\r", ROOT, "windows").exe).toBe("D:\\tools\\git.exe");
+    expect(selectGitTool("broker", { ARASHOUSE_WINDOWS_GIT: "D:\\git\\git.exe" }, "C:\\r", ROOT, "windows").exe).toBe("D:\\git\\git.exe");
+    expect(selectGitTool("fake", {}, "C:\\r", ROOT, "windows").env).toMatchObject({ GIT_CONFIG_GLOBAL: "NUL" });
   });
 });
 

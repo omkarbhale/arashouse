@@ -1,5 +1,5 @@
 // Ticket 43 on the real host: a leaseholder takes code, data and a package out of a leased slot, returns it, and the
-// copies outlive the reset. Run from WSL, non-elevated, by test/host/extract-12sp9.test.ts (ARASHOUSE_TEST_EXTRACT=1);
+// copies outlive the reset. Run natively on Windows or from WSL, non-elevated, by test/host/extract-12sp9.test.ts (ARASHOUSE_TEST_EXTRACT=1);
 // every step is recorded in `<out>/extract.json` and `.log` for docs/extract.md.
 //
 // It drives the built CLI (`dist/`) as a worker would. The slot is changed only as a leaseholder can (test/host/
@@ -14,14 +14,14 @@ import { join } from "node:path";
 import { redact } from "../../src/core/redact.js";
 import { Secret } from "../../src/core/secret.js";
 import type { FlavorKey } from "../../src/core/flavors.js";
-import { BrokerHost, interopTransport } from "../../src/host/index.js";
+import { BrokerHost } from "../../src/host/index.js";
+import { ROOT_LOCAL, transport } from "./local.js";
 import { isHostError } from "../../src/host/errors.js";
 import { repoRoot } from "../helpers.js";
 import { ArasClient, isNoItems, newItemId } from "./aras-client.js";
 import { denyListPrints, methodCode } from "./e2e-cycle.js";
 
 const CLI = join(repoRoot, "dist/cli/index.js");
-const ROOT_WSL = "/mnt/c/aras_installations";
 const ROOT_WIN = "C:\\aras_installations";
 const REMINDER = /^Returning slot [a-z0-9]+-\d{2}\. Its state will be discarded; anything you want to keep must already be out\.$/m;
 
@@ -100,11 +100,11 @@ export async function runExtractCycle(options: ExtractOptions): Promise<StepReco
     const run = await cli(["status", "--json"]);
     return (JSON.parse(run.stdout) as { slots: { slot: string; status: string; extracted: boolean | null; quarantine_reason: string | null }[] }).slots.find((r) => r.slot === slot);
   };
-  const host = new BrokerHost(interopTransport({ node: process.env.ARASHOUSE_WINDOWS_NODE || undefined }));
-  const transport = interopTransport({ node: process.env.ARASHOUSE_WINDOWS_NODE || undefined });
+  const host = new BrokerHost(transport());
+  const brokerCalls = transport();
   /** A request straight to the broker, past `BrokerHost`'s WSL-side guards: the broker must refuse it on its own. */
   const raw = async (slot: unknown, args: Record<string, unknown>): Promise<string> => {
-    const answer = (await transport.call({ id: `extract-${tag}-${randomBytes(2).toString("hex")}`, verb: "backupDatabase", slot: slot as never, args }, 60_000)) as {
+    const answer = (await brokerCalls.call({ id: `extract-${tag}-${randomBytes(2).toString("hex")}`, verb: "backupDatabase", slot: slot as never, args }, 60_000)) as {
       ok: boolean;
       error?: { kind: string; message: string };
     };
@@ -155,8 +155,8 @@ export async function runExtractCycle(options: ExtractOptions): Promise<StepReco
     const dirt = await aras.apply(token, `<Item type="Method" action="${methodName}"><mode>dirt</mode><tag>${tag}</tag></Item>`);
     must("the Method writes a file into Innovator\\Client (and the rest of its dirt)", dirt.ok, dirt.ok ? "written" : dirt.fault ?? "");
     const clientName = `arashouse-e2e-${tag}.txt`;
-    const clientFile = join(ROOT_WSL, "slots", flavor, nn, "Innovator", "Client", clientName);
-    must("the changed Client file reads back from WSL", existsSync(clientFile), clientFile.slice(ROOT_WSL.length));
+    const clientFile = join(ROOT_LOCAL, "slots", flavor, nn, "Innovator", "Client", clientName);
+    must("the changed Client file reads back from WSL", existsSync(clientFile), clientFile.slice(ROOT_LOCAL.length));
 
     // ---- extract: code, data, a package ---------------------------------------------------------------------------
     const codeOut = join(out, "code");
@@ -176,7 +176,7 @@ export async function runExtractCycle(options: ExtractOptions): Promise<StepReco
     const header = bakBytes.subarray(0, 4).toString("ascii");
     const holdsPart = bakBytes.includes(Buffer.from(partNumber, "utf16le"));
     check("extract db: a SQL Server backup that holds the lease's Part", header === "TAPE" && holdsPart, `${(bakBytes.length / 1024 / 1024).toFixed(1)} MB, header ${header}, the Part's number ${holdsPart ? "found" : "missing"} in it`);
-    const staged = join(ROOT_WSL, "staging", leaseId);
+    const staged = join(ROOT_LOCAL, "staging", leaseId);
     check("extract db: the staged copy is deleted", !existsSync(staged), existsSync(staged) ? `${readdirSync(staged).join(", ")} left` : "staging\\<lease_id> gone");
 
     const pkgOut = join(out, "package-out");
@@ -222,7 +222,7 @@ export async function runExtractCycle(options: ExtractOptions): Promise<StepReco
       row = await rowOf(slot);
     }
     must("the returned slot is reset", row?.status === "free", `${slot} ${row?.status} after ${((Date.now() - started) / 1000).toFixed(1)} s${row?.quarantine_reason ? `: ${row.quarantine_reason}` : ""}`, Date.now() - started);
-    check("the Client file is gone from the slot", !existsSync(clientFile), clientFile.slice(ROOT_WSL.length));
+    check("the Client file is gone from the slot", !existsSync(clientFile), clientFile.slice(ROOT_LOCAL.length));
     const health = await host.healthCheck({ flavor, slot: Number(nn) });
     check("the slot's health check passes (tree, marker and stamp from golden)", health.ok, health.detail);
     const again = await cli(["get", flavor, "--holder", `extract-43-${tag}-b`, "--json", "--wait", "600"]);

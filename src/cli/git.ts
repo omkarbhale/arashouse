@@ -2,14 +2,16 @@
 // `git-baseline`. The repository's first commit is the slot's `Innovator\` tree exactly as handed over (after the
 // restore, the code deploys and the imports), so `git status` and `git diff` show only what the holder changed.
 //
-// git runs as the worker, never as the broker: on the host it is Git for Windows through interop (reading the tree
-// through `/mnt/c` takes minutes; git.exe reads it natively, with the worker's read grant on `slots\`). It makes the
+// git runs as the worker, never as the broker: on the host it is Git for Windows (natively, or through interop from WSL,
+// where reading the tree through `/mnt/c` would take minutes; git.exe reads it natively, with the worker's read grant on
+// `slots\`). It makes the
 // repository in `<root>\staging\<lease_id>\code\<n>` with the slot's `Innovator\` as its work tree: the generated
 // `.gitignore` (src/core/git-baseline.ts), one commit by a fixed identity, the objects in one pack. Then the broker's
 // `deployCode` (ticket 40) puts `.git\` and `.gitignore` into `Innovator\`, with the guards it has for anything the
 // worker stages. The lease record gets `git: <commit>`. The reset's mirror removes both (ticket 30).
 
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, lstat, mkdir, readdir, rm, rmdir, writeFile } from "node:fs/promises";
 import { join, win32 } from "node:path";
 import {
@@ -32,11 +34,24 @@ import { redact } from "../core/redact.js";
 import type { StateStore } from "../core/store.js";
 import type { HostDriver } from "../host/driver.js";
 import { isHostError } from "../host/errors.js";
+import { SIDE, callerPath, toLocal, type Side } from "../host/platform.js";
 import { nextIndex, type PlannedSource } from "./code.js";
 
-/** Where Git for Windows is, as WSL runs it; `ARASHOUSE_WINDOWS_GIT` overrides it. */
-export const DEFAULT_WINDOWS_GIT = "/mnt/c/Program Files/Git/cmd/git.exe";
+/** Where Git for Windows installs its `git.exe`, as a Windows path; `ARASHOUSE_WINDOWS_GIT` overrides it. */
+export const WINDOWS_GIT_INSTALL = "C:\\Program Files\\Git\\cmd\\git.exe";
+/** Where Git for Windows is, as WSL runs it. */
+export const DEFAULT_WINDOWS_GIT = toLocal(WINDOWS_GIT_INSTALL, "wsl");
 export const WINDOWS_GIT_ENV = "ARASHOUSE_WINDOWS_GIT";
+
+/** `git.exe` on the PATH natively (a folder that holds it), else its install folder; from WSL, the install through its mount. */
+export function defaultWindowsGit(env: NodeJS.ProcessEnv, side: Side = SIDE): string {
+  if (side !== "windows") return DEFAULT_WINDOWS_GIT;
+  const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
+  for (const dir of (pathKey === undefined ? "" : (env[pathKey] ?? "")).split(";")) {
+    if (dir.trim() !== "" && existsSync(win32.join(dir.trim(), "git.exe"))) return win32.join(dir.trim(), "git.exe");
+  }
+  return WINDOWS_GIT_INSTALL;
+}
 /** The git the fake host's baseline runs (the tests'): `git` on the PATH unless `ARASHOUSE_GIT` names one. */
 export const GIT_ENV = "ARASHOUSE_GIT";
 
@@ -64,12 +79,18 @@ function localOf(root: string, localRoot: string, windowsPath: string): string {
 }
 
 /**
- * The git a baseline runs: on the host (the broker), Git for Windows given Windows paths; with the fake host, the local
- * git given the local paths, so the tests run the same commands on a tree under `localRoot`.
+ * The git a baseline runs: on the host (the broker), Git for Windows given Windows paths (across interop from WSL); with
+ * the fake host, the local git given the local paths, so the tests run the same commands on a tree under `localRoot`.
  */
-export function selectGitTool(kind: "fake" | "broker", env: NodeJS.ProcessEnv, localRoot: string, root: string = DEFAULT_INSTALL_ROOT): GitTool {
-  if (kind === "broker") return { exe: env[WINDOWS_GIT_ENV]?.trim() || DEFAULT_WINDOWS_GIT, path: (p) => p, env: isolated("NUL", env, true) };
-  return { exe: env[GIT_ENV]?.trim() || "git", path: (p) => localOf(root, localRoot, p), env: isolated("/dev/null", env, false) };
+export function selectGitTool(kind: "fake" | "broker", env: NodeJS.ProcessEnv, localRoot: string, root: string = DEFAULT_INSTALL_ROOT, side: Side = SIDE): GitTool {
+  const nullDevice = side === "windows" ? "NUL" : "/dev/null";
+  if (kind === "broker") {
+    const named = env[WINDOWS_GIT_ENV]?.trim();
+    // A path the WSL launcher passed on (`/mnt/c/...`) is the drive path natively.
+    const exe = named ? (side === "windows" ? callerPath(named, { env, side }) : named) : defaultWindowsGit(env, side);
+    return { exe, path: (p) => p, env: isolated("NUL", env, side !== "windows") };
+  }
+  return { exe: env[GIT_ENV]?.trim() || "git", path: (p) => localOf(root, localRoot, p), env: isolated(nullDevice, env, false) };
 }
 
 export class GitError extends Error {
@@ -112,7 +133,7 @@ export async function checkGitTool(tool: GitTool, env: NodeJS.ProcessEnv): Promi
   try {
     await runGit(tool, ["--version"], env);
   } catch {
-    throw new GitError(`git could not be run (${tool.exe}); install Git for Windows, or set ${WINDOWS_GIT_ENV} to its git.exe as WSL sees it`);
+    throw new GitError(`git could not be run (${tool.exe}); install Git for Windows, or set ${WINDOWS_GIT_ENV} to its git.exe`);
   }
 }
 

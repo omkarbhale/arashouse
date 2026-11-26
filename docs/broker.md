@@ -6,21 +6,25 @@ The CLI side is `BrokerHost` (`src/host/broker-host.ts`), which implements the h
 (`docs/host-driver.md`).
 
 ```
-WSL                                    Windows
-arashouse ── BrokerHost ── spawn ──▶ node.exe <root>\broker\app\broker\client.js
-                 ▲  stdout (JSON)        │ + token from <root>\broker\client.token
-                 └───────────────────────┤
-                                         ▼ \\.\pipe\arashouse-broker
-                                     arashouse-broker (service): guards ─▶ verb ─▶ audit line
+Windows (the worker user): natively, and the Windows process the WSL launcher starts
+arashouse ── BrokerHost ── pipeTransport: callBroker in this process
+                              │ + token from <root>\broker\client.token
+                              ▼ \\.\pipe\arashouse-broker
+                          arashouse-broker (service): guards ─▶ verb ─▶ audit line
+
+WSL (code that runs in WSL itself: the WSL-side tests and host suites)
+arashouse ── BrokerHost ── spawn ──▶ node.exe <root>\broker\app\broker\client.js ──▶ the same pipe
+                 ▲  stdout (JSON)        │ + token, read on the Windows side
+                 └───────────────────────┘
 ```
 
 ## Verbs
 
-The verb list is the host-driver method list (`HOST_METHODS`), plus `storeLicence` and `storeOotbRoot`, which no WSL caller sends
+The verb list is the host-driver method list (`HOST_METHODS`), plus `storeLicence` and `storeOotbRoot`, which the CLI never sends
 (`HOST_SIDE_VERBS`); there is no verb that runs a command, SQL or a path the client chose. A request names its target as a slot record `{ flavor, slot }` or a flavor.
 The broker derives every name and path from it and runs the guards (`assertSlotOwned` or
-`assertFlavorOwned`, `src/host/owned.ts`) before the verb runs. `BrokerHost` runs the same guards on the
-WSL side first, so a refused name is never sent.
+`assertFlavorOwned`, `src/host/owned.ts`) before the verb runs. `BrokerHost` runs the same guards in the
+CLI's process first, so a refused name is never sent.
 
 | verb | target | what it does | ticket |
 |---|---|---|---|
@@ -56,7 +60,7 @@ of quarantining it. A ticket that adds a verb registers it in `src/broker/` the 
 
 `src/broker/protocol.ts`. One JSON line each way, then the connection ends.
 
-- Request (stdin of the client): `{ "id", "verb", "slot"? | "flavor"?, "args"? }`. `id` is 1 to 64
+- Request (`callBroker`'s argument; on stdin of the client script): `{ "id", "verb", "slot"? | "flavor"?, "args"? }`. `id` is 1 to 64
   letters, digits or `-` (BrokerHost sends a UUID). Any other field is refused. `args` is a verb's own
   object; a verb that takes none refuses any.
 - On the pipe the client wraps it: `{ "v": 1, "token", "request" }`.
@@ -81,15 +85,34 @@ its stdin was unusable.
 
 On a loaded host WSL sometimes cannot set up the interop channels for `node.exe` and prints its own error instead
 (`<3>WSL (<pid> - ) ERROR: UtilAcceptVsock:273: accept4 failed 110`, exit 1; ticket 38). `node.exe` never ran, so the
-request never left WSL. The transport (`src/host/broker-transport.ts`, `isInteropStartFailure`) starts it again, up to
-3 starts in all, 1 s and then 2 s apart, before answering `Unreachable` (ticket 56). It does so only when stdout is
-empty, stderr carries WSL's vsock error line and no line of the client's own: a client that ran may have handed the
-request to the broker, and a verb must not run twice. A retried start carries the same request id.
+request never left WSL. The interop transport (`src/host/broker-transport.ts`, `isInteropStartFailure`) starts it
+again, up to 3 starts in all, 1 s and then 2 s apart, before answering `Unreachable` (ticket 56). It does so only when
+stdout is empty, stderr carries WSL's vsock error line and no line of the client's own: a client that ran may have
+handed the request to the broker, and a verb must not run twice. A retried start carries the same request id. The pipe
+transport starts no process, so it has no such failure; from WSL the launcher retries its own `node.exe` start by the
+same rule (`docs/windows-native.md`).
 
 ## Transport, and why
 
-Measured from WSL to the Windows Node v24.13.0, 20 runs each, wall time including process start.
-Ticket 09 (the spike record) measured the options; this ticket measured the built client.
+`brokerTransport` (`src/host/broker-transport.ts`) picks by the side the CLI runs on.
+
+- **Natively on Windows: `pipeTransport`.** The broker client's `callBroker` runs in the CLI's own process: it reads the
+  token from `<root>\broker\client.token` as the worker user, wraps the request and sends it down the pipe. No process
+  is started, and the token never leaves the process. A token file this user cannot read (another account, or no broker
+  installed) or a pipe that does not answer is `Unreachable` (exit 6). `ARASHOUSE_BROKER_TOKEN_FILE` names another token
+  file; the tests point it at a missing one. This is every pool call now, the WSL launcher's included: the Windows
+  process it starts calls the pipe. Measured on the host (2026-11-26, `ping`, read-only, against the installed broker):
+  **median 3.9 ms** natively in-process over 20 calls, against **183 ms** from WSL through `node.exe` and interop over
+  10 (`docs/windows-native.md`).
+- **From WSL: `interopTransport`**, for code that still runs in WSL itself (the WSL-side tests and host suites, or a
+  WSL CLI with no Windows Node, which then cannot start it either). It starts the Windows `node.exe`
+  (`ARASHOUSE_WINDOWS_NODE`) on the client script, writes the request on its stdin and reads the response from its
+  stdout; the client adds the token on the Windows side, so no secret crosses to WSL. The setup scripts ping the broker
+  through the same client script.
+
+The measurements below chose that interop path, before arashouse ran on Windows: from WSL to the Windows Node
+v24.13.0, 20 runs each, wall time including process start. Ticket 09 (the spike record) measured the options; this
+ticket measured the built client.
 
 | call | median | p90 | range |
 |---|---|---|---|
@@ -123,9 +146,10 @@ it read but not write. The broker therefore opens the pipe with `writableAll` an
 - At each start the broker makes 32 random bytes and writes them to `<root>\broker\client.token`. Ticket 21
   gives `<root>\broker\` an ACL of SYSTEM and the broker account (modify) and the worker user (read). The
   worker user can read the code under `<root>\broker\app\` but never change it, since the service runs it.
-- The client, running as the worker user on Windows, reads the token and puts it in the envelope. The broker
-  compares it in constant time (`src/broker/token.ts`) and refuses anything else, auditing it as
-  `unauthorised`. The token never crosses to WSL, an argument list or a log, and it is a `Secret`
+- The client (`callBroker`, in the native CLI's process or in the client script), running as the worker user on
+  Windows, reads the token and puts it in the envelope. The broker compares it in constant time
+  (`src/broker/token.ts`) and refuses anything else, auditing it as `unauthorised`. The token never leaves that
+  process: never to WSL, an argument list, the environment or a log, and it is a `Secret`
   (`broker-token`), so `redact` replaces it wherever it would appear.
 - So exactly the principals the planned DACL named (the worker user and SYSTEM), plus the broker itself, can
   make a request. Another local user, or a remote SMB client that the Everyone ACE would admit, cannot read

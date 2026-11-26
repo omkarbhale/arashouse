@@ -1,6 +1,6 @@
 // Ticket 53's proof on the real host (test/host/git-baseline-proof.ts, docs/git-baseline.md): a git baseline of a lease
 // of each flavor, clean after it has served, recycled and restarted, an edit as exactly the diff, and gone after the
-// reset. It takes leases of the pool, so it runs only when asked: ARASHOUSE_TEST_GIT=1, from WSL, with Git for Windows,
+// reset. It takes leases of the pool, so it runs only when asked: ARASHOUSE_TEST_GIT=1, natively on Windows (or from WSL, through the launcher), with Git for Windows,
 // a free slot of each flavor proved, the licences stored, `npm run build` done, and:
 //   ARASHOUSE_HOME          the pool's state folder (the CLI's)
 //   ARASHOUSE_GIT_OUT       a folder outside the worktree for the record and the overlays

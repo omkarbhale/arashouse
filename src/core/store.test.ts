@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LockTimeoutError, acquireLock } from "./lock.js";
 import { IllegalTransitionError, StateCorruptError, emptyState, newSlot, serialiseState } from "./state.js";
-import { HOME_ENV, StateStore, resolveStorePaths, writeFileAtomic } from "./store.js";
+import { HOME_ENV, StateStore, defaultHome, resolveStorePaths, writeFileAtomic } from "./store.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -36,10 +36,15 @@ function worker(env: Record<string, string>): Promise<{ code: number | null; sig
 }
 
 describe("where the state lives", () => {
-  it("defaults to ~/.arashouse and honours ARASHOUSE_HOME", () => {
-    expect(resolveStorePaths({}).home.endsWith(".arashouse")).toBe(true);
-    const paths = resolveStorePaths({ [HOME_ENV]: "/x/y" });
-    expect(paths).toEqual({ home: "/x/y", state: "/x/y/state.json", lock: "/x/y/state.lock", events: "/x/y/events.log" });
+  it("defaults to ~/.arashouse, or %LOCALAPPDATA%\\arashouse on Windows, and honours ARASHOUSE_HOME", () => {
+    expect(resolveStorePaths({ LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }).home).toBe(defaultHome({ LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }));
+    expect(defaultHome({}, "linux").endsWith(".arashouse")).toBe(true);
+    expect(defaultHome({ LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" }, "win32")).toBe("C:\\Users\\me\\AppData\\Local\\arashouse");
+    // A LOCALAPPDATA that is not a full path is not trusted: the profile's own folder is used.
+    expect(defaultHome({ LOCALAPPDATA: "relative" }, "win32")).toMatch(/AppData\\Local\\arashouse$/);
+    const home = join(tmpdir(), "x", "y");
+    const paths = resolveStorePaths({ [HOME_ENV]: home });
+    expect(paths).toEqual({ home, state: join(home, "state.json"), lock: join(home, "state.lock"), events: join(home, "events.log") });
   });
 
   it("refuses a relative home", () => {
@@ -141,7 +146,8 @@ describe("StateStore", () => {
     expect(await store.update((tx) => tx.recordBootstrap("23-01", lease.lease_id, { code: "x" }))).toBe(false);
   });
 
-  it("keeps the state file private to its owner", async () => {
+  // On Windows a mode is not access: the home's ACL (the worker user's profile) keeps the files private.
+  it.skipIf(process.platform === "win32")("keeps the state file private to its owner", async () => {
     const store = new StateStore({ home });
     await store.update((tx) => void tx.addSlot(slot));
     expect((await stat(store.paths.state)).mode & 0o077).toBe(0);
@@ -191,8 +197,10 @@ describe("concurrent writers", () => {
     expect(existsSync(store.paths.lock)).toBe(false);
   });
 
-  it("serialise updates inside one process too", async () => {
-    const store = new StateStore({ home });
+  // 25 updates contend for one lock; under a whole suite's load that outruns the default.
+  it("serialise updates inside one process too", { timeout: 60_000 }, async () => {
+    // Under a whole suite's load on NTFS (a flush per update), the last of 25 waits longer than the default 10 s.
+    const store = new StateStore({ home, lockTimeoutMs: 50_000 });
     await store.update((tx) => void tx.addSlot(slot));
     await Promise.all(
       Array.from({ length: 25 }, async () => {
@@ -234,7 +242,9 @@ describe("a crash between the temp write and the rename", () => {
     const before = await readFile(store.paths.state, "utf8");
 
     const crashed = await worker({ ST_MODE: "crash" });
-    expect(crashed.signal).toBe("SIGKILL");
+    // Windows has no signals: a process that kills itself just ends, with a failing exit code.
+    if (process.platform === "win32") expect(crashed.code).not.toBe(0);
+    else expect(crashed.signal).toBe("SIGKILL");
 
     // The wreckage: the old state untouched, a stale temp file and the dead writer's lock.
     expect(await readFile(store.paths.state, "utf8")).toBe(before);

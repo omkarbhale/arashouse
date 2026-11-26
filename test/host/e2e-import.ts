@@ -1,5 +1,5 @@
 // Ticket 41's host proof (docs/import.md): `get --import` onto a real lease of each flavor, with import-export-libs-js.
-// Run from WSL, non-elevated, by test/host/e2e-import.test.ts (ARASHOUSE_TEST_IMPORT=1); every step is a line in
+// Run natively on Windows or from WSL, non-elevated, by test/host/e2e-import.test.ts (ARASHOUSE_TEST_IMPORT=1); every step is a line in
 // `<out>/import-<flavor>.log` and `.json`. For each flavor it:
 //   1. leases a slot with `get --import` of libs-js's own `s1-base` fixture for the flavor's engine (`LIBSJS-SCRATCH-BASE`),
 //      then exports that package through `run --lease` and compares the export with what was imported, item by item;
@@ -9,9 +9,9 @@
 //   3. greps the state folder (state, events, logs, lease files) and everything the CLI printed for each lease password.
 // Every password is a Secret from the moment it is read, so `redact` replaces it in each recorded line.
 
+import { poolHome } from "./local.js";
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { getFlavor, type FlavorKey } from "../../src/core/flavors.js";
 import { redact } from "../../src/core/redact.js";
@@ -67,7 +67,7 @@ function itemId(file: string): string | undefined {
 export async function runImportProof(options: ImportProofOptions): Promise<StepRecord[]> {
   const { flavor, out, arasPkg } = options;
   const engine = getFlavor(flavor).libsJsEngine;
-  const home = process.env.ARASHOUSE_HOME || join(homedir(), ".arashouse");
+  const home = poolHome();
   const libsjs = dirname(dirname(arasPkg));
   const tag = newItemId().slice(0, 8);
   const records: StepRecord[] = [];

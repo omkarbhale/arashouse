@@ -49,7 +49,8 @@ describe("loadConfig", () => {
 
 describe("parseConfig", () => {
   it("takes every key over the defaults", () => {
-    const all = { max_active: 5, max_resets: 1, min_free_ram_mb: 0, min_free_disk_gb: 50, slots_per_flavor: { "12sp9": 1, "23": 1, "35": 1 } };
+    const media = join(tmpdir(), "arashouse-media");
+    const all = { max_active: 5, max_resets: 1, min_free_ram_mb: 0, min_free_disk_gb: 50, slots_per_flavor: { "12sp9": 1, "23": 1, "35": 1 }, media };
     expect(parseConfig(JSON.stringify(all))).toEqual(all);
     expect(parseConfig("{}")).toEqual(DEFAULT_CONFIG);
   });
@@ -64,6 +65,8 @@ describe("parseConfig", () => {
     ["slots_per_flavor as a number", { slots_per_flavor: 3 }, /slots_per_flavor must be an object/],
     ["an unknown flavor", { slots_per_flavor: { "28": 1 } }, /unknown flavor "28"/],
     ["more slots than names allow", { slots_per_flavor: { "23": 100 } }, /slots_per_flavor\.23 must be a whole number from 0 to 99/],
+    ["a relative media folder", { media: "media" }, /media must be the absolute path/],
+    ["media that is not text", { media: 1 }, /media must be the absolute path/],
   ])("refuses %s", (_label, raw, message) => {
     expect(() => parseConfig(JSON.stringify(raw), "/h/config.json")).toThrow(ConfigError);
     expect(() => parseConfig(JSON.stringify(raw), "/h/config.json")).toThrow(message);

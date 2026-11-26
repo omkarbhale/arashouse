@@ -7,7 +7,7 @@
 // in the report; the logs are in `<home>/logs/`, and none holds a secret.
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { DEFAULT_CODE_SUBPATH } from "../core/code-deploy.js";
 import type { FlavorKey } from "../core/flavors.js";
 import { UsageError, type RestoreRequest } from "../core/lease.js";
@@ -20,7 +20,7 @@ import { assertNoGitTargets, gitBaselineOnLease, type GitOutcome, type GitTool }
 import type { LeaseProbe } from "./host.js";
 import { prepareImports, requireArasPkg, runImports, type ImportDeps, type ImportResult, type PreparedImport } from "./import.js";
 import { resolveRestoreSource } from "./restore.js";
-import { wslPathOf } from "./setup.js";
+import { callerPath } from "../host/platform.js";
 
 /** `--bootstrap @<name>` is `<home>/recipes/<name>.json`. */
 export const RECIPES_FOLDER = "recipes";
@@ -34,14 +34,14 @@ export interface LoadedRecipe {
 }
 
 /** The recipe file `spec` names: `@<name>` in `<home>/recipes/`, a Windows drive path, or a path from `cwd`. */
-export function recipePath(spec: string, home: string, cwd: string = process.cwd()): string {
+export function recipePath(spec: string, home: string, cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
   if (spec.startsWith("@")) {
     const name = spec.slice(1);
     if (!RECIPE_NAME.test(name)) throw new UsageError(`--bootstrap ${spec.slice(0, 80)}: a recipe name is letters, digits, '.', '_' and '-'`);
     return join(home, RECIPES_FOLDER, `${name}.json`);
   }
   if (spec.trim() === "") throw new UsageError("--bootstrap needs a recipe file, or @<name> for one in the recipes folder");
-  return /^[A-Za-z]:[\\/]/.test(spec) ? wslPathOf(spec.replace(/\//g, "\\")) : resolve(cwd, spec);
+  return callerPath(spec, { cwd, env });
 }
 
 export async function loadRecipe(spec: string, home: string, cwd?: string): Promise<LoadedRecipe> {

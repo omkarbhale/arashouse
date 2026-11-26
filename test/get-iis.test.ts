@@ -1,24 +1,11 @@
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import { powershellAdminProbe } from "../src/broker/admin-probe.js";
 import { PS_IIS } from "../src/broker/ps-common.js";
 import { redact } from "../src/core/redact.js";
-
-function findPowerShell(): string | undefined {
-  const probe = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
-  return probe.status === 0 ? "powershell.exe" : undefined;
-}
-const ps = findPowerShell();
-const describeWithPs = ps ? describe : describe.skip;
+import { describeOnWindowsHost, runPs as runPsArgs } from "./powershell.js";
 
 function runPs(script: string): { out: string; code: number | null } {
-  const encoded = Buffer.from(script, "utf16le").toString("base64");
-  const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
-    encoding: "utf8",
-    cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
-  });
-  return { out: r.stdout, code: r.status };
+  return runPsArgs(["-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]);
 }
 
 // A stand-in for IIS's assembly, in a temp folder that `$env:windir` points at inside the one PowerShell process of a
@@ -50,7 +37,7 @@ Set-Content -LiteralPath (Join-Path $withConfig 'config\applicationHost.config')
 $base
 `;
 
-describeWithPs("Get-Iis under Windows PowerShell", { timeout: 120_000 }, () => {
+describeOnWindowsHost("Get-Iis under Windows PowerShell", { timeout: 120_000 }, () => {
   let base = "";
   let identity = "";
   let administrator = "";

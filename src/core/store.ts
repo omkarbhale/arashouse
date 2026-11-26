@@ -1,11 +1,13 @@
-// The state store: `~/.arashouse/state.json` under an exclusive lock, written atomically, with an
-// append-only event log. No daemon: every command takes the lock, reads, changes and writes back.
+// The state store: `<home>/state.json` under an exclusive lock, written atomically, with an
+// append-only event log. No daemon: every command takes the lock, reads, changes and writes back. The home is
+// `%LOCALAPPDATA%\arashouse` on Windows (one per machine and worker user, on NTFS: every Windows copy of arashouse
+// shares it) and `~/.arashouse` elsewhere.
 
 import { randomBytes } from "node:crypto";
 import { appendFile, mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
-import { acquireLock, isProcessAlive, type LockEvent, type LockInfo } from "./lock.js";
+import { basename, dirname, isAbsolute, join, win32 } from "node:path";
+import { BUSY_SHORT_MS, acquireLock, isPidAlive, isProcessAlive, retryBusy, type LockEvent, type LockInfo } from "./lock.js";
 import type { SlotRef } from "./names.js";
 import {
   type BootstrapInfo,
@@ -32,10 +34,20 @@ export interface StorePaths {
   readonly events: string;
 }
 
-/** `$ARASHOUSE_HOME`, else `~/.arashouse`. Always absolute, and never inside a worktree by default. */
+/**
+ * The state's home when `ARASHOUSE_HOME` is not set: `%LOCALAPPDATA%\arashouse` on Windows (the profile's ACL keeps it
+ * the worker user's, and it is the same for every copy of arashouse on the machine); `~/.arashouse` elsewhere.
+ */
+export function defaultHome(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return join(homedir(), ".arashouse");
+  const local = env.LOCALAPPDATA?.trim();
+  return win32.join(local !== undefined && win32.isAbsolute(local) ? local : win32.join(homedir(), "AppData", "Local"), "arashouse");
+}
+
+/** `$ARASHOUSE_HOME`, else `defaultHome`. Always absolute, and never inside a worktree by default. */
 export function resolveStorePaths(env: NodeJS.ProcessEnv = process.env): StorePaths {
   const override = env[HOME_ENV];
-  const home = override !== undefined && override !== "" ? override : join(homedir(), ".arashouse");
+  const home = override !== undefined && override !== "" ? override : defaultHome(env);
   if (!isAbsolute(home)) throw new Error(`${HOME_ENV} must be an absolute path, got "${home}"`);
   return { home, state: join(home, "state.json"), lock: join(home, "state.lock"), events: join(home, "events.log") };
 }
@@ -71,7 +83,10 @@ export interface StoreOptions {
   readonly beforeRename?: (tempPath: string) => void | Promise<void>;
 }
 
-/** Writes `data` to `path` atomically: a temp file in the same directory, `fsync`, then rename. */
+/**
+ * Writes `data` to `path` atomically: a temp file in the same directory, `fsync`, then rename. On Windows the rename
+ * is retried while a reader has `path` open (NTFS will not replace an open file; `status` reads without the lock).
+ */
 export async function writeFileAtomic(
   path: string,
   data: string,
@@ -87,9 +102,9 @@ export async function writeFileAtomic(
       await handle.close();
     }
     await options.beforeRename?.(tmp);
-    await rename(tmp, path);
+    await retryBusy(() => rename(tmp, path));
   } catch (err) {
-    await unlink(tmp).catch(() => undefined);
+    await retryBusy(() => unlink(tmp), { totalMs: BUSY_SHORT_MS }).catch(() => undefined);
     throw err;
   }
   // Make the rename itself durable; not every filesystem lets a directory be synced.
@@ -299,7 +314,7 @@ export class StateStore {
   async read(): Promise<State> {
     let text: string;
     try {
-      text = await readFile(this.paths.state, "utf8");
+      text = await retryBusy(() => readFile(this.paths.state, "utf8"), { totalMs: BUSY_SHORT_MS });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyState(this.now());
       throw err;
@@ -352,7 +367,8 @@ export class StateStore {
         if (!(err instanceof StateCorruptError)) throw err;
       }
       try {
-        await rename(this.paths.state, `${this.paths.state}.corrupt-${this.now().toISOString().replace(/[:.]/g, "-")}`);
+        const aside = `${this.paths.state}.corrupt-${this.now().toISOString().replace(/[:.]/g, "-")}`;
+        await retryBusy(() => rename(this.paths.state, aside));
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
@@ -390,15 +406,15 @@ export class StateStore {
     }
   }
 
-  /** Removes temp files left by a writer that crashed before its rename (their owner pid is gone). */
+  /** Removes temp files left by a writer that crashed before its rename (their owner process is gone). */
   private async sweepTempFiles(): Promise<void> {
     const owned = new Set([basename(this.paths.state), basename(this.paths.lock)]);
     for (const name of await readdir(this.paths.home).catch(() => [] as string[])) {
       const m = /^(.+)\.(\d+)\.[0-9a-f]{12}\.tmp$/.exec(name);
       const pid = m ? Number(m[2]) : NaN;
       if (!m || !owned.has(m[1] ?? "") || pid === this.pid) continue;
-      if (!isProcessAlive({ pid, token: "", acquired_at: "", start_time: null })) {
-        await unlink(join(this.paths.home, name)).catch(() => undefined);
+      if (!isPidAlive(pid)) {
+        await retryBusy(() => unlink(join(this.paths.home, name)), { totalMs: 1_000 }).catch(() => undefined);
       }
     }
   }

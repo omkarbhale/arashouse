@@ -23,8 +23,9 @@ arashouse get 12sp9 --holder my-task --json --code ./build/client --code C:\work
 arashouse deploy-code --lease <lease_id> ./build/client        # onto a lease already held
 ```
 
-- `--code <dir|zip>[:<subpath>]` is repeatable and applied in order. The source is a folder or a `.zip`, a WSL
-  path or a Windows drive path (`C:\...`, read through `/mnt/c`).
+- `--code <dir|zip>[:<subpath>]` is repeatable and applied in order. The source is a folder or a `.zip`: a Windows
+  drive path (`C:\...`) or a relative one, and from WSL a WSL path too (`/mnt/c/x` is `C:\x`; any other is read
+  through `\\wsl.localhost\<distro>\`).
 - `<subpath>` is where the source's top lands in the slot's tree, `/` or `\` separated, default `Innovator`.
   `.` is the top of the tree itself (where `InnovatorServerConfig.xml` is). The last colon splits it off, except
   a drive's colon.
@@ -82,9 +83,8 @@ staged copy:
 1. **Plan, before anything.** The CLI reads each source (a folder walked without following links, or a zip's
    central directory; a damaged zip is refused) and its `deploy.json`, and plans it. A refusal exits 7 before
    `get` takes a lease or anything is staged.
-2. **Stage.** Into `<root>\staging\<lease_id>\code\<n>\` (`/mnt/c/aras_installations/staging/...`; the worker may
-   change `staging\`, ticket 21): only the planned files, and the `deploy.json`. The CLI hashes each file as it
-   stages it.
+2. **Stage.** Into `<root>\staging\<lease_id>\code\<n>\` (the worker may change `staging\`, ticket 21): only the
+   planned files, and the `deploy.json`. The CLI hashes each file as it stages it.
 3. **Apply** (the broker's `deployCode`, under the slot's lock):
    1. the slot's stamp must name the caller's lease (`get` writes it), so a stale caller cannot deploy into a later
       lease of the slot; the staged folder must be exactly `staging\<that lease>\code\<n>`;

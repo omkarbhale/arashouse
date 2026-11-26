@@ -1,16 +1,14 @@
 // `arashouse setup`: writes `setup-host.ps1` (src/core/setup-host.ts) and the broker build it installs to
 // a folder on the Windows side, and says how to run it; the captain runs it once, elevated (ticket 21).
-// Also what `arashouse doctor` reads back from WSL: the script's record, and which folders under the
-// root the worker can list. See docs/setup.md. `arashouse setup-sql` writes `setup-sql.ps1`
+// Also what `arashouse doctor` reads back: the script's record, and which folders under the root the
+// worker can list. See docs/setup.md. `arashouse setup-sql` writes `setup-sql.ps1`
 // (src/core/setup-sql.ts) the same way (ticket 22, docs/setup-sql.md).
 
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { FLAVOR_KEYS, type FlavorKey } from "../core/flavors.js";
 import { UsageError } from "../core/lease.js";
 import { DEFAULT_INSTALL_ROOT, setupRecordFile } from "../core/names.js";
@@ -23,22 +21,9 @@ import {
   type WorkerIdentity,
 } from "../core/setup-host.js";
 import { renderSetupSqlScript } from "../core/setup-sql.js";
+import { defaultRun, toLocal as platformToLocal, type Run } from "../host/platform.js";
 
-const execFileAsync = promisify(execFile);
-
-/** Runs a program and returns its stdout; replaced in tests. */
-export type Run = (file: string, args: string[]) => Promise<string>;
-
-export const defaultRun: Run = async (file, args) =>
-  (
-    await execFileAsync(file, args, {
-      encoding: "utf8",
-      timeout: 30_000,
-      windowsHide: true,
-      // cmd.exe and whoami.exe complain when they start in a \\wsl.localhost folder.
-      cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
-    })
-  ).stdout;
+export type { Run } from "../host/platform.js";
 
 /** The script's file name in the bundle. */
 export const SETUP_SCRIPT_NAME = "setup-host.ps1";
@@ -50,15 +35,15 @@ export const DIST_DIR = fileURLToPath(new URL("../", import.meta.url));
 export const PACKAGE_JSON = fileURLToPath(new URL("../../package.json", import.meta.url));
 
 /**
- * The Windows user WSL interop runs as (`whoami.exe /user`): the worker user the ACLs name. It is the
- * user who runs `arashouse setup`, which is why the command runs from a worker's shell.
+ * The Windows user this process runs as (`whoami.exe /user`; from WSL, the user interop runs as): the worker
+ * user the ACLs name. It is the user who runs `arashouse setup`, which is why the command runs from a worker's shell.
  */
 export async function workerIdentity(run: Run = defaultRun): Promise<WorkerIdentity> {
   let text: string;
   try {
     text = await run("whoami.exe", ["/user", "/fo", "csv", "/nh"]);
   } catch (err) {
-    throw new Error(`cannot ask Windows who the worker user is (whoami.exe through WSL interop): ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`cannot ask Windows who the worker user is (whoami.exe): ${err instanceof Error ? err.message : String(err)}`);
   }
   const m = /^"([^"]+)","(S-1-5-21-[0-9-]+)"\s*$/m.exec(text.replace(/\r/g, ""));
   if (!m) throw new Error("whoami.exe /user did not print a user and an account SID");
@@ -85,7 +70,7 @@ function sha256(data: Buffer): string {
 }
 
 export interface BundleOptions {
-  /** Where to write the bundle (a WSL path to a folder on a Windows drive). */
+  /** Where to write the bundle: a local path to a folder on a Windows drive. */
   readonly outDir: string;
   /** The built `dist\` to install as the broker. */
   readonly distDir: string;
@@ -161,14 +146,6 @@ export async function writeSetupSqlScript(options: { readonly outDir: string; re
   return path;
 }
 
-/** The WSL path of a Windows drive path under the default automount (`C:\x` is `/mnt/c/x`). */
-export function wslPathOf(windowsPath: string): string {
-  const m = /^([A-Za-z]):\\(.*)$/.exec(windowsPath);
-  if (!m) throw new Error(`"${windowsPath}" is not a Windows drive path`);
-  const rest = (m[2] ?? "").split("\\").filter(Boolean).join("/");
-  return `/mnt/${(m[1] as string).toLowerCase()}${rest ? `/${rest}` : ""}`;
-}
-
 /** The flavors whose prerequisites the script checks: those with media in `media/`, or every flavor when none can be told. */
 export async function flavorsToCheck(present: (flavor: FlavorKey) => Promise<boolean | null>): Promise<FlavorKey[]> {
   const found: FlavorKey[] = [];
@@ -183,14 +160,14 @@ function errorCode(err: unknown): string | undefined {
 export interface ObserveOptions {
   /** The install root, as a Windows path. */
   readonly root?: string;
-  /** Turns a Windows path into one this process can open; `wslPathOf` unless a test maps it elsewhere. */
+  /** Turns a Windows path into one this process can open; the platform's unless a test maps it elsewhere. */
   readonly toLocal?: (windowsPath: string) => string;
 }
 
-/** What `arashouse doctor` sees of the setup from WSL: the record, and whether the worker can list each folder. */
+/** What `arashouse doctor` sees of the setup: the record, and whether the worker can list each folder. */
 export async function observeSetup(options: ObserveOptions = {}): Promise<SetupObservation> {
   const root = options.root ?? DEFAULT_INSTALL_ROOT;
-  const toLocal = options.toLocal ?? wslPathOf;
+  const toLocal = options.toLocal ?? ((path: string) => platformToLocal(path));
   const rootExists = existsSync(toLocal(root));
   const access: Partial<Record<RootFolder, "read" | "denied" | "missing">> = {};
   for (const folder of ROOT_FOLDERS) {

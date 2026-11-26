@@ -1,37 +1,14 @@
-import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { repoRoot } from "./helpers.js";
+import { describeWithPs, ps, runPsFile, toHostPath } from "./powershell.js";
 
 const script = join(repoRoot, "scripts/host-tuning.ps1");
 
-/** As in test/spike.test.ts: SPIKE_POWERSHELL, else Windows PowerShell 5.1 from WSL; the script targets Windows, so a Linux pwsh is not enough. */
-function findPowerShell(): string | undefined {
-  const candidates = [process.env.SPIKE_POWERSHELL, "powershell.exe"].filter((c): c is string => Boolean(c));
-  for (const c of candidates) {
-    const probe = spawnSync(c, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
-    if (probe.status === 0) return c;
-  }
-  return undefined;
-}
-
-const ps = findPowerShell();
-const windows = ps?.toLowerCase().endsWith(".exe") ?? false;
-const toHostPath = (p: string) => (windows ? execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim() : p);
-const cwd = windows && existsSync("/mnt/c") ? "/mnt/c" : undefined;
-const describeWithPs = ps ? describe : describe.skip;
-
-function runFile(file: string, args: string[]) {
-  const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", toHostPath(file), ...args], {
-    encoding: "utf8",
-    cwd,
-    timeout: 120_000,
-  });
-  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
-}
+const runFile = runPsFile;
 
 const dir = mkdtempSync(join(tmpdir(), "host-tuning-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

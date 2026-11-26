@@ -5,17 +5,19 @@ captain wants everything gone. It is a dry run by default, and it removes only n
 
 ## Running it
 
-1. From WSL, in the arashouse checkout, after `npm run build`:
+1. As the worker user, unelevated, with an arashouse build (`npm run build`), natively from a PowerShell or from WSL
+   (where `arashouse` is the launcher of the same build, `docs/windows-native.md`):
 
    ```
-   node dist/cli/index.js teardown [--goldens] [--keep-sql] [--remove-root]          # the plan: changes nothing
-   node dist/cli/index.js teardown [--goldens] [--keep-sql] [--remove-root] --yes    # destroys every slot, writes the script
+   arashouse teardown [--goldens] [--keep-sql] [--remove-root]          # the plan: changes nothing
+   arashouse teardown [--goldens] [--keep-sql] [--remove-root] --yes    # destroys every slot, writes the script
    ```
 
-   With `--yes` it first writes the bundle to `%TEMP%\arashouse-teardown\` on Windows (`--out` takes a WSL path to
-   another folder): `teardown.ps1`, `host\` (the setup bundle; teardown runs only its `-Uninstall`) and
-   `sql\setup-sql.ps1`. Then it destroys every slot through the broker, as `destroy` does one, and prints the two
-   commands below with the switches the options map to (`-Goldens`, `-KeepSql`, `-RemoveRoot`).
+   (natively `arashouse` is `node <arashouse>\dist\cli\index.js`). With `--yes` it first writes the bundle to
+   `%TEMP%\arashouse-teardown\` on Windows (`--out` names another folder: a Windows path, or from WSL a WSL path):
+   `teardown.ps1`, `host\` (the setup bundle; teardown runs only its `-Uninstall`) and `sql\setup-sql.ps1`. Then it
+   destroys every slot through the broker, as `destroy` does one, and prints the two commands below with the switches
+   the options map to (`-Goldens`, `-KeepSql`, `-RemoveRoot`).
 2. The captain, in an **elevated** Windows PowerShell (Run as administrator):
 
    ```
@@ -26,7 +28,7 @@ captain wants everything gone. It is a dry run by default, and it removes only n
 The disposability rule holds here as everywhere: whoever holds a lease takes out what they need first. Teardown keeps
 nothing.
 
-## The WSL half (`src/core/teardown.ts`)
+## The CLI's half (`src/core/teardown.ts`)
 
 - **Every slot**: those the state holds, and the orphans the host lists (`listSlots`), so a slot another state home
   made is found too. Each goes through `destroyOne`, the same code as `destroy`, so the record is removed first and
@@ -75,7 +77,7 @@ The steps, in order:
    SQL Server is read only with `LIKE 'arashouse[_]%'` and the two exact login names. Then only derived names are
    kept, so the host's `ah-pp-*` and `arashouse_pp_*` objects, which are not the pool's, are neither listed nor
    touched. With `-Apply`, a kind it cannot read (IIS, SQL Server) stops the run with nothing changed.
-3. **Refusals, before any change.** It refuses while any slot is left: `arashouse teardown --yes` from WSL comes
+3. **Refusals, before any change.** It refuses while any slot is left: `arashouse teardown --yes` (unelevated) comes
    first. With `-Goldens` or `-RemoveRoot` it also refuses while a baseline build has left its throw-away instance
    (`baseline-build.ps1 -Cleanup` removes it, `docs/baselines.md`).
 4. **`-Goldens`.** It removes `golden\<key>` for each flavor that has one. Each path must be under `golden\` and

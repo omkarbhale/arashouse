@@ -2,7 +2,7 @@
 // (Release 35, server 14.35.0.43890, libs-js engine 14.35), twice in a row, with ticket 36's 14.x OAuth checks and the
 // 14.35-only import options (`--batch`, `--collect-errors`, and `--languages` when golden has a language besides `en`).
 // It provisions 35-01 and -02 (and leaves them provisioned and free), so it runs only when asked: ARASHOUSE_TEST_E2E=1,
-// from WSL, with the broker installed, the 35 golden built, the line-14 licence and ootb-root-35 stored, `npm run build`
+// natively on Windows (or from WSL, through the launcher), with the broker installed, the 35 golden built, the line-14 licence and ootb-root-35 stored, `npm run build`
 // done, and the variables of test/host/e2e-12sp9.test.ts:
 //   ARASHOUSE_E2E_OUT       a folder outside the worktree for the record, the export and the scratch package
 //   ARASHOUSE_E2E_ARAS_PKG  libs-js's built CLI (`dist/cli.js`)

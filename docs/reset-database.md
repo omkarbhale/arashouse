@@ -6,7 +6,7 @@ pools (spike 06: that closes Aras's own SQL sessions) and before `resetTree`.
 
 ## What the broker does
 
-`BrokerHost.resetDatabase(slot, backup)` runs the guards on the WSL side (`assertSlotOwned`, and the backup must be
+`BrokerHost.resetDatabase(slot, backup)` runs the guards in the CLI's process (`assertSlotOwned`, and the backup must be
 the slot's flavor and under `golden\<key>\`: `assertGoldenPath`), then sends `{ file, hash }`.
 `src/broker/reset-database.ts` on the broker, under the slot's lock (one provision, destroy, start, stop or database reset per slot
 at a time; a second is `Retryable`):

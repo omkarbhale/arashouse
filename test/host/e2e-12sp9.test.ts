@@ -1,6 +1,6 @@
 // Ticket 35's acceptance on the real host (test/host/e2e-cycle.ts, docs/e2e-12sp9.md): the whole lease cycle for
 // `12sp9`, twice in a row. It provisions 12sp9-01 and -02 (and leaves them provisioned and free), so it runs only when
-// asked: ARASHOUSE_TEST_E2E=1, from WSL, with the broker installed, the 12sp9 golden built, the line-12 licence and
+// asked: ARASHOUSE_TEST_E2E=1, natively on Windows (or from WSL, through the launcher), with the broker installed, the 12sp9 golden built, the line-12 licence and
 // ootb-root-12sp9 stored, `npm run build` done, and:
 //   ARASHOUSE_E2E_OUT       a folder outside the worktree for the record, the export and the scratch package
 //   ARASHOUSE_E2E_ARAS_PKG  libs-js's built CLI (`dist/cli.js`)

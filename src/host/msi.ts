@@ -1,14 +1,14 @@
-// Reads an MSI's Property table through the Windows Installer COM object, via `powershell.exe` from WSL.
+// Reads an MSI's Property table through the Windows Installer COM object, via `powershell.exe`.
 // Read-only and no administrator rights. The probe script emits every property NAME but the VALUE of
 // only the three named in `MSI_VALUE_PROPERTIES`; a value of anything else (a key, a password, a
 // licence, a path) never leaves PowerShell, so it cannot reach a log, a report or an argument list.
 
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
 import { copyFile, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { MsiProperties, MsiReader } from "../core/media-check.js";
+import { SIDE, powershellEnv, runCwd, tempDir, windowsPathOf, type Side } from "./platform.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -82,8 +82,10 @@ export interface MsiReaderOptions {
   run?: (file: string, args: string[]) => Promise<string>;
   /** Milliseconds before the probe is given up on. */
   timeoutMs?: number;
-  /** WSL path of a folder on a Windows drive, where an MSI on the WSL filesystem is staged; defaults to the Windows temp folder. */
+  /** A local folder on a Windows drive, where an MSI on the WSL filesystem is staged; defaults to the Windows temp folder. */
   windowsTemp?: string;
+  /** Which side this process is; defaults to this process's. */
+  side?: Side;
 }
 
 type Run = (file: string, args: string[]) => Promise<string>;
@@ -94,30 +96,33 @@ async function defaultRun(file: string, args: string[], timeoutMs: number): Prom
     timeout: timeoutMs,
     maxBuffer: 16 * 1024 * 1024,
     windowsHide: true,
-    // cmd.exe complains when it starts in a \\wsl.localhost folder.
-    cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined,
+    cwd: runCwd(),
+    env: powershellEnv(),
   });
   return stdout;
 }
 
-/** The Windows temp folder as a WSL path (`/mnt/c/Users/<you>/AppData/Local/Temp`). */
-export async function windowsTempDir(run: Run = (file, args) => defaultRun(file, args, 30_000)): Promise<string> {
-  const windowsTemp = (await run("cmd.exe", ["/c", "echo %TEMP%"])).trim();
-  if (!/^[A-Za-z]:\\/.test(windowsTemp)) throw new MsiReadError("cannot find the Windows temp folder through cmd.exe");
-  return (await run("wslpath", ["-u", windowsTemp])).trim();
+/** The Windows temp folder as this process opens it (`os.tmpdir()` natively, `/mnt/c/Users/<you>/AppData/Local/Temp` from WSL). */
+export async function windowsTempDir(run: Run = (file, args) => defaultRun(file, args, 30_000), side: Side = SIDE): Promise<string> {
+  try {
+    return await tempDir(side, run);
+  } catch (err) {
+    throw new MsiReadError(err instanceof Error ? err.message : String(err));
+  }
 }
 
 /**
- * The real reader: `wslpath -w` for the path, then `powershell.exe -EncodedCommand` for the probe.
+ * The real reader: the MSI's Windows path (`wslpath -w` from WSL), then `powershell.exe -EncodedCommand` for the probe.
  * Windows Installer cannot open a database over `\\wsl.localhost\`, so an MSI on the WSL filesystem is
  * copied to the Windows temp folder first and the copy removed afterwards.
  */
 export function createMsiReader(options: MsiReaderOptions = {}): MsiReader {
   const timeoutMs = options.timeoutMs ?? 180_000;
+  const side = options.side ?? SIDE;
   const run: Run = options.run ?? ((file, args) => defaultRun(file, args, timeoutMs));
   const toWindows = async (path: string): Promise<string> => {
     try {
-      return (await run("wslpath", ["-w", path])).trim();
+      return await windowsPathOf(path, side, run);
     } catch (cause) {
       throw new MsiReadError(
         `cannot turn ${path} into a Windows path with wslpath (${cause instanceof Error ? cause.message : String(cause)}); is this WSL?`,
@@ -129,7 +134,7 @@ export function createMsiReader(options: MsiReaderOptions = {}): MsiReader {
     let staged: string | null = null;
     try {
       if (windowsPath.startsWith("\\\\")) {
-        staged = await mkdtemp(join(options.windowsTemp ?? (await windowsTempDir(run)), "arashouse-msi-"));
+        staged = await mkdtemp(join(options.windowsTemp ?? (await windowsTempDir(run, side)), "arashouse-msi-"));
         const copy = join(staged, "InnovatorSetup.msi");
         await copyFile(msiPath, copy);
         windowsPath = await toWindows(copy);

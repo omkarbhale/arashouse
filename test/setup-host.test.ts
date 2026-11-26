@@ -1,35 +1,11 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, expect, it } from "vitest";
 import { FLAVOR_KEYS } from "../src/core/flavors.js";
 import { ROOT_FOLDERS, brokerWrapperSource, renderSetupHostScript } from "../src/core/setup-host.js";
 import { repoRoot } from "./helpers.js";
-
-/** As in test/host-tuning.test.ts: SPIKE_POWERSHELL, else Windows PowerShell 5.1 from WSL; the script targets Windows, so a Linux pwsh is not enough. */
-function findPowerShell(): string | undefined {
-  const candidates = [process.env.SPIKE_POWERSHELL, "powershell.exe"].filter((c): c is string => Boolean(c));
-  for (const c of candidates) {
-    const probe = spawnSync(c, ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
-    if (probe.status === 0) return c;
-  }
-  return undefined;
-}
-
-const ps = findPowerShell();
-const windows = ps?.toLowerCase().endsWith(".exe") ?? false;
-const toHostPath = (p: string) => (windows ? execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim() : p);
-const cwd = windows && existsSync("/mnt/c") ? "/mnt/c" : undefined;
-const describeWithPs = ps && windows ? describe : describe.skip;
-
-function runPs(args: string[]) {
-  const r = spawnSync(ps as string, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...args], { encoding: "utf8", cwd, timeout: 120_000 });
-  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
-}
-
-const elevated = (): boolean =>
-  runPs(["-Command", "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole('Administrators')"]).out.trim() === "True";
+import { describeOnWindowsHost, elevated, hostPathExists, ps, runPs, toHostPath } from "./powershell.js";
 
 const dir = mkdtempSync(join(tmpdir(), "setup-host-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -52,10 +28,10 @@ writeFileSync(
   }).replace(/\n/g, "\r\n"),
 );
 const run = (args: string[]) => runPs(["-File", toHostPath(script), ...args]);
-const rootOnHost = () => existsSync(`/mnt/c/${root.slice(3)}`);
+const rootOnHost = () => hostPathExists(root);
 
 // Each run starts Windows PowerShell (about 3 to 5 s).
-describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
+describeOnWindowsHost(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
   it("parses without a syntax error", () => {
     const r = runPs(["-File", toHostPath(join(repoRoot, "test/spike-parse.ps1")), toHostPath(script)]);
     expect(r.out.trim()).toBe("errors=0");
@@ -64,14 +40,17 @@ describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
   it("dry run plans every step, ends with the result as JSON, and creates nothing", () => {
     const r = run([]);
     expect(r.err).toBe("");
-    expect(r.code).toBe(0);
     const [head, json] = r.out.split(/^result:\r?$/m) as [string, string];
     const lines = head.split(/\r?\n/).filter((l) => l.trim());
     expect(lines.filter((l) => !/^(would do: |dry run: |missing: )/.test(l))).toEqual([]);
     expect(lines).toContain(`would do: create ${root}`);
     for (const folder of ROOT_FOLDERS) expect(lines).toContain(`would do: create ${root}\\${folder}`);
     expect(lines.filter((l) => l.startsWith(`would do: set the ACL of ${root}\\`))).toHaveLength(ROOT_FOLDERS.length);
-    const result = JSON.parse(json) as { applied: boolean; ok: boolean; folders: unknown[]; planned: string[]; changes: unknown[]; principals: { brokerSid: string }; broker: { installed: boolean } };
+    const result = JSON.parse(json) as { applied: boolean; ok: boolean; folders: unknown[]; planned: string[]; changes: unknown[]; errors: string[]; principals: { brokerSid: string }; broker: { installed: boolean } };
+    // A host without SQL Server (a CI runner) has one error, naming the service, and the dry run rightly exits 1.
+    const sqlMissing = /^the SQL Server service \S+ was not found/;
+    expect(result.errors.filter((e) => !sqlMissing.test(e))).toEqual([]);
+    expect(r.code, r.out).toBe(result.errors.length === 0 ? 0 : 1);
     // On a host where setup has already run, the service exists and the dry run rightly does not plan to create it.
     expect(lines.some((l) => l.startsWith("would do: create the service ArasHouseBroker"))).toBe(!result.broker.installed);
     expect(result.applied).toBe(false);
@@ -82,7 +61,7 @@ describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
     expect(rootOnHost()).toBe(false);
   });
 
-  it.skipIf(!ps || !windows || elevated())("-Apply in a shell that is not elevated exits 4 before any change", () => {
+  it.skipIf(elevated())("-Apply in a shell that is not elevated exits 4 before any change", () => {
     const r = run(["-Apply"]);
     expect(r.code).toBe(4);
     expect(r.err).toMatch(/needs an elevated PowerShell/);
@@ -108,7 +87,7 @@ describeWithPs(`setup-host.ps1 under ${ps}`, { timeout: 90_000 }, () => {
       const r = run(["-Uninstall", "-RemoveRoot"]);
       expect(r.err).toMatch(/refused to remove .*not-arashouse, which are not arashouse folders/);
       expect(r.out).not.toContain(`would do: remove ${root}`);
-      expect(existsSync(`/mnt/c/${foreign.slice(3).replace(/\\/g, "/")}`)).toBe(true);
+      expect(hostPathExists(foreign)).toBe(true);
     } finally {
       runPs(["-Command", `Remove-Item -LiteralPath '${root}' -Recurse -Force`]);
     }

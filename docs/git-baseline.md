@@ -20,8 +20,8 @@ arashouse get 23 --holder my-task --json --code ./build/client --git    # the ba
 arashouse git-baseline --lease <lease_id>                              # on a lease already held
 ```
 
-Then, from WSL, with Git for Windows (fast: it reads the tree natively; the repository is the broker's, so the worker
-names it safe):
+Then, with Git for Windows (fast: it reads the tree natively; the repository is the broker's, so the worker names it
+safe), from a PowerShell or from WSL, as `git.exe` in both:
 
 ```
 git.exe -c safe.directory='*' -C 'C:\aras_installations\slots\23\01\Innovator' status
@@ -81,17 +81,18 @@ client and server write are `key-*.xml`, above.
 git runs as the worker, never as the broker:
 
 1. **Checks.** The lease must not have a baseline yet, and the slot's `Innovator\` must have no `.git` or `.gitignore`.
-2. **Build**, with Git for Windows (`/mnt/c/Program Files/Git/cmd/git.exe`, or `ARASHOUSE_WINDOWS_GIT`) through interop:
-   reading the tree through `/mnt/c` from WSL runs at under 1 MB/s on the host (`12sp9`'s `Client\` alone took 11
-   minutes), git.exe reads it natively with the worker's read grant on `slots\`. No system or user git config is read
+2. **Build**, with Git for Windows (`ARASHOUSE_WINDOWS_GIT`, else `git.exe` on `PATH`, else
+   `C:\Program Files\Git\cmd\git.exe`), started by the CLI's Windows process: git.exe reads the tree natively with the
+   worker's read grant on `slots\` (reading it through `/mnt/c` from WSL ran at under 1 MB/s on the host: `12sp9`'s
+   `Client\` alone took 11 minutes). No system or user git config is read
    (`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=NUL`), so the worker's own settings do not leak in. In
    `<root>\staging\<lease_id>\code\<n>`, with the slot's `Innovator\` as the work tree: `git init` (no template: no
    hooks), the repository's settings (below), `add --all` with the generated file as the excludes file, the
    `.gitignore` added, the staged paths checked, one commit on `main` with the message `arashouse baseline <flavor>
    <lease_id>` by `arashouse <arashouse@localhost>`, and the objects repacked into one pack without deltas (seconds; with
-   deltas it was 50 s for `12sp9`), so the broker copies a handful of files rather than one per object. When WSL
-   interop cannot start git.exe on a busy host ("UtilAcceptVsock: accept4 failed 110": git never ran), it is started
-   again, three times at most.
+   deltas it was 50 s for `12sp9`), so the broker copies a handful of files rather than one per object. Where the CLI
+   still runs in WSL itself and interop cannot start git.exe on a busy host ("UtilAcceptVsock: accept4 failed 110":
+   git never ran), it is started again, three times at most.
 3. **Place.** The broker's `deployCode` (ticket 40) puts `.git\` and `.gitignore` into `Innovator\`, with every guard
    it has for what the worker stages (the stamp names the lease, no link or junction, each file copied from a checked
    handle). It quiesces, copies, and starts and warms the slot, so the slot has recycled and restarted once by the time

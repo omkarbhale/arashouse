@@ -7,12 +7,13 @@
 // Everything here is checked before a lease is taken, so a mistake costs no slot.
 
 import { execFile } from "node:child_process";
-import { accessSync, constants as fsConstants, existsSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { FLAVORS, getFlavor, type FlavorKey } from "../core/flavors.js";
 import { UsageError } from "../core/lease.js";
 import { redact } from "../core/redact.js";
+import { SIDE, callerPath, type Side } from "../host/platform.js";
 import type { OptionKind } from "./args.js";
 import { leaseEnvironment, runChild, type RunDeps } from "./run.js";
 
@@ -132,8 +133,8 @@ export interface PreparedImport {
 }
 
 /** The manifest a step names: the file itself, or `imports.mf` in the folder; an absolute path. */
-function manifestPath(given: string, cwd: string): string {
-  const path = isAbsolute(given) ? given : resolve(cwd, given);
+function manifestPath(given: string, cwd: string, env: NodeJS.ProcessEnv): string {
+  const path = callerPath(given, { cwd, env });
   if (!existsSync(path)) throw new UsageError(`the import manifest ${given} does not exist`);
   if (statSync(path).isDirectory()) {
     const inFolder = join(path, "imports.mf");
@@ -171,7 +172,7 @@ export function prepareImports(steps: readonly ImportStep[], context: { readonly
       throw new UsageError(`--skip-version-check is refused: engine ${engine} serves ${context.flavor}, so a server outside its window is a bug; give --engine too to mean it`);
     }
     if (typeof o.timeout === "string" && !/^-?\d+$/.test(o.timeout)) throw new UsageError(`--timeout must be a whole number of milliseconds (0 keeps the engine's default, -1 waits for ever)`);
-    const manifest = manifestPath(step.given, context.cwd ?? process.cwd());
+    const manifest = manifestPath(step.given, context.cwd ?? process.cwd(), context.env);
 
     const args: string[] = ["--engine", engine];
     if (o.merge === true) args.push("--merge");
@@ -207,16 +208,55 @@ function isExecutable(path: string): boolean {
   }
 }
 
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The script an npm `.cmd` shim runs (`"%dp0%\node_modules\<pkg>\dist\cli.js" %*`), or undefined. Node starts no
+ * `.cmd` without a shell, so on Windows the script itself is run with this Node.
+ */
+export function npmShimTarget(shim: string, text: string): string | undefined {
+  const m = /"%dp0%\\([^"%]+\.[cm]?js)"/i.exec(text);
+  return m ? join(dirname(shim), ...(m[1] as string).split("\\")) : undefined;
+}
+
+/** The `PATH` variable, whatever its case (Windows keeps it as `Path`). */
+function pathVariable(env: NodeJS.ProcessEnv): string {
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH");
+  return key === undefined ? "" : (env[key] ?? "");
+}
+
 /** The libs-js CLI to run, or null when there is none; an `ARASHOUSE_APKG` that names nothing is an error. */
-export function findArasPkg(env: NodeJS.ProcessEnv): ArasPkg | null {
+export function findArasPkg(env: NodeJS.ProcessEnv, side: Side = SIDE): ArasPkg | null {
   const named = env[APKG_ENV];
   if (named !== undefined && named !== "") {
-    const path = resolve(named);
-    if (!existsSync(path) || !statSync(path).isFile()) throw new Error(`${APKG_ENV} is ${named}, which is not a file; point it at the libs-js CLI (a checkout's dist/cli.js)`);
-    return /\.[cm]?js$/.test(path) ? { source: APKG_ENV, path, program: process.execPath, prefix: [path] } : { source: APKG_ENV, path, program: path, prefix: [] };
+    const path = callerPath(named, { env, side });
+    if (!isFile(path)) throw new Error(`${APKG_ENV} is ${named}, which is not a file; point it at the libs-js CLI (a checkout's dist/cli.js)`);
+    if (/\.[cm]?js$/i.test(path)) return { source: APKG_ENV, path, program: process.execPath, prefix: [path] };
+    if (side === "windows" && /\.(cmd|bat)$/i.test(path)) {
+      const target = npmShimTarget(path, readFileSync(path, "utf8"));
+      if (target === undefined || !isFile(target)) throw new Error(`${APKG_ENV} is ${named}, a .cmd that is not an npm shim; point it at the libs-js CLI (a checkout's dist/cli.js)`);
+      return { source: APKG_ENV, path: target, program: process.execPath, prefix: [target] };
+    }
+    return { source: APKG_ENV, path, program: path, prefix: [] };
   }
-  for (const dir of (env.PATH ?? "").split(delimiter)) {
+  for (const dir of pathVariable(env).split(side === "windows" ? ";" : delimiter)) {
     if (dir === "") continue;
+    if (side === "windows") {
+      const shim = join(dir, "aras-pkg.cmd");
+      if (isFile(shim)) {
+        const target = npmShimTarget(shim, readFileSync(shim, "utf8"));
+        if (target !== undefined && isFile(target)) return { source: "PATH", path: target, program: process.execPath, prefix: [target] };
+      }
+      const exe = join(dir, "aras-pkg.exe");
+      if (isFile(exe)) return { source: "PATH", path: exe, program: exe, prefix: [] };
+      continue;
+    }
     const path = join(dir, "aras-pkg");
     if (isExecutable(path)) return { source: "PATH", path, program: path, prefix: [] };
   }

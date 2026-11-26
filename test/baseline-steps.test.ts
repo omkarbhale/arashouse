@@ -1,5 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +8,7 @@ import { msiInstallProperties, baselinePlan } from "../src/core/baseline.js";
 import { FLAVOR_KEYS } from "../src/core/flavors.js";
 import { buildScratch } from "../src/core/names.js";
 import { repoRoot } from "./helpers.js";
+import { describeOnWindowsHost, runPsFile, toHostPath } from "./powershell.js";
 
 const steps = renderBuildStepsScript();
 
@@ -113,28 +113,16 @@ describe("baseline-steps.ps1 (static)", () => {
   });
 });
 
-/** Windows PowerShell 5.1 from WSL, when it is there: the scripts target it. */
-function findPowerShell(): string | undefined {
-  const probe = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "exit 0"], { encoding: "utf8" });
-  return probe.status === 0 ? "powershell.exe" : undefined;
-}
-const ps = findPowerShell();
-const describeWithPs = ps ? describe : describe.skip;
-
-describeWithPs("the generated baseline scripts under Windows PowerShell", () => {
+// The scripts target Windows PowerShell 5.1, which takes a few seconds to start.
+describeOnWindowsHost("the generated baseline scripts under Windows PowerShell", { timeout: 60_000 }, () => {
   it("parse without a syntax error", () => {
     const dir = mkdtempSync(join(tmpdir(), "arashouse-steps-"));
     try {
       const pinned = ["app\\broker\\baseline-main.js", "package.json", "plan.json", "baseline-steps.ps1"].map((path) => ({ path, sha256: "0".repeat(64) }));
       writeFileSync(join(dir, "baseline-steps.ps1"), steps.replace(/\n/g, "\r\n"), "ascii");
       writeFileSync(join(dir, "baseline-build.ps1"), renderBaselineBuildScript({ flavor: "12sp9", version: "0.0.0", pinned }).replace(/\n/g, "\r\n"), "ascii");
-      const win = (p: string) => execFileSync("wslpath", ["-w", p], { encoding: "utf8" }).trim();
-      const r = spawnSync(
-        ps as string,
-        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", win(join(repoRoot, "test/spike-parse.ps1")), win(join(dir, "baseline-steps.ps1")), win(join(dir, "baseline-build.ps1"))],
-        { encoding: "utf8", cwd: existsSync("/mnt/c") ? "/mnt/c" : undefined },
-      );
-      expect(r.stdout.trim()).toBe("errors=0");
+      const r = runPsFile(join(repoRoot, "test/spike-parse.ps1"), [toHostPath(join(dir, "baseline-steps.ps1")), toHostPath(join(dir, "baseline-build.ps1"))]);
+      expect(r.out.trim()).toBe("errors=0");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

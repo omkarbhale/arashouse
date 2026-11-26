@@ -1,4 +1,7 @@
-// How `BrokerHost` reaches the broker from WSL: it starts the Windows `node.exe` directly through
+// How `BrokerHost` reaches the broker. Natively on Windows, `pipeTransport`: the broker client's `callBroker` in this
+// process (the token read from `<root>\broker\client.token`, the request down the pipe), no process started.
+//
+// From WSL, `interopTransport`: it starts the Windows `node.exe` directly through
 // interop (not through `cmd.exe` or PowerShell; ticket 09 measured 92 ms, 147 ms and 446 ms) running
 // the broker's client script, writes the request on its stdin and reads the response from its stdout.
 // The client adds the token on the Windows side, so no secret crosses to WSL.
@@ -12,19 +15,19 @@
 import { spawn } from "node:child_process";
 import { setTimeout as sleepMs } from "node:timers/promises";
 import { existsSync } from "node:fs";
-import { MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, UNREACHABLE_HINT, encodeLine, type BrokerRequest } from "../broker/protocol.js";
+import { callBroker, type ClientOptions } from "../broker/client.js";
+import { MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PIPE_PATH, UNREACHABLE_HINT, encodeLine, type BrokerRequest } from "../broker/protocol.js";
 import { DEFAULT_INSTALL_ROOT, brokerClientScript } from "../core/names.js";
 import { redact } from "../core/redact.js";
 import { HostError } from "./errors.js";
+import { DEFAULT_WINDOWS_NODE, SIDE, WINDOWS_NODE_ENV, type Side } from "./platform.js";
 
 /** One round trip to the broker: resolves the response as parsed JSON, or rejects with a `HostError`. */
 export interface BrokerTransport {
   call(request: BrokerRequest, timeoutMs: number): Promise<unknown>;
 }
 
-/** The Windows `node.exe` as WSL sees it; `ARASHOUSE_WINDOWS_NODE` overrides it. */
-export const WINDOWS_NODE_ENV = "ARASHOUSE_WINDOWS_NODE";
-export const DEFAULT_WINDOWS_NODE = "/mnt/c/Program Files/nodejs/node.exe";
+export { DEFAULT_WINDOWS_NODE, WINDOWS_NODE_ENV } from "./platform.js";
 
 /** What the client and the process start may add to the verb's own bound before WSL gives up. */
 const TRANSPORT_MARGIN_MS = 10_000;
@@ -64,6 +67,36 @@ export interface InteropOptions {
 
 function unreachable(why: string): HostError {
   return new HostError("Unreachable", `cannot reach the broker: ${redact(why).slice(0, CLIP)}; ${UNREACHABLE_HINT}`);
+}
+
+/**
+ * The broker's pipe, called in this process: the native transport on Windows. The token never leaves this process. A
+ * token file this user cannot read (another account, or the broker not installed) or a pipe that does not answer is
+ * `Unreachable` (exit 6); a request too large to send is `Refused`.
+ */
+export function pipeTransport(options: ClientOptions = {}): BrokerTransport {
+  const pipePath = options.pipePath ?? PIPE_PATH;
+  return {
+    async call(request, timeoutMs) {
+      try {
+        encodeLine(request, MAX_REQUEST_BYTES);
+      } catch (err) {
+        throw new HostError("Refused", (err as Error).message);
+      }
+      let answer;
+      try {
+        answer = await callBroker(request, timeoutMs, options);
+      } catch (err) {
+        throw new HostError("Refused", (err as Error).message);
+      }
+      if (!answer.ok) throw unreachable(`${answer.unreachable} (${pipePath})`);
+      try {
+        return JSON.parse(answer.response) as unknown;
+      } catch {
+        throw unreachable(`the broker's response on ${pipePath} is not JSON`);
+      }
+    },
+  };
 }
 
 export function interopTransport(options: InteropOptions = {}): BrokerTransport {
@@ -144,4 +177,20 @@ export function interopTransport(options: InteropOptions = {}): BrokerTransport 
       }
     },
   };
+}
+
+/**
+ * Where the native transport reads the broker's client token instead of `<root>\broker\client.token`. Tests point it
+ * at a file that does not exist, so a test of "no broker" never reaches the host's broker (as `ARASHOUSE_WINDOWS_NODE`
+ * does from WSL). It only says where to read; the token itself never appears in the environment.
+ */
+export const TOKEN_FILE_ENV = "ARASHOUSE_BROKER_TOKEN_FILE";
+
+/** How this process reaches the broker: the pipe itself on Windows; from WSL, the broker's client through interop. */
+export function brokerTransport(env: NodeJS.ProcessEnv = process.env, side: Side = SIDE): BrokerTransport {
+  if (side === "windows") {
+    const tokenFile = env[TOKEN_FILE_ENV]?.trim();
+    return pipeTransport(tokenFile ? { tokenFile } : {});
+  }
+  return interopTransport({ node: env[WINDOWS_NODE_ENV]?.trim() || DEFAULT_WINDOWS_NODE });
 }

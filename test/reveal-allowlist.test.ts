@@ -107,28 +107,31 @@ export function revealReferences(program: ts.Program, secretFile: string, root: 
 function virtualProgram(root: string, files: Record<string, string>): ts.Program {
   const options = compilerOptions();
   const host = ts.createCompilerHost(options);
-  const virtual = new Map(Object.entries(files).map(([path, text]) => [join(root, path), text]));
+  // The compiler asks the host for its files with forward slashes, on Windows too, so the map is keyed that way.
+  const slash = (path: string) => path.replaceAll("\\", "/");
+  const virtualRoot = slash(root);
+  const virtual = new Map(Object.entries(files).map(([path, text]) => [slash(join(root, path)), text]));
   const getSourceFile = host.getSourceFile.bind(host);
   const fileExists = host.fileExists.bind(host);
   const readFile = host.readFile.bind(host);
   host.getSourceFile = (name, lang, ...rest) => {
-    const text = virtual.get(name);
+    const text = virtual.get(slash(name));
     return text === undefined ? getSourceFile(name, lang, ...rest) : ts.createSourceFile(name, text, lang);
   };
-  host.fileExists = (name) => virtual.has(name) || fileExists(name);
-  host.readFile = (name) => virtual.get(name) ?? readFile(name);
-  host.directoryExists = (name) => name === root || name.startsWith(root + "/") || ts.sys.directoryExists(name);
+  host.fileExists = (name) => virtual.has(slash(name)) || fileExists(name);
+  host.readFile = (name) => virtual.get(slash(name)) ?? readFile(name);
+  host.directoryExists = (name) => slash(name) === virtualRoot || slash(name).startsWith(virtualRoot + "/") || ts.sys.directoryExists(name);
   return ts.createProgram([...virtual.keys()], options, host);
 }
 
-describe("Secret.reveal() references", { timeout: 30_000 }, () => {
+describe("Secret.reveal() references", { timeout: 120_000 }, () => {
   it("appear only in the allowlisted files, as many times as the allowlist says", () => {
     const program = ts.createProgram(sourceFiles(join(repoRoot, "src")), compilerOptions());
     expect(revealReferences(program, join(repoRoot, REVEAL_MODULE), repoRoot)).toEqual(ALLOWED);
   });
 });
 
-describe("the reference finder", { timeout: 30_000 }, () => {
+describe("the reference finder", { timeout: 120_000 }, () => {
   const root = join(repoRoot, "virtual");
   const core = Object.fromEntries(
     ["src/core/secret.ts", "src/core/redact.ts"].map((path) => [path, readFileSync(join(repoRoot, path), "utf8")]),

@@ -1,15 +1,25 @@
-// The media resolver: finds `media/<key>/` in the main checkout. A worktree is discarded at
-// teardown and the installers are ignored by git, so the real files live only in the main checkout.
+// The media resolver: finds the folder that holds `<key>/` per flavor. `ARASHOUSE_MEDIA` first, then the `media` key
+// of `config.json` (core/config.ts), then the main checkout's `media/`: a worktree is discarded at teardown and the
+// installers are ignored by git, so the real files live only in the main checkout. The checkout is arashouse's only:
+// a copy vendored into another repository (aras-mr-envs) never takes that repository's `media/`.
 // This is local filesystem and git I/O, never Windows I/O.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadConfigSync } from "./config.js";
 import { getFlavor, type FlavorKey } from "./flavors.js";
 
 /** Environment variable that replaces the `media/` folder (the one holding `<key>/` subfolders). */
 export const MEDIA_ENV = "ARASHOUSE_MEDIA";
+
+/**
+ * Set by the WSL launcher on the Windows process: the `media/` of the arashouse checkout the launcher runs from, which
+ * the Windows build (a runtime copy outside any checkout) cannot find itself. Used where the checkout's own would be:
+ * after `ARASHOUSE_MEDIA` and config.json's `media`.
+ */
+export const CHECKOUT_MEDIA_ENV = "ARASHOUSE_CHECKOUT_MEDIA";
 
 /** A missing media folder or file. The message says what to do; callers print it without a stack. */
 export class MediaError extends Error {
@@ -29,6 +39,30 @@ export interface MediaOptions {
    * installed copy that is a link to a checkout.
    */
   startDir?: string;
+  /** The `media` of `config.json`; read from the state home's config when not given (null: none). */
+  configured?: string | null;
+}
+
+/** The package name of arashouse's own checkout; a git root whose `package.json` is another's is not it. */
+const PACKAGE_NAME = "arashouse";
+
+function packageName(dir: string): string | undefined {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: unknown };
+    return typeof pkg.name === "string" ? pkg.name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The config's `media`, or null; a config that cannot be read is no answer rather than an error here. */
+function configuredMedia(options: MediaOptions, env: NodeJS.ProcessEnv): string | null {
+  if (options.configured !== undefined) return options.configured;
+  try {
+    return loadConfigSync({ env }).media ?? null;
+  } catch {
+    return null;
+  }
 }
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -42,12 +76,16 @@ function gitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return clean;
 }
 
-/** The `media/` folder: `ARASHOUSE_MEDIA` if set, else the main checkout's `media/`. */
+/** The `media/` folder: `ARASHOUSE_MEDIA` if set, else the config's `media`, else the arashouse checkout's `media/`. */
 export function resolveMediaRoot(options: MediaOptions = {}): string {
   const env = options.env ?? process.env;
   const startDir = resolve(options.startDir ?? moduleDir);
   const override = env[MEDIA_ENV];
   if (override !== undefined && override.trim() !== "") return resolve(startDir, override);
+  const configured = configuredMedia(options, env);
+  if (configured !== null) return configured;
+  const launched = env[CHECKOUT_MEDIA_ENV]?.trim();
+  if (launched) return launched;
 
   let common: string;
   try {
@@ -61,7 +99,7 @@ export function resolveMediaRoot(options: MediaOptions = {}): string {
   } catch {
     throw new MediaError(
       `cannot find the main checkout from ${startDir} (not inside a git checkout, or git is missing); ` +
-        `set ${MEDIA_ENV} to the folder that holds the per-flavor media folders`,
+        `set ${MEDIA_ENV}, or "media" in config.json, to the folder that holds the per-flavor media folders`,
     );
   }
   if (basename(common) !== ".git") {
@@ -69,7 +107,14 @@ export function resolveMediaRoot(options: MediaOptions = {}): string {
       `the git common dir ${common} is not a ".git" folder, so the main checkout cannot be derived; set ${MEDIA_ENV}`,
     );
   }
-  return join(dirname(common), "media");
+  const checkout = dirname(common);
+  if (packageName(checkout) !== PACKAGE_NAME) {
+    throw new MediaError(
+      `this arashouse is not in its own checkout (${checkout} is ${packageName(checkout) ?? "another repository"}'s, so it was copied in): ` +
+        `set ${MEDIA_ENV}, or "media" in config.json, to the folder that holds the per-flavor media folders`,
+    );
+  }
+  return join(checkout, "media");
 }
 
 /** The folder holding a flavor's installer and backups. It need not exist yet. */

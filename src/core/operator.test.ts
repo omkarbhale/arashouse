@@ -549,6 +549,41 @@ describe("provision", () => {
 });
 
 describe("doctor", () => {
+  it("compares this CLI's build with the broker's, and says how to update an older broker", async () => {
+    const p = await pool({ "23": 1 });
+    const check = async (build: string | null | undefined, brokerBuild: string | null | undefined) => {
+      p.host.setHostInfo({ brokerBuild });
+      const lines = (await doctor({ ...p.deps, ...(build === undefined ? {} : { build }) }, {})).lines;
+      return lines.filter((l) => /^\w+ +build:/.test(l));
+    };
+    expect(await check("0123456789ab", "0123456789ab")).toEqual(["ok    build: the CLI and the broker are build 0123456789ab"]);
+    const differs = await check("0123456789ab", "ba9876543210");
+    expect(differs).toHaveLength(1);
+    expect(differs[0]).toMatch(/^warn  build: this CLI is build 0123456789ab, the broker build ba9876543210: update it: `arashouse setup`.*-UpdateBroker/);
+    expect((await check("0123456789ab", undefined))[0]).toMatch(/^warn  build: .*does not report its build, so it is older/);
+    expect((await check("0123456789ab", null))[0]).toMatch(/the broker build from source/);
+    // A CLI run from source has no build to compare, and the fake host's doctor is not asked.
+    expect(await check(null, "0123456789ab")).toEqual([]);
+    expect(await check(undefined, "0123456789ab")).toEqual([]);
+  });
+
+  it("says when the state home, which holds the lease passwords, is open to anyone else", async () => {
+    const p = await pool({ "23": 1 });
+    const line = async (access: { home: string; others: string[]; missing?: boolean } | Error) => {
+      const homeAccess = async () => {
+        if (access instanceof Error) throw access;
+        return access;
+      };
+      return (await doctor({ ...p.deps, homeAccess }, {})).lines.find((l) => l.includes("state home:"));
+    };
+    expect(await line({ home: "C:\\Users\\w\\AppData\\Local\\arashouse", others: [] })).toMatch(/^ok    state home: .* is the worker user's only/);
+    expect(await line({ home: "C:\\work\\state", others: ["NT AUTHORITY\\Authenticated Users", "BUILTIN\\Users"] })).toMatch(
+      /^warn  state home: C:\\work\\state can also be opened by NT AUTHORITY\\Authenticated Users, BUILTIN\\Users, and it holds the lease passwords/,
+    );
+    expect(await line({ home: "C:\\x", others: [], missing: true })).toMatch(/^ok    state home: .* is made by the first lease/);
+    expect(await line(new Error("Get-Acl failed"))).toMatch(/^warn  state home: its access could not be read: Get-Acl failed/);
+  });
+
   it("finds an orphan the fake hosts and an unrecorded dirty slot, and --fix deals with both", async () => {
     const p = await pool({ "23": 2 });
     await p.host.provisionSlot({ flavor: "35", slot: 1 });

@@ -1,4 +1,4 @@
-// Ticket 40's proof on the real host (docs/code-deploy.md): a code deploy onto a `12sp9` lease, run from WSL,
+// Ticket 40's proof on the real host (docs/code-deploy.md): a code deploy onto a `12sp9` lease, run natively on Windows or from WSL,
 // non-elevated, by test/host/code-deploy.test.ts (ARASHOUSE_TEST_DEPLOY=1). Every step is a line in
 // `<out>/deploy-proof.log` and `.json`.
 //
@@ -23,7 +23,8 @@ import { redact } from "../../src/core/redact.js";
 import { Secret } from "../../src/core/secret.js";
 import { stagingDir } from "../../src/core/names.js";
 import { buildZip } from "../../src/core/zip.fixture.js";
-import { BrokerHost, interopTransport } from "../../src/host/index.js";
+import { BrokerHost } from "../../src/host/index.js";
+import { ROOT_LOCAL, toLocal, transport, windowsPathOf } from "./local.js";
 import { isHostError } from "../../src/host/errors.js";
 import { windowsTempDir } from "../../src/host/msi.js";
 import { repoRoot } from "../helpers.js";
@@ -31,8 +32,7 @@ import { ArasClient } from "./aras-client.js";
 import { denyListPrints, runProcess } from "./e2e-cycle.js";
 
 const CLI = join(repoRoot, "dist/cli/index.js");
-const ROOT_WSL = "/mnt/c/aras_installations";
-const CSC = "/mnt/c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe";
+const CSC = toLocal("C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe");
 /** A golden DLL of the 12sp9 `Server\bin` that the e2e cycle appended bytes to as well (docs/e2e-12sp9.md). */
 const GOLDEN_DLL = "Innovator/Server/bin/VeracodeAttributes.dll";
 
@@ -92,9 +92,9 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
       return { status: 0, text: (err as Error).message };
     }
   };
-  const slotFile = (slot: string, rel: string) => join(ROOT_WSL, "slots", "12sp9", slot.slice(-2), ...rel.split("/"));
+  const slotFile = (slot: string, rel: string) => join(ROOT_LOCAL, "slots", "12sp9", slot.slice(-2), ...rel.split("/"));
   const hashOf = (path: string) => (existsSync(path) ? sha256(readFileSync(path)) : "absent");
-  const broker = new BrokerHost(interopTransport({ node: process.env.ARASHOUSE_WINDOWS_NODE?.trim() || undefined }));
+  const broker = new BrokerHost(transport());
 
   // ---- the sources ----------------------------------------------------------------------------------------
   const winTemp = await windowsTempDir();
@@ -106,7 +106,7 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
     const cs = join(scratch, version, "ArasHouseProbe.cs");
     const dll = join(scratch, version, "ArasHouseProbe.dll");
     writeFileSync(cs, `namespace ArasHouseProbe { public static class Marker { public const string Tag = "${version}-${tag}"; } }\n`);
-    const win = async (p: string) => (await runProcess("wslpath", ["-w", p])).stdout.trim();
+    const win = (p: string) => windowsPathOf(p);
     const r = await runProcess(CSC, ["/nologo", "/target:library", `/out:${await win(dll)}`, await win(cs)]);
     if (r.code !== 0) throw new Error(`csc failed: ${r.stdout} ${r.stderr}`);
     return readFileSync(dll);
@@ -180,7 +180,7 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
     const junctionSrc = join(scratch, "junction-src");
     mkdirSync(join(junctionSrc, "Client"), { recursive: true });
     writeFileSync(join(junctionSrc, "Client", "a.txt"), "a");
-    const mk = await runProcess("cmd.exe", ["/c", "mklink", "/J", (await runProcess("wslpath", ["-w", join(junctionSrc, "Client", "j")])).stdout.trim(), "C:\\aras_installations\\golden"]);
+    const mk = await runProcess("cmd.exe", ["/c", "mklink", "/J", await windowsPathOf(join(junctionSrc, "Client", "j")), "C:\\aras_installations\\golden"]);
     const r2 = await cli(["deploy-code", "--lease", leaseId, junctionSrc]);
     record("CLI refuses a source with a junction", mk.code === 0 && r2.code === 7, `mklink /J exit ${mk.code}; ${oneLine(r2)}`, r2.ms);
     const cfgSrc = join(out, "cfg");
@@ -192,7 +192,7 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
 
     // The broker, asked directly with trees staged by hand (as a worker could, bypassing the CLI).
     const ref = { flavor: "12sp9" as const, slot: Number(grant.slot.slice(-2)) };
-    const stageDir = (n: number) => join(ROOT_WSL, "staging", leaseId, "code", String(n));
+    const stageDir = (n: number) => join(ROOT_LOCAL, "staging", leaseId, "code", String(n));
     const stagedWin = (n: number) => `${stagingDir(leaseId)}\\code\\${n}`;
     const brokerRefuses = async (step: string, n: number, options: { subpath?: string; leaseId?: string; staged?: string } = {}) => {
       const started = Date.now();
@@ -229,15 +229,15 @@ export async function runDeployProof(out: string): Promise<ProofRecord[]> {
       rmSync(stageDir(95), { recursive: true, force: true });
     }
     const otherLease = "0".repeat(32);
-    mkdirSync(join(ROOT_WSL, "staging", otherLease, "code", "1"), { recursive: true });
-    writeFileSync(join(ROOT_WSL, "staging", otherLease, "code", "1", "a.txt"), "a");
+    mkdirSync(join(ROOT_LOCAL, "staging", otherLease, "code", "1"), { recursive: true });
+    writeFileSync(join(ROOT_LOCAL, "staging", otherLease, "code", "1", "a.txt"), "a");
     try {
       await broker.deployCode(ref, `${stagingDir(otherLease)}\\code\\1`, { leaseId: otherLease });
       record("the broker refuses another lease's deploy into the slot", false, "not refused");
     } catch (err) {
       record("the broker refuses another lease's deploy into the slot", isHostError(err, "Refused"), (err as Error).message);
     }
-    rmSync(join(ROOT_WSL, "staging", otherLease), { recursive: true, force: true });
+    rmSync(join(ROOT_LOCAL, "staging", otherLease), { recursive: true, force: true });
     const after = await fetchText(`${grant.url}/Server/${pageName}`);
     record("the slot still serves after the refusals", after.status === 200 && after.text.trim() === `v2-${tag}`, `GET Server/${pageName}: ${after.status}`);
     for (const n of [91, 92, 93, 94, 95]) rmSync(stageDir(n), { recursive: true, force: true });

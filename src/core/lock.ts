@@ -189,8 +189,8 @@ export function isPidAlive(pid: number, options: LivenessOptions = {}): boolean 
 /** The codes NTFS gives for a name another process has open, is deleting, or (an antivirus scanner) holds for a moment. */
 const BUSY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
 
-/** How long `retryBusy` keeps trying by default. */
-export const BUSY_RETRY_MS = 5_000;
+/** How long `retryBusy` keeps trying by default: readers polling the state (`get --wait`, `status`) only ever hold it briefly. */
+export const BUSY_RETRY_MS = 15_000;
 
 export interface RetryBusyOptions {
   readonly platform?: NodeJS.Platform;
@@ -211,7 +211,8 @@ export async function retryBusy<T>(fn: () => Promise<T>, options: RetryBusyOptio
       return await fn();
     } catch (err) {
       if (!isBusy(err, platform) || Date.now() >= deadline) throw err;
-      await sleep(Math.min(5 * 2 ** attempt, 100));
+      // Short and jittered, so a rename finds the moment between two readers' opens.
+      await sleep(Math.min(2 * 2 ** attempt, 40) + Math.floor(Math.random() * 10));
     }
   }
 }

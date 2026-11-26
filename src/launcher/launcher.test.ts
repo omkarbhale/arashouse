@@ -264,6 +264,12 @@ posix("runLauncher", () => {
     expect(printed).not.toHaveProperty("password");
     expect(printed.lease_id).toBe("b".repeat(32));
     expect(written.at(-1)).toEqual([4, GRANT_PW]);
+
+    // The `=` form, as the CLI's own parser takes it.
+    const eq = launch(w.spawn, { passwordFd });
+    expect(await runLauncher(["get", "23", "--holder", "t", "--password-fd=5"], eq.deps)).toBe(0);
+    expect(w.calls.at(-1)?.args.slice(-5)).toEqual(["get", "23", "--holder", "t", "--json"]);
+    expect(written.at(-1)).toEqual([5, GRANT_PW]);
   });
 
   it("returns the lease when the password cannot be written, as the CLI does", async () => {

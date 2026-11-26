@@ -9,7 +9,8 @@
 //   crosses on that command's stdout, as it does for `get --json`, never in an argument or a file);
 // - `get --password-fd <n>` writes the password to this process's descriptor <n>;
 // - a start of `node.exe` that WSL's interop could not set up (`UtilAcceptVsock`, tickets 38 and 56) is tried again: the
-//   Windows process never ran.
+//   Windows process never ran;
+// - `migrate-state`, which moves the pool's state from WSL's `~/.arashouse` to Windows (src/launcher/migrate.ts).
 //
 // `ARASHOUSE_HOST=fake` (the tests' host) runs the CLI here instead, with its own state; so does a WSL with no Windows
 // Node, where nothing on Windows could be reached anyway (the CLI then says the host is unreachable, as it always has).
@@ -150,10 +151,14 @@ export function windowsPathFor(path: string, distro: string, cwd: string = proce
   return drivePathOfMount(absolute) ?? uncPathOf(absolute, distro);
 }
 
-/** The libs-js CLI on this side's PATH (an npm link to its `dist/cli.js`), as a script the Windows Node can run, or undefined. */
+/**
+ * The libs-js CLI on this side's PATH (an npm link to its `dist/cli.js`), as a script the Windows Node can run, or
+ * undefined. The Windows folders WSL appends to PATH (`/mnt/<d>/...`) are skipped: they hold no such link, and looking
+ * in each through drvfs would cost every launch.
+ */
 export function findApkgScript(env: NodeJS.ProcessEnv): string | undefined {
   for (const dir of (env.PATH ?? "").split(delimiter)) {
-    if (dir === "") continue;
+    if (dir === "" || dir.startsWith("/mnt/")) continue;
     const path = join(dir, "aras-pkg");
     if (!existsSync(path)) continue;
     try {
@@ -355,15 +360,24 @@ async function runHere(deps: LauncherDeps, args: readonly string[], globals: rea
 }
 
 /** `get ... --password-fd <n>`, here: the Windows side's `--json`, and the password written to this process's <n>. */
+/** Where `--password-fd` is in `args` (`--password-fd <n>` or `--password-fd=<n>`), its value, and how many words it takes. */
+function passwordFdOption(args: readonly string[]): { at: number; value: string | undefined; words: number } | undefined {
+  const at = args.findIndex((a) => a === "--password-fd" || a.startsWith("--password-fd="));
+  if (at === -1) return undefined;
+  const arg = args[at] as string;
+  return arg === "--password-fd" ? { at, value: args[at + 1], words: 2 } : { at, value: arg.slice("--password-fd=".length), words: 1 };
+}
+
 async function getWithFd(deps: LauncherDeps, command: string, args: readonly string[], globals: readonly string[]): Promise<number> {
-  const at = args.indexOf("--password-fd");
-  const fdText = args[at + 1];
-  if (fdText === undefined) return (await runWindows(deps, [...globals, command, ...args], false)).code;
+  const option = passwordFdOption(args);
+  const fdText = option?.value;
+  if (option === undefined || fdText === undefined) return (await runWindows(deps, [...globals, command, ...args], false)).code;
+  const at = option.at;
   const { parsePasswordFd, writePasswordFd } = await import("../cli/password-fd.js");
   const fdIo = deps.passwordFd ?? { parse: (text: string) => parsePasswordFd(text, "linux"), write: writePasswordFd };
   const fd = fdIo.parse(fdText);
   const json = args.includes("--json");
-  const windowsArgs = [...args.slice(0, at), ...args.slice(at + 2)];
+  const windowsArgs = [...args.slice(0, at), ...args.slice(at + option.words)];
   if (!json) windowsArgs.push("--json");
   const got = await runWindows(deps, [...globals, command, ...windowsArgs], true);
   let grant: Record<string, unknown>;
@@ -400,13 +414,57 @@ async function getWithFd(deps: LauncherDeps, command: string, args: readonly str
   return got.code;
 }
 
+export const MIGRATE_HELP = [
+  "usage: arashouse migrate-state [--yes [--busy-ok]]   (in WSL)",
+  "",
+  "Moves the pool's state from WSL's ~/.arashouse to Windows (%LOCALAPPDATA%\\arashouse, or ARASHOUSE_HOME under /mnt/<drive>):",
+  "config.json, events.log, recipes/, logs/, leases/ (the held leases' passwords), then state.json, under the old state's lock;",
+  "then WSL's state.json and leases/ are renamed aside (*.moved-to-windows-<time>), never deleted. A dry run without --yes.",
+  "It refuses a Windows home that already holds a state, and a pool with a reset running or a get --wait queued unless",
+  "--busy-ok. Run it once every WSL caller's arashouse is this build (docs/windows-native.md, \"Migrating\").",
+];
+
+/** `migrate-state`, here in WSL: from `~/.arashouse` to the Windows home. */
+async function migrateHere(deps: LauncherDeps, args: readonly string[], help: boolean): Promise<number> {
+  if (help) {
+    for (const line of MIGRATE_HELP) deps.io.stdout(`${line}\n`);
+    return 0;
+  }
+  const unknown = args.filter((a) => a !== "--yes" && a !== "--busy-ok");
+  if (unknown.length > 0) throw new LaunchError(EXIT_CODES.usage, `migrate-state takes --yes and --busy-ok, not "${unknown[0]}"`);
+  const env = deps.env;
+  const distro = env.WSL_DISTRO_NAME?.trim();
+  if (!distro) throw new LaunchError(1, "WSL_DISTRO_NAME is not set, so this is not WSL");
+  const given = env.ARASHOUSE_HOME?.trim();
+  let to: string;
+  if (given) {
+    if (!/^\/mnt\/[a-z]\//.test(given)) throw new LaunchError(EXIT_CODES.usage, `ARASHOUSE_HOME is ${given}: the state moves to a Windows drive (/mnt/<drive>/...)`);
+    to = given;
+  } else {
+    const local = (deps.localAppData ?? ((e: NodeJS.ProcessEnv, d: string) => windowsLocalAppData(e, d, undefined, deps.cwd)))(env, distro);
+    if (local === undefined) throw new LaunchError(1, "cannot find the Windows %LOCALAPPDATA% (cmd.exe did not answer); set ARASHOUSE_HOME to the Windows home under /mnt/<drive>");
+    to = wslPathOf(win32.join(local, "arashouse"));
+  }
+  const { migrateState } = await import("./migrate.js");
+  const result = await migrateState({
+    from: join(env.HOME?.trim() || homedir(), ".arashouse"),
+    to,
+    toShown: drivePathOfMount(to) ?? to,
+    yes: args.includes("--yes"),
+    busyOk: args.includes("--busy-ok"),
+  });
+  for (const line of result.lines) deps.io.stdout(`${line}\n`);
+  return result.code;
+}
+
 /** Runs one `arashouse` invocation from WSL on the Windows build, and resolves with its exit code. It never throws. */
 export async function runLauncher(argv: readonly string[], deps: LauncherDeps): Promise<number> {
   try {
     const { command, args, globals, help } = commandOf(argv);
+    if (command === "migrate-state") return await migrateHere(deps, args, help);
     if (!help && command !== "help" && command !== "version" && command !== "--version") assertStateMoved(deps.env);
     if (!help && command === "run") return await runHere(deps, args, globals);
-    if (!help && command === "get" && args.includes("--password-fd")) return await getWithFd(deps, command, args, globals);
+    if (!help && command === "get" && passwordFdOption(args) !== undefined) return await getWithFd(deps, command, args, globals);
     return (await runWindows(deps, argv, false)).code;
   } catch (err) {
     const exitCode = (err as { exitCode?: unknown }).exitCode;

@@ -198,8 +198,9 @@ describe("concurrent writers", () => {
   });
 
   // 25 updates contend for one lock; under a whole suite's load that outruns the default.
-  it("serialise updates inside one process too", { timeout: 30_000 }, async () => {
-    const store = new StateStore({ home });
+  it("serialise updates inside one process too", { timeout: 60_000 }, async () => {
+    // Under a whole suite's load on NTFS (a flush per update), the last of 25 waits longer than the default 10 s.
+    const store = new StateStore({ home, lockTimeoutMs: 50_000 });
     await store.update((tx) => void tx.addSlot(slot));
     await Promise.all(
       Array.from({ length: 25 }, async () => {

@@ -693,17 +693,6 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
     for (const f of checkSetup(await deps.setup())) add(f.level, f.check, f.message);
   }
 
-  if (deps.homeAccess) {
-    try {
-      const { home, others, missing } = await deps.homeAccess();
-      if (missing === true) add("ok", "state home", `${home} is made by the first lease`);
-      else if (others.length === 0) add("ok", "state home", `${home} is the worker user's only (and SYSTEM's and the administrators')`);
-      else add("warn", "state home", `${home} can also be opened by ${others.join(", ")}, and it holds the lease passwords: keep it under the worker user's profile (unset ARASHOUSE_HOME), or take those entries off its ACL`);
-    } catch (err) {
-      add("warn", "state home", `its access could not be read: ${errorText(err)}`);
-    }
-  }
-
   if (deps.importTool) {
     // Only `get --import` and `import` need it, so its absence is a warning.
     const tool = await deps.importTool();
@@ -716,6 +705,18 @@ export async function doctor(deps: OperatorDeps, request: DoctorRequest = {}): P
     if (!isHostError(err)) throw err;
     add("fail", "broker", `did not answer: ${errorText(err)}; the host checks were skipped`);
     return done();
+  }
+
+  // With the host checks: reading the home's ACL starts Windows PowerShell, which is not worth a doctor whose broker is down.
+  if (deps.homeAccess) {
+    try {
+      const { home, others, missing } = await deps.homeAccess();
+      if (missing === true) add("ok", "state home", `${home} is made by the first lease`);
+      else if (others.length === 0) add("ok", "state home", `${home} is the worker user's only (and SYSTEM's and the administrators')`);
+      else add("warn", "state home", `${home} can also be opened by ${others.join(", ")}, and it holds the lease passwords: keep it under the worker user's profile (unset ARASHOUSE_HOME), or take those entries off its ACL`);
+    } catch (err) {
+      add("warn", "state home", `its access could not be read: ${errorText(err)}`);
+    }
   }
 
   let token: BrokerToken | null = null;
